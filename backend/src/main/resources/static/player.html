@@ -1,0 +1,27 @@
+<!DOCTYPE html><meta charset="utf-8" />
+<title>HLS Player</title>
+<body style="margin: 0; background: #000">
+  <video
+    id="v"
+    controls
+    autoplay
+    playsinline
+    style="width: 100%; max-width: 960px; height: auto"
+  ></video>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <script>
+    const url = "/streams/cam402/index.m3u8"; // ← 后端同源提供
+    const v = document.getElementById("v");
+    if (v.canPlayType("application/vnd.apple.mpegurl")) {
+      v.src = url;
+      v.play();
+    } else if (Hls.isSupported()) {
+      const h = new Hls({ liveSyncDuration: 2, liveMaxLatencyDuration: 6 });
+      h.loadSource(url);
+      h.attachMedia(v);
+      h.on(Hls.Events.MANIFEST_PARSED, () => v.play());
+    } else {
+      alert("HLS not supported");
+    }
+  </script>
+</body>

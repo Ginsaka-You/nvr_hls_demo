@@ -1,0 +1,18 @@
+package com.example.nvr;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+@Configuration
+public class StaticMap implements WebMvcConfigurer {
+    @Value("${nvr.hlsRoot:/var/www/streams}")
+    private String hlsRoot;
+
+    @Override
+    public void addResourceHandlers(ResourceHandlerRegistry registry) {
+        registry.addResourceHandler("/streams/**")
+                .addResourceLocations("file:" + hlsRoot + "/");
+    }
+}

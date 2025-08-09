@@ -1,0 +1,31 @@
+server:
+  port: 8080
+
+nvr:
+  hlsRoot: /var/www/streams
+  ffmpeg: /usr/bin/ffmpeg
+  hls:
+    time: 1          # 每段 1s
+    listSize: 3      # 只保留 3 段（≈3s 窗口）
+    deleteSegments: true
+    aacBitrate: 96k
+  ffmpegFlags:       # 全局 RTSP/缓冲参数
+  - -rtsp_transport
+  - tcp
+  - -rtsp_flags
+  - prefer_tcp
+  - -rw_timeout
+  - "20000000"     # 20s 读超时，便于外层重启
+  - -fflags
+  - nobuffer+genpts
+  - -flags
+  - +cgop
+
+spring:
+  mvc:
+    cors:
+      mappings:
+        - path-pattern: "/**"
+          allowed-origins: "*"
+          allowed-methods: "*"
+          allowed-headers: "*"
