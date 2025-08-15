@@ -14,15 +14,28 @@ let lastSrc: string | null = null
 
 function setupHls(video: HTMLVideoElement, src: string) {
   if (hls) { try { hls.destroy() } catch (_) {} hls = null }
-  // Prefer Hls.js on non-Safari browsers to avoid false-positive native HLS support
-  const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
-  if (!isSafari && Hls.isSupported()) {
+  // Prefer Hls.js whenever supported (more controllable, visible in XHR)
+  if (Hls.isSupported()) {
+    console.log('[VideoPlayer] Using hls.js for', src)
     if (hls) { try { hls.destroy() } catch (_) {} hls = null }
     retries = 0
-    hls = new Hls({ liveSyncDuration: 2, liveMaxLatencyDuration: 6, lowLatencyMode: false, enableWorker: true, backBufferLength: 30 })
+    hls = new Hls({
+      // Stay close to live edge and limit buffer to reduce lag
+      lowLatencyMode: false,
+      // Use count-based live edge control (do not mix with duration-based)
+      liveSyncDurationCount: 1,
+      liveMaxLatencyDurationCount: 3,
+      maxBufferLength: 5,
+      maxBufferSize: 5 * 1000 * 1000,
+      maxBufferHole: 0.5,
+      backBufferLength: 15,
+      enableWorker: true
+    })
     hls.attachMedia(video)
     hls.on(Hls.Events.MEDIA_ATTACHED, () => {
-      hls.loadSource(src)
+      // Cache-bust to avoid any intermediary caching of the live manifest
+      const cacheBusted = src + (src.includes('?') ? '&' : '?') + 'cb=' + Date.now()
+      hls.loadSource(cacheBusted)
     })
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       void video.play().catch(err => console.error('Video play error:', err))
@@ -47,7 +60,8 @@ function setupHls(video: HTMLVideoElement, src: string) {
       }
     })
   } else {
-    // Safari/iOS: use native HLS
+    // Fallback: native HLS (Safari/iOS)
+    console.log('[VideoPlayer] Using native HLS for', src)
     if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = src
       void video.play().catch(err => console.error('Video play error:', err))

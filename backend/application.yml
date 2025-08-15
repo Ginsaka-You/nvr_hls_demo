@@ -2,13 +2,13 @@ server:
   port: 8080
 
 nvr:
-  # Where HLS files will be written (dev)
-  hlsRoot: ./streams
+  # Where HLS files will be written (align with nginx alias)
+  hlsRoot: /var/www/streams
   # Path to ffmpeg binary
   ffmpeg: /usr/bin/ffmpeg
   # HLS options
   hls:
-    time: 2
+    time: 1
     listSize: 10
     deleteSegments: false
     aacBitrate: 96k

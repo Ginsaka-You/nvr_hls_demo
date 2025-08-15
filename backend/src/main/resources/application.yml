@@ -2,15 +2,15 @@ server:
   port: 8080
 
 nvr:
-  # 开发环境建议使用相对可写目录，避免权限问题
-  hlsRoot: ./streams
+  # 与 Nginx 保持一致的目录，避免旧清单被读取
+  hlsRoot: /var/www/streams
   ffmpeg: /usr/bin/ffmpeg
   hls:
-    time: 2          # 每段 2s，更稳
-    listSize: 10     # 保留 10 段（≈20s 窗口）
-    deleteSegments: false  # 开发环境先不删，避免客户端追不上
+    time: 1          # 每段 1s，降低端到端延迟
+    listSize: 10     # 稍长窗口（≈10s），提升容错与连续性
+    deleteSegments: true
     aacBitrate: 96k
-  ffmpegFlags: "-rtsp_transport tcp -rtsp_flags prefer_tcp -analyzeduration 10000000 -probesize 20000000 -fflags nobuffer+genpts"
+  ffmpegFlags: "-rtsp_transport tcp -rtsp_flags prefer_tcp -analyzeduration 2000000 -probesize 2000000 -fflags nobuffer+genpts -flags low_delay -use_wallclock_as_timestamps 1"
 
 spring:
   mvc:
