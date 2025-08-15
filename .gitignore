@@ -1,0 +1,4 @@
+# Ignore HLS output directories
+backend/streams/
+streams/
+
