@@ -7,6 +7,9 @@ const props = defineProps<{ src: string }>()
 
 const videoRef = ref<HTMLVideoElement|null>(null)
 let hls: any
+let retryTimer: any = null
+let retries = 0
+const maxRetries = 30
 let lastSrc: string | null = null
 
 function setupHls(video: HTMLVideoElement, src: string) {
@@ -14,6 +17,8 @@ function setupHls(video: HTMLVideoElement, src: string) {
   // Prefer Hls.js on non-Safari browsers to avoid false-positive native HLS support
   const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
   if (!isSafari && Hls.isSupported()) {
+    if (hls) { try { hls.destroy() } catch (_) {} hls = null }
+    retries = 0
     hls = new Hls({ liveSyncDuration: 2, liveMaxLatencyDuration: 6, lowLatencyMode: false, enableWorker: true, backBufferLength: 30 })
     hls.attachMedia(video)
     hls.on(Hls.Events.MEDIA_ATTACHED, () => {
@@ -24,6 +29,22 @@ function setupHls(video: HTMLVideoElement, src: string) {
     })
     hls.on(Hls.Events.ERROR, (_e: any, data: any) => {
       console.error('HLS error:', data)
+      const fatal = data?.fatal
+      if (data?.type === Hls.ErrorTypes.NETWORK_ERROR && (data?.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR || data?.details === Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT)) {
+        if (retries < maxRetries) {
+          const delay = Math.min(2000, 300 + retries * 200)
+          clearTimeout(retryTimer)
+          retryTimer = setTimeout(() => {
+            try { hls.loadSource(src); hls.startLoad() } catch (_) {}
+          }, delay)
+          retries++
+        }
+      } else if (fatal && data?.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        try { hls.recoverMediaError() } catch (err) { console.error('recoverMediaError failed', err) }
+      } else if (fatal) {
+        try { hls.destroy() } catch (_) {}
+        hls = null
+      }
     })
   } else {
     // Safari/iOS: use native HLS
@@ -55,6 +76,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (hls) { try { hls.destroy() } catch (_) {} }
+  if (retryTimer) { try { clearTimeout(retryTimer) } catch (_) {} retryTimer = null }
 })
 </script>
 
