@@ -14,15 +14,7 @@ nvr:
     deleteSegments: false
     aacBitrate: 96k
   # Optional: additional global ffmpeg flags (stable defaults)
-  ffmpegFlags:
-    - -rtsp_transport
-    - tcp
-    - -stimeout
-    - "5000000"
-    - -analyzeduration
-    - "10000000"
-    - -probesize
-    - "20000000"
+  ffmpegFlags: "-rtsp_transport tcp -rtsp_flags prefer_tcp -analyzeduration 10000000 -probesize 20000000 -fflags nobuffer+genpts"
 
 spring:
   mvc:

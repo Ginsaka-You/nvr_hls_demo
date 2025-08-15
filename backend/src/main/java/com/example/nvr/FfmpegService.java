@@ -29,7 +29,7 @@ public class FfmpegService {
     @Value("${nvr.hls.aacBitrate:96k}")
     private String aacBitrate;
 
-    @Value("#{'${nvr.ffmpegFlags:-fflags nobuffer -flags low_delay -analyzeduration 0 -probesize 32 -rtsp_transport tcp}'.split(' ')}")
+    @Value("#{'${nvr.ffmpegFlags:-rtsp_transport tcp -rtsp_flags prefer_tcp -analyzeduration 10000000 -probesize 20000000 -fflags nobuffer+genpts}'.split(' ')}")
     private List<String> extraFlags;
 
     private final Map<String, Process> processes = new ConcurrentHashMap<>();
@@ -76,13 +76,18 @@ public class FfmpegService {
         if (copy) {
             cmd.addAll(Arrays.asList("-c:v", "copy"));
         } else {
+            int gop = Math.max(1, hlsTime * 25); // assume ~25fps for GOP sizing
             cmd.addAll(Arrays.asList(
                     "-c:v", "libx264",
                     "-preset", "veryfast",
                     "-tune", "zerolatency",
                     "-profile:v", "baseline",
                     "-level", "3.1",
-                    "-pix_fmt", "yuv420p"));
+                    "-pix_fmt", "yuv420p",
+                    "-bf", "0",
+                    "-g", String.valueOf(gop),
+                    "-keyint_min", String.valueOf(gop),
+                    "-x264-params", "scenecut=0:open-gop=0:keyint=" + gop + ":min-keyint=" + gop));
             // Force keyframes to align with HLS segment duration to improve continuity
             cmd.addAll(Arrays.asList("-force_key_frames", "expr:gte(t,n_forced*" + hlsTime + ")"));
         }

@@ -14,7 +14,7 @@ function setupHls(video: HTMLVideoElement, src: string) {
   // Prefer Hls.js on non-Safari browsers to avoid false-positive native HLS support
   const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
   if (!isSafari && Hls.isSupported()) {
-    hls = new Hls({ liveSyncDuration: 2, liveMaxLatencyDuration: 6 })
+    hls = new Hls({ liveSyncDuration: 2, liveMaxLatencyDuration: 6, lowLatencyMode: false, enableWorker: true, backBufferLength: 30 })
     hls.attachMedia(video)
     hls.on(Hls.Events.MEDIA_ATTACHED, () => {
       hls.loadSource(src)
