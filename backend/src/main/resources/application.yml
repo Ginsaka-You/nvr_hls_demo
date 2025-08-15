@@ -2,12 +2,13 @@ server:
   port: 8080
 
 nvr:
-  hlsRoot: /var/www/streams
+  # 开发环境建议使用相对可写目录，避免权限问题
+  hlsRoot: ./streams
   ffmpeg: /usr/bin/ffmpeg
   hls:
-    time: 1          # 每段 1s
-    listSize: 3      # 只保留 3 段（≈3s 窗口）
-    deleteSegments: true
+    time: 2          # 每段 2s，更稳
+    listSize: 10     # 保留 10 段（≈20s 窗口）
+    deleteSegments: false  # 开发环境先不删，避免客户端追不上
     aacBitrate: 96k
   ffmpegFlags:       # 全局 RTSP/缓冲参数
   - -rtsp_transport

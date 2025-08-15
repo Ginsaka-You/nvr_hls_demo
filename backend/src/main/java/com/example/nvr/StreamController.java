@@ -50,6 +50,16 @@ public class StreamController {
         map.put("id", id);
         map.put("running", ffmpeg.isRunning(id));
         map.put("hls", ffmpeg.getHlsUrl(id));
+        map.put("probe", ffmpeg.probe(id));
+        return map;
+    }
+
+    @GetMapping("/{id}/logs")
+    public Map<String, Object> logs(@PathVariable String id, @RequestParam(defaultValue = "200") int lines) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("id", id);
+        map.put("lines", lines);
+        map.put("logs", ffmpeg.getLogs(id, Math.min(Math.max(lines, 1), 1000)));
         return map;
     }
 }

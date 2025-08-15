@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, watch, defineProps } from 'vue'
+import { onMounted, onBeforeUnmount, ref, watch, defineProps, nextTick } from 'vue'
 // @ts-ignore
 import Hls from 'hls.js'
 
@@ -7,27 +7,54 @@ const props = defineProps<{ src: string }>()
 
 const videoRef = ref<HTMLVideoElement|null>(null)
 let hls: any
+let lastSrc: string | null = null
 
-function play(src: string) {
-  const video = videoRef.value!
-  if (video.canPlayType('application/vnd.apple.mpegurl')) {
-    video.src = src
-    video.play()
-  } else if (Hls.isSupported()) {
-    if (hls) { hls.destroy() }
+function setupHls(video: HTMLVideoElement, src: string) {
+  if (hls) { try { hls.destroy() } catch (_) {} hls = null }
+  // Prefer Hls.js on non-Safari browsers to avoid false-positive native HLS support
+  const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
+  if (!isSafari && Hls.isSupported()) {
     hls = new Hls({ liveSyncDuration: 2, liveMaxLatencyDuration: 6 })
-    hls.loadSource(src)
     hls.attachMedia(video)
-    hls.on(Hls.Events.MANIFEST_PARSED, () => video.play())
+    hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+      hls.loadSource(src)
+    })
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      void video.play().catch(err => console.error('Video play error:', err))
+    })
+    hls.on(Hls.Events.ERROR, (_e: any, data: any) => {
+      console.error('HLS error:', data)
+    })
   } else {
-    console.error('HLS not supported')
+    // Safari/iOS: use native HLS
+    if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = src
+      void video.play().catch(err => console.error('Video play error:', err))
+    } else {
+      console.error('HLS not supported in this browser')
+    }
   }
 }
 
-watch(() => props.src, (val) => { if (val) play(val) }, { immediate: true })
+async function play(src: string) {
+  lastSrc = src
+  if (!src) return
+  await nextTick()
+  const video = videoRef.value
+  if (!video) return // wait for mount
+  setupHls(video, src)
+}
+
+watch(() => props.src, (val) => {
+  if (val) { void play(val) }
+})
+
+onMounted(() => {
+  if (props.src) { void play(props.src) }
+})
 
 onBeforeUnmount(() => {
-  if (hls) { hls.destroy() }
+  if (hls) { try { hls.destroy() } catch (_) {} }
 })
 </script>
 
