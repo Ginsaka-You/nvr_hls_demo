@@ -26,14 +26,13 @@ const buckets = computed(() => {
 </script>
 
 <template>
-  <div style="display:flex;align-items:flex-end;gap:4px;height:48px;padding:4px;background:#0b1220;border:1px solid #1b2a44;border-radius:6px">
-    <div v-for="(b,i) in buckets" :key="i" style="width:8px;background:#1b2a44;position:relative;border-radius:2px;overflow:hidden">
-      <div :style="{position:'absolute',bottom:'0',left:'0',right:'0',height:b.h+'px',background:'#40a9ff'}"></div>
-      <div :style="{position:'absolute',bottom:'0',left:'0',right:'0',height:b.hc+'px',background:'#ff4d4f'}"></div>
+  <div style="display:flex;align-items:flex-end;gap:4px;height:48px;padding:4px;background:#ffffff;border:1px solid #dddddd;border-radius:6px">
+    <div v-for="(b,i) in buckets" :key="i" style="width:8px;background:#f0f0f0;position:relative;border-radius:2px;overflow:hidden">
+      <div :style="{position:'absolute',bottom:'0',left:'0',right:'0',height:b.h+'px',background:'#c9924d'}"></div>
+      <div :style="{position:'absolute',bottom:'0',left:'0',right:'0',height:b.hc+'px',background:'#d92c2c'}"></div>
     </div>
   </div>
 </template>
 
 <style scoped>
 </style>
-

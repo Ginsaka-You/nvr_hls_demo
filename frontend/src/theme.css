@@ -1,0 +1,80 @@
+:root {
+  --accent-color: #c9924d;
+  --bg-color: #f0f0f0;
+  --text-color: #000000;
+}
+
+html, body, #app {
+  height: 100%;
+}
+
+body {
+  background: var(--bg-color);
+  color: var(--text-color);
+}
+
+a {
+  color: var(--accent-color);
+}
+a:hover {
+  color: #a87638; /* hover tone of accent */
+}
+
+/* Ant Design primary accents */
+.ant-btn-primary,
+.ant-btn-primary:focus {
+  background-color: var(--accent-color);
+  border-color: var(--accent-color);
+}
+.ant-btn-primary:hover {
+  background-color: var(--accent-color);
+  border-color: var(--accent-color);
+  filter: brightness(0.95);
+}
+
+/* Layout backgrounds to match page scheme */
+.ant-layout,
+.ant-layout-content,
+.ant-layout-footer {
+  background: var(--bg-color);
+  color: var(--text-color);
+}
+
+/* Menu (light) colors */
+.ant-menu {
+  background: transparent;
+  color: var(--text-color);
+}
+.ant-menu-light .ant-menu-item-selected,
+.ant-menu-light .ant-menu-submenu-title:hover,
+.ant-menu-item-active {
+  color: var(--accent-color) !important;
+}
+.ant-menu-light .ant-menu-item-selected {
+  background-color: rgba(201, 146, 77, 0.15) !important;
+}
+
+/* Typography default color */
+.ant-typography,
+.ant-typography h1,
+.ant-typography h2,
+.ant-typography h3,
+.ant-typography h4,
+.ant-typography h5 {
+  color: var(--text-color);
+}
+
+/* Alerts and tags subtle tuning */
+.ant-alert-info {
+  border-color: rgba(201,146,77,0.35);
+}
+
+/* Utility: hide scrollbars but keep scrollable */
+.no-scrollbar {
+  scrollbar-width: none;         /* Firefox */
+  -ms-overflow-style: none;      /* IE 10+ */
+}
+.no-scrollbar::-webkit-scrollbar { /* Chrome/Safari/Edge */
+  width: 0;
+  height: 0;
+}

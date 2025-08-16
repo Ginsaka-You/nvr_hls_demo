@@ -22,10 +22,10 @@ const error = ref<string| null>(null)
 
 function levelColor(level: string) {
   switch (level) {
-    case 'critical': return '#ff4d4f'
-    case 'major': return '#fa8c16'
-    case 'minor': return '#fadb14'
-    default: return '#40a9ff'
+    case 'critical': return '#d92c2c'
+    case 'major': return '#a87638'
+    case 'minor': return '#c9924d'
+    default: return '#8a8a8a'
   }
 }
 
@@ -40,7 +40,7 @@ function renderMarkers() {
     el.style.height = '10px'
     el.style.borderRadius = '50%'
     el.style.background = levelColor(e.level)
-    el.style.boxShadow = e.id === props.highlightId ? '0 0 0 4px rgba(64,169,255,0.4)' : 'none'
+    el.style.boxShadow = e.id === props.highlightId ? '0 0 0 4px rgba(201,146,77,0.4)' : 'none'
     el.title = `${e.summary}`
     const m = new AMap.Marker({
       position: [e.lng, e.lat],
@@ -81,11 +81,11 @@ watch(() => [props.events, props.highlightId], () => renderMarkers(), { deep: tr
 
 <template>
   <div style="padding:8px;height:100%">
-    <div v-if="error" style="height:100%;display:flex;align-items:center;justify-content:center;color:#ef4444;border:1px dashed #1b2a44;border-radius:8px;">
+    <div v-if="error" style="height:100%;display:flex;align-items:center;justify-content:center;color:#d92c2c;border:1px dashed #dddddd;border-radius:8px;">
       {{ error }}
     </div>
-    <div v-else ref="container" style="height:calc(100vh - 56px - 140px);border:1px solid #1b2a44;border-radius:8px;overflow:hidden">
-      <div v-if="loading" style="height:100%;display:flex;align-items:center;justify-content:center;color:#9fb3c8;">地图加载中…</div>
+    <div v-else ref="container" style="height:calc(100vh - 56px - 140px);border:1px solid #dddddd;border-radius:8px;overflow:hidden;background:#ffffff;">
+      <div v-if="loading" style="height:100%;display:flex;align-items:center;justify-content:center;color:#00000099;">地图加载中…</div>
     </div>
   </div>
   

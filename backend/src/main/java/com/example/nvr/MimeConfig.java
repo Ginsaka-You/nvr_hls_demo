@@ -13,4 +13,3 @@ public class MimeConfig implements WebMvcConfigurer {
         configurer.mediaType("ts", MediaType.valueOf("video/mp2t"));
     }
 }
-
