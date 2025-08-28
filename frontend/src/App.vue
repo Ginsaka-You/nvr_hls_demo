@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { SettingFilled } from '@ant-design/icons-vue'
 import Overview from './dashboard/Overview.vue'
 import MultiCam from './pages/MultiCam.vue'
@@ -8,11 +8,35 @@ import ImsiTrend from './pages/ImsiTrend.vue'
 import RadarPlot from './pages/RadarPlot.vue'
 import SeismicWave from './pages/SeismicWave.vue'
 import DroneTelemetry from './pages/DroneTelemetry.vue'
+import BigDataView8 from './pages/BigDataView8.vue'
+import BigDataView61 from './pages/BigDataView61.vue'
+import BigDataView67 from './pages/BigDataView67.vue'
+import AxureDemo from './pages/AxureDemo.vue'
 import AlertPanel from './components/AlertPanel.vue'
 import { connectAlerts } from './store/alerts'
 
-type Tab = 'main'|'multicam'|'imsi'|'radar'|'seismic'|'drone'|'settings'
+type Tab = 'main'|'multicam'|'imsi'|'radar'|'seismic'|'drone'|'big8'|'big61'|'big67'|'axure'|'settings'
 const tab = ref<Tab>('main')
+
+// 顶部导航项（原左侧栏）：仅核心功能页，外链与大屏放到头像右侧下拉
+const navItems = [
+  { key: 'main', label: '主屏幕' },
+  { key: 'multicam', label: '多摄像头' },
+  { key: 'imsi', label: 'IMSI 趋势' },
+  { key: 'radar', label: '雷达速度-距离图' },
+  { key: 'seismic', label: '震动波形' },
+  { key: 'drone', label: '无人机遥测' },
+] as { key: Tab, label: string }[]
+// 头像右侧下拉项
+const moreItems = [
+  { key: 'big8', label: '兰州智慧消防大数据平台' },
+  { key: 'big61', label: '智慧小区大数据分析' },
+  { key: 'big67', label: '智慧旅游综合服务平台' },
+  { key: 'axure', label: 'Axure 原型' },
+] as { key: Tab, label: string }[]
+const splitIdx = Math.ceil(navItems.length / 2)
+const navLeft = computed(() => navItems.slice(0, splitIdx))
+const navRight = computed(() => navItems.slice(splitIdx))
 
 function onMenuClick(e: any) {
   const key = e?.key as Tab
@@ -28,33 +52,39 @@ connectAlerts()
 
 <template>
   <a-layout style="min-height:100vh;">
-    <a-layout-header style="display:flex; align-items:center; gap:12px; background:#ffffff; border-bottom:1px solid #dddddd; box-shadow:0 2px 8px rgba(0,0,0,0.06);">
-      <div @click="gotoHome" style="width:32px; height:32px; background:#c9924d; border-radius:4px; display:flex; align-items:center; justify-content:center; color:#000; font-weight:700; cursor:pointer;">L</div>
-      <div @click="gotoHome" style="font-weight:600; color:#000; cursor:pointer; line-height:32px;">
-        天玺金盾
-      </div>
-      <div style="margin-left:auto; display:flex; align-items:center; gap:12px; height:32px;">
-        <a-tooltip title="设置">
-          <a-button type="text" @click="gotoSettings" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:18px;line-height:1;color:var(--accent-color);">
-            <SettingFilled />
-          </a-button>
-        </a-tooltip>
-        <a-avatar :size="32" style="background:#c9924d; color:#000; display:flex; align-items:center; justify-content:center;">U</a-avatar>
+    <a-layout-header style="position:sticky; top:0; z-index:10; background:var(--bg-color); border-bottom:1px solid rgba(27,146,253,0.35); box-shadow:0 2px 8px rgba(0,0,0,0.25);">
+      <div style="display:flex; align-items:center; gap:12px; height:64px; position:relative;">
+        <div style="flex:1; min-width:0; display:flex; align-items:center; gap:8px;">
+          <a-menu mode="horizontal" theme="light" :selectedKeys="[tab]" @click="onMenuClick" :style="{borderBottom:0}">
+            <a-menu-item v-for="it in navLeft" :key="it.key">{{ it.label }}</a-menu-item>
+          </a-menu>
+        </div>
+        <div @click="gotoHome" style="position:absolute; left:50%; transform:translateX(-50%); font-weight:600; color:var(--text-color); cursor:pointer; line-height:32px; white-space:nowrap;">
+          天玺金盾
+        </div>
+        <div style="flex:1; min-width:0; display:flex; align-items:center; justify-content:flex-end; gap:8px;">
+          <a-menu mode="horizontal" theme="light" :selectedKeys="[tab]" @click="onMenuClick" :style="{borderBottom:0}">
+            <a-menu-item v-for="it in navRight" :key="it.key">{{ it.label }}</a-menu-item>
+          </a-menu>
+          <div style="margin-left:8px; display:flex; align-items:center; gap:12px; height:32px;">
+            <a-tooltip title="设置">
+              <a-button type="text" @click="gotoSettings" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:18px;line-height:1;color:var(--accent-color);">
+                <SettingFilled />
+              </a-button>
+            </a-tooltip>
+            <a-avatar :size="32" style="background:var(--accent-color); color:#fff; display:flex; align-items:center; justify-content:center;">U</a-avatar>
+            <a-dropdown placement="bottomRight">
+              <a-button>更多大屏</a-button>
+              <template #overlay>
+                <a-menu :selectedKeys="[]" @click="onMenuClick">
+                  <a-menu-item v-for="it in moreItems" :key="it.key">{{ it.label }}</a-menu-item>
+                </a-menu>
+              </template>
+            </a-dropdown>
+          </div>
+        </div>
       </div>
     </a-layout-header>
-    <a-layout>
-    <a-layout-sider width="220" :style="{background:'var(--bg-color)'}">
-      <div style="margin:12px; background:#ffffff; border:1px solid #dddddd; border-radius:8px; box-shadow:0 2px 10px rgba(0,0,0,0.06); overflow:hidden; height:calc(100vh - 64px - 24px); display:flex; flex-direction:column;">
-        <a-menu class="no-scrollbar" theme="light" mode="inline" :selectedKeys="[tab]" @click="onMenuClick" :style="{borderRight:0, background:'#fff', height:'100%', overflow:'hidden'}">
-        <a-menu-item key="main">主屏幕</a-menu-item>
-        <a-menu-item key="multicam">多摄像头</a-menu-item>
-        <a-menu-item key="imsi">IMSI 趋势</a-menu-item>
-          <a-menu-item key="radar">雷达速度-距离图</a-menu-item>
-          <a-menu-item key="seismic">震动波形</a-menu-item>
-          <a-menu-item key="drone">无人机遥测</a-menu-item>
-        </a-menu>
-      </div>
-    </a-layout-sider>
     <a-layout>
       <a-layout-content>
         <Overview v-if="tab==='main'" />
@@ -63,16 +93,12 @@ connectAlerts()
         <RadarPlot v-else-if="tab==='radar'" />
         <SeismicWave v-else-if="tab==='seismic'" />
         <DroneTelemetry v-else-if="tab==='drone'" />
+        <BigDataView8 v-else-if="tab==='big8'" />
+        <BigDataView61 v-else-if="tab==='big61'" />
+        <BigDataView67 v-else-if="tab==='big67'" />
+        <AxureDemo v-else-if="tab==='axure'" />
         <Settings v-else-if="tab==='settings'" />
       </a-layout-content>
-      <!-- 右侧告警面板（仅主屏幕显示） -->
-      <a-layout-sider v-if="tab==='main'" width="380" :style="{background:'var(--bg-color)'}">
-        <div style="margin:12px; background:#ffffff; border:1px solid #dddddd; border-radius:8px; box-shadow:0 2px 10px rgba(0,0,0,0.06); padding:8px; height:calc(100vh - 64px - 24px); display:flex; flex-direction:column; overflow:hidden;">
-          <div style="font-weight:600; margin:4px 0 8px;">告警队列</div>
-          <AlertPanel />
-        </div>
-      </a-layout-sider>
-    </a-layout>
     </a-layout>
   </a-layout>
   

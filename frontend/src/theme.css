@@ -1,7 +1,18 @@
 :root {
-  --accent-color: #c9924d;
-  --bg-color: #f0f0f0;
-  --text-color: #000000;
+  /* Lanzhou Smart Firefighting palette */
+  --accent-color: #1b92fd;            /* bright blue */
+  --bg-color: #0e122d;                /* deep navy */
+  --text-color: rgba(255,255,255,0.92);
+  --text-muted: rgba(255,255,255,0.65);
+  --panel-bg: rgba(50, 72, 106, 0.2);
+  --panel-border: rgba(27, 146, 253, 0.5);
+  --menu-selected-bg: rgba(27, 146, 253, 0.15);
+  --input-bg: rgba(255,255,255,0.06);
+  --input-border: rgba(27,146,253,0.35);
+  --danger-color: #ff4d4f;
+  --warning-color: #faad14;
+  --success-color: #52c41a;
+  --info-color: #1b92fd;
 }
 
 html, body, #app {
@@ -17,7 +28,7 @@ a {
   color: var(--accent-color);
 }
 a:hover {
-  color: #a87638; /* hover tone of accent */
+  filter: brightness(1.1);
 }
 
 /* Ant Design primary accents */
@@ -40,6 +51,18 @@ a:hover {
   color: var(--text-color);
 }
 
+/* Cards and panels */
+.ant-card,
+.ant-card-bordered,
+.ant-card-small {
+  background: var(--panel-bg);
+  border-color: var(--panel-border) !important;
+  color: var(--text-color);
+}
+.ant-card-head-title { color: var(--text-color); }
+.ant-divider { border-top-color: var(--panel-border) !important; }
+.ant-alert-info { background: rgba(27,146,253,0.08); }
+
 /* Menu (light) colors */
 .ant-menu {
   background: transparent;
@@ -51,7 +74,16 @@ a:hover {
   color: var(--accent-color) !important;
 }
 .ant-menu-light .ant-menu-item-selected {
-  background-color: rgba(201, 146, 77, 0.15) !important;
+  background-color: var(--menu-selected-bg) !important;
+}
+/* underline for horizontal selected item */
+.ant-menu-light.ant-menu-horizontal > .ant-menu-item-selected::after,
+.ant-menu-light.ant-menu-horizontal > .ant-menu-item-active::after {
+  border-bottom-color: var(--accent-color);
+}
+.ant-menu-horizontal > .ant-menu-item:hover {
+  color: var(--accent-color) !important;
+  background: transparent !important;
 }
 
 /* Typography default color */
@@ -66,8 +98,51 @@ a:hover {
 
 /* Alerts and tags subtle tuning */
 .ant-alert-info {
-  border-color: rgba(201,146,77,0.35);
+  border-color: rgba(27,146,253,0.35);
 }
+
+/* Lists */
+.ant-list-split .ant-list-item { border-color: var(--panel-border); }
+.ant-list-item { color: var(--text-color); }
+
+/* Inputs */
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-input-number,
+.ant-input-number-input,
+.ant-select-selector,
+.ant-select-selection-item,
+.ant-select-selection-placeholder,
+.ant-radio-wrapper,
+.ant-checkbox-wrapper,
+.ant-form-item-label > label {
+  color: var(--text-color);
+}
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-input-number,
+.ant-select-selector {
+  background: var(--input-bg) !important;
+  border-color: var(--input-border) !important;
+}
+.ant-input::placeholder { color: var(--text-muted); }
+.ant-select-selection-placeholder { color: var(--text-muted) !important; }
+
+/* Buttons */
+.ant-btn-link { color: var(--accent-color); }
+.ant-btn-dangerous { background: transparent; border-color: var(--danger-color); color: var(--danger-color); }
+.ant-btn-dangerous:hover { filter: brightness(1.1); }
+
+/* Tags */
+.ant-tag { background: var(--menu-selected-bg); border-color: var(--panel-border); color: var(--text-color); }
+
+/* Panel hover effect */
+.panel-card:hover { box-shadow: 0 4px 18px rgba(0,0,0,0.35); }
+
+/* Scrollbars subtle (if visible) */
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: rgba(27,146,253,0.35); border-radius: 4px; }
+*::-webkit-scrollbar-track { background: transparent; }
 
 /* Utility: hide scrollbars but keep scrollable */
 .no-scrollbar {

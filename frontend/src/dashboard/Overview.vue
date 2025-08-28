@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import AlertPanel from '@/components/AlertPanel.vue'
 import { loadAmap } from '@/lib/loadAmap'
 import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort } from '@/store/config'
 
@@ -32,12 +33,14 @@ onMounted(async () => {
   try {
     const AMap = await loadAmap()
     if (!mapEl.value) return
+    const satellite = new AMap.TileLayer.Satellite()
+    const roadNet = new AMap.TileLayer.RoadNet()
     map.value = new AMap.Map(mapEl.value, {
       center: [cameras.value[0].lng || 117.1233, cameras.value[0].lat || 34.1237],
       zoom: 16,
-      viewMode: '3D'
+      viewMode: '3D',
+      layers: [satellite, roadNet]
     })
-    map.value.addControl(new AMap.ControlBar())
     map.value.addControl(new AMap.Scale())
     map.value.addControl(new AMap.ToolBar())
     // add camera markers
@@ -73,11 +76,41 @@ onBeforeUnmount(() => {
       <!-- Center Map -->
       <a-layout-content style="position:relative;">
         <div ref="mapEl" class="mapwrap" />
-        <div class="map-overlay">
-          <div style="display:flex; gap:8px; flex-wrap:wrap;">
-            <a-tag v-for="c in cameras" :key="c.id" color="#c9924d" @click="selectedCamId=c.id" style="cursor:pointer;">{{ c.name }}</a-tag>
+        <!-- 左侧三个悬浮信息框 -->
+        <div class="left-panels">
+          <div class="panel-card">
+            <div class="panel-header">点位报警排名</div>
+            <div class="panel-body">
+              <div class="muted">暂无数据</div>
+            </div>
+          </div>
+          <div class="panel-card">
+            <div class="panel-header">人员处置次数统计</div>
+            <div class="panel-body">
+              <div class="muted">暂无数据</div>
+            </div>
+          </div>
+          <div class="panel-card">
+            <div class="panel-header">设备状态</div>
+            <div class="panel-body">
+              <div class="muted">暂无数据</div>
+            </div>
           </div>
         </div>
+        <!-- 右侧悬浮面板（告警队列 + 预警事件统计） -->
+        <div class="right-panels">
+          <div class="panel-card tall">
+            <div class="panel-header">告警队列</div>
+            <div class="panel-body" style="padding:8px;">
+              <AlertPanel />
+            </div>
+          </div>
+          <div class="panel-card">
+            <div class="panel-header">预警事件统计</div>
+            <div class="panel-body"><div class="muted">暂无数据</div></div>
+          </div>
+        </div>
+        <!-- 小标签面板已移除 -->
       </a-layout-content>
 
       
@@ -88,8 +121,15 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.ant-card { background: #ffffff; border-color: #dddddd; }
 .mapwrap { position:absolute; inset:0; }
-.map-overlay { position:absolute; left:12px; top:12px; background: rgba(240,240,240,0.9); border:1px solid #dddddd; padding:8px; border-radius:6px; }
-.marker-camera { width:12px; height:12px; border-radius:50%; background:#c9924d; border:2px solid #a87638; box-shadow:0 0 0 2px rgba(201,146,77,0.35); cursor:pointer; }
+.marker-camera { width:12px; height:12px; border-radius:50%; background: var(--accent-color); border:2px solid rgba(27,146,253,0.6); box-shadow:0 0 0 2px rgba(27,146,253,0.35); cursor:pointer; }
+/* 左侧三个悬浮面板栈 */
+.left-panels { position:absolute; left:12px; top:12px; width:300px; display:flex; flex-direction:column; gap:12px; }
+.panel-card { background: var(--panel-bg); border:1px solid var(--panel-border); border-radius:8px; box-shadow:0 2px 10px rgba(0,0,0,0.25); overflow:hidden; backdrop-filter: blur(2px); }
+.panel-header { font-weight:600; color: var(--accent-color); padding:8px 10px; border-bottom:1px solid rgba(27,146,253,0.25); }
+.panel-body { padding:10px; color: var(--text-color); min-height:100px; }
+.muted { color: var(--text-muted); }
+/* 右侧三个悬浮面板栈 */
+.right-panels { position:absolute; right:12px; top:12px; width:380px; display:flex; flex-direction:column; gap:12px; }
+.panel-card.tall { min-height:260px; }
 </style>

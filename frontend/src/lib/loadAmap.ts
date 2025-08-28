@@ -24,7 +24,8 @@ export function loadAmap(key?: string): Promise<any> {
     script.id = 'amap-sdk'
     script.async = true
     script.defer = true
-    script.src = `https://webapi.amap.com/maps?v=2.0&key=${encodeURIComponent(amapKey)}&plugin=AMap.Scale,AMap.ToolBar,AMap.ControlBar`
+    // Include satellite and roadnet tile layer plugins for satellite view support
+    script.src = `https://webapi.amap.com/maps?v=2.0&key=${encodeURIComponent(amapKey)}&plugin=AMap.Scale,AMap.ToolBar,AMap.ControlBar,AMap.TileLayer.Satellite,AMap.TileLayer.RoadNet`
     script.onload = () => resolve((window as any).AMap)
     script.onerror = () => reject(new Error('高德地图脚本加载失败'))
     document.head.appendChild(script)

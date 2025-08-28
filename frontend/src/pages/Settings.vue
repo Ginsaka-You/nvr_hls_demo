@@ -44,12 +44,12 @@ async function clearHls() {
 
 <template>
   <a-layout style="min-height:calc(100vh - 64px);">
-    <a-layout-content style="padding:16px; color:#000;">
-      <a-typography-title :level="4" style="color:#000">系统设置</a-typography-title>
+    <a-layout-content style="padding:16px; color: var(--text-color);">
+      <a-typography-title :level="4" style="color: var(--text-color)">系统设置</a-typography-title>
 
       <div style="display:grid; grid-template-columns: 240px 1fr; gap: 12px; align-items:start;">
         <!-- 左侧悬浮设置分类 -->
-        <div style="background:#fff; border:1px solid #ddd; border-radius:8px; box-shadow:0 2px 10px rgba(0,0,0,0.06); overflow:hidden;">
+        <div style="background: var(--panel-bg); border:1px solid var(--panel-border); border-radius:8px; box-shadow:0 2px 10px rgba(0,0,0,0.25); overflow:hidden;">
           <a-menu mode="inline" theme="light" :selectedKeys="[sec]" :style="{borderRight:0}">
             <a-menu-item key="multicam" @click="sec='multicam'">多摄像头</a-menu-item>
             <a-menu-item key="imsi" @click="sec='imsi'">IMSI</a-menu-item>
@@ -60,9 +60,9 @@ async function clearHls() {
         </div>
 
         <!-- 右侧设置面板 -->
-        <div style="background:#fff; border:1px solid #ddd; border-radius:8px; box-shadow:0 2px 10px rgba(0,0,0,0.06); padding:12px;">
+        <div style="background: var(--panel-bg); border:1px solid var(--panel-border); border-radius:8px; box-shadow:0 2px 10px rgba(0,0,0,0.25); padding:12px;">
           <template v-if="sec==='multicam'">
-            <a-typography-title :level="5" style="color:#000">多摄像头 · 录像机与检测</a-typography-title>
+            <a-typography-title :level="5" style="color: var(--text-color)">多摄像头 · 录像机与检测</a-typography-title>
             <a-form layout="horizontal" :label-col="{ span: 5 }" :wrapper-col="{ span: 16 }">
               <a-form-item label="协议">
                 <a-radio-group v-model:value="nvrScheme">
@@ -87,11 +87,11 @@ async function clearHls() {
           </template>
 
           <template v-else>
-            <div style="color:#00000099;">该模块暂未提供可配置项。</div>
+            <div class="muted">该模块暂未提供可配置项。</div>
           </template>
 
           <a-divider />
-          <a-typography-title :level="5" style="color:#000">缓存与临时文件</a-typography-title>
+          <a-typography-title :level="5" style="color: var(--text-color)">缓存与临时文件</a-typography-title>
           <a-form layout="horizontal" :label-col="{ span: 5 }" :wrapper-col="{ span: 16 }">
             <a-form-item label="Stream ID">
               <a-input v-model:value="clearTargetId" style="width:220px" placeholder="留空表示全部，如 cam402" />
