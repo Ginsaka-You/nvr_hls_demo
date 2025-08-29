@@ -1,5 +1,5 @@
 import { ref, Ref, watch } from 'vue'
-import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort } from './config'
+import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, audioPass, audioId, audioHttpPort } from './config'
 
 export type Alarm = {
   id: string
@@ -89,5 +89,26 @@ export function pushAlarmFromEvent(ev: any) {
     deviceId: camId
   }
   alarms.value = [a, ...alarms.value].slice(0, 200)
+
+  // Trigger camera audio alarm using configured ID (not NVR port)
+  try { triggerCameraAudio() } catch {}
 }
 
+export async function triggerCameraAudio() {
+  const id = (audioId.value || 1)
+  const pass = (audioPass.value || nvrPass.value || '').trim()
+  const host = (nvrHost.value || '').trim()
+  const user = (nvrUser.value || '').trim()
+  const scheme = nvrScheme.value || 'http'
+  const httpPort = audioHttpPort.value
+  if (!host || !user || !pass || !id) return
+  const p = new URLSearchParams({ host, user, pass, scheme, id: String(id) })
+  if (httpPort) p.set('httpPort', String(httpPort))
+  try {
+    await fetch('/api/nvr/ipc/audioAlarm/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: p.toString()
+    })
+  } catch {}
+}

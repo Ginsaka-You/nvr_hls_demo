@@ -12,3 +12,11 @@ export const detectMain = ref<boolean>(false)
 export const detectSub = ref<boolean>(true)
 
 // Optionally extend later: scheme/httpPort
+
+// Alarm linkage: audio alarm on camera
+// pass here may be different from NVR login
+export const audioPass = ref<string>('YouloveWill')
+// Default camera ID (port) to trigger when event lacks port
+export const audioId = ref<number>(12)
+// Camera HTTP port for audio alarm triggering (not NVR port)
+export const audioHttpPort = ref<number | null>(65007)

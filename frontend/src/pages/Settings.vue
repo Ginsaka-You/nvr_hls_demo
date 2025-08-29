@@ -1,9 +1,38 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub } from '@/store/config'
+import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub, audioPass, audioId, audioHttpPort } from '@/store/config'
 import { message, Modal } from 'ant-design-vue'
 
-const sec = ref<'multicam'|'imsi'|'radar'|'seismic'|'drone'>('multicam')
+const sec = ref<'multicam'|'alarm'|'imsi'|'radar'|'seismic'|'drone'>('multicam')
+
+async function testAudio() {
+  try {
+    const host = (nvrHost.value || '').trim()
+    const user = (nvrUser.value || '').trim()
+    const pass = (audioPass.value || nvrPass.value || '').trim()
+    const id = audioId.value
+    if (!host || !user || !pass || !id) {
+      message.error('请先填写 NVR Host、用户名、音频告警密码与默认ID')
+      return
+    }
+    const p = new URLSearchParams({ host, user, pass, scheme: nvrScheme.value, id: String(id) })
+    if (audioHttpPort.value) p.set('httpPort', String(audioHttpPort.value))
+    const resp = await fetch('/api/nvr/ipc/audioAlarm/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: p.toString()
+    })
+    const data: any = await resp.json().catch(() => ({}))
+    if (data?.ok) {
+      message.success(`已触发，接口: ${data.used || '未知'}`)
+    } else {
+      const status = data?.status || data?.attempts?.[data?.attempts?.length-1]?.status || '请求失败'
+      message.error(`触发失败：${status}`)
+    }
+  } catch (e: any) {
+    message.error('触发失败：' + (e?.message || e))
+  }
+}
 
 function saveAndNotify() {
   message.success('设置已保存，相关页面将自动生效')
@@ -52,6 +81,7 @@ async function clearHls() {
         <div style="background: var(--panel-bg); border:1px solid var(--panel-border); border-radius:8px; box-shadow:0 2px 10px rgba(0,0,0,0.25); overflow:hidden;">
           <a-menu mode="inline" theme="light" :selectedKeys="[sec]" :style="{borderRight:0}">
             <a-menu-item key="multicam" @click="sec='multicam'">多摄像头</a-menu-item>
+            <a-menu-item key="alarm" @click="sec='alarm'">告警联动</a-menu-item>
             <a-menu-item key="imsi" @click="sec='imsi'">IMSI</a-menu-item>
             <a-menu-item key="radar" @click="sec='radar'">雷达</a-menu-item>
             <a-menu-item key="seismic" @click="sec='seismic'">震动</a-menu-item>
@@ -84,6 +114,28 @@ async function clearHls() {
               </a-form-item>
             </a-form>
             <a-alert type="info" show-icon message="说明：保存后，多摄像头页面会按新参数自动检测并播放。" />
+          </template>
+
+          <template v-else-if="sec==='alarm'">
+            <a-typography-title :level="5" style="color: var(--text-color)">告警联动 · 摄像头声音</a-typography-title>
+            <a-form layout="horizontal" :label-col="{ span: 5 }" :wrapper-col="{ span: 16 }">
+              <a-form-item label="音频告警密码">
+                <a-input-password v-model:value="audioPass" style="width:220px" placeholder="与NVR密码不同时在此设置" />
+              </a-form-item>
+              <a-form-item label="摄像头端口">
+                <a-input-number v-model:value="audioHttpPort" :min="1" :max="65535" style="width:220px" />
+              </a-form-item>
+              <a-form-item label="默认ID">
+                <a-input-number v-model:value="audioId" :min="1" :max="128" style="width:220px" />
+              </a-form-item>
+              <a-form-item :wrapper-col="{ offset: 5 }">
+                <a-space>
+                  <a-button type="primary" @click="saveAndNotify">保存</a-button>
+                  <a-button @click="testAudio">测试声音</a-button>
+                </a-space>
+              </a-form-item>
+            </a-form>
+            <a-alert type="info" show-icon :message="'说明：当告警到达时，系统将调用 /api/nvr/ipc/audioAlarm/test 以【默认ID】触发摄像头声音；此处的“摄像头端口”仅用于该触发请求，不影响NVR接口。'" />
           </template>
 
           <template v-else>
