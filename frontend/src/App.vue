@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { SettingFilled } from '@ant-design/icons-vue'
 import Overview from './dashboard/Overview.vue'
 import MultiCam from './pages/MultiCam.vue'
@@ -23,7 +23,7 @@ const navItems = [
   { key: 'main', label: '主屏幕' },
   { key: 'multicam', label: '多摄像头' },
   { key: 'imsi', label: 'IMSI 趋势' },
-  { key: 'radar', label: '雷达速度-距离图' },
+  { key: 'radar', label: '相控阵雷达' },
   { key: 'seismic', label: '震动波形' },
   { key: 'drone', label: '无人机遥测' },
 ] as { key: Tab, label: string }[]
@@ -37,6 +37,16 @@ const moreItems = [
 const splitIdx = Math.ceil(navItems.length / 2)
 const navLeft = computed(() => navItems.slice(0, splitIdx))
 const navRight = computed(() => navItems.slice(splitIdx))
+
+const isCompact = ref(false)
+function handleResize() {
+  isCompact.value = window.innerWidth < 960
+}
+onMounted(() => {
+  handleResize()
+  window.addEventListener('resize', handleResize)
+})
+onUnmounted(() => window.removeEventListener('resize', handleResize))
 
 function onMenuClick(e: any) {
   const key = e?.key as Tab
@@ -52,27 +62,37 @@ connectAlerts()
 
 <template>
   <a-layout style="min-height:100vh;">
-    <a-layout-header style="position:sticky; top:0; z-index:10; background:var(--bg-color); border-bottom:1px solid rgba(27,146,253,0.35); box-shadow:0 2px 8px rgba(0,0,0,0.25);">
-      <div style="display:flex; align-items:center; gap:12px; height:64px; position:relative;">
-        <div style="flex:1; min-width:0; display:flex; align-items:center; gap:8px;">
-          <a-menu mode="horizontal" theme="light" :selectedKeys="[tab]" @click="onMenuClick" :style="{borderBottom:0}">
+    <a-layout-header class="top-header">
+      <div class="top-bar">
+        <div class="nav-section nav-left">
+          <a-menu class="top-menu" mode="horizontal" theme="light" :selectedKeys="[tab]" @click="onMenuClick">
             <a-menu-item v-for="it in navLeft" :key="it.key">{{ it.label }}</a-menu-item>
           </a-menu>
         </div>
-        <div @click="gotoHome" style="position:absolute; left:50%; transform:translateX(-50%); font-weight:600; color:var(--text-color); cursor:pointer; line-height:32px; white-space:nowrap;">
-          天玺金盾
-        </div>
-        <div style="flex:1; min-width:0; display:flex; align-items:center; justify-content:flex-end; gap:8px;">
-          <a-menu mode="horizontal" theme="light" :selectedKeys="[tab]" @click="onMenuClick" :style="{borderBottom:0}">
-            <a-menu-item v-for="it in navRight" :key="it.key">{{ it.label }}</a-menu-item>
-          </a-menu>
-          <div style="margin-left:8px; display:flex; align-items:center; gap:12px; height:32px;">
+        <div class="brand" @click="gotoHome">天玺金盾</div>
+        <div class="nav-section nav-right">
+          <template v-if="!isCompact">
+            <a-menu class="top-menu top-menu-right" mode="horizontal" theme="light" :selectedKeys="[tab]" @click="onMenuClick">
+              <a-menu-item v-for="it in navRight" :key="it.key">{{ it.label }}</a-menu-item>
+            </a-menu>
+          </template>
+          <template v-else>
+            <a-dropdown class="compact-trigger">
+              <a-button type="text">…</a-button>
+              <template #overlay>
+                <a-menu :selectedKeys="[tab]" @click="onMenuClick">
+                  <a-menu-item v-for="it in navRight" :key="'compact-'+it.key">{{ it.label }}</a-menu-item>
+                </a-menu>
+              </template>
+            </a-dropdown>
+          </template>
+          <div class="header-actions">
             <a-tooltip title="设置">
-              <a-button type="text" @click="gotoSettings" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:18px;line-height:1;color:var(--accent-color);">
+              <a-button type="text" @click="gotoSettings" class="settings-btn">
                 <SettingFilled />
               </a-button>
             </a-tooltip>
-            <a-avatar :size="32" style="background:var(--accent-color); color:#fff; display:flex; align-items:center; justify-content:center;">U</a-avatar>
+            <a-avatar :size="32" class="user-avatar">U</a-avatar>
             <a-dropdown placement="bottomRight">
               <a-button>更多大屏</a-button>
               <template #overlay>
@@ -105,4 +125,103 @@ connectAlerts()
 </template>
 
 <style scoped>
+.top-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg-color);
+  border-bottom: 1px solid rgba(27, 146, 253, 0.35);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  padding: 0 12px;
+}
+
+
+
+.top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 64px;
+  flex-wrap: nowrap;
+}
+
+.nav-section {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nav-left {
+  justify-content: flex-start;
+}
+
+.nav-right {
+  justify-content: flex-end;
+}
+
+.top-menu { border-bottom: 0; }
+.compact-trigger { display: none; }
+.top-menu :deep(.ant-menu-item) {
+  padding-inline: 12px;
+  white-space: nowrap;
+}
+
+.brand {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--text-color);
+  cursor: pointer;
+  line-height: 32px;
+  white-space: nowrap;
+  max-width: 35%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.settings-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--accent-color);
+}
+
+.user-avatar {
+  background: var(--accent-color);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+@media (max-width: 960px) {
+  .top-bar {
+    gap: 8px;
+    padding: 6px 0;
+  }
+
+  .brand {
+    font-size: 15px;
+    max-width: 50%;
+  }
+
+  .compact-trigger { display: inline-flex; }
+
+  .header-actions {
+    gap: 8px;
+  }
+}
 </style>

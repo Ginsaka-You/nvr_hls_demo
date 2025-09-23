@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub, audioPass, audioId, audioHttpPort } from '@/store/config'
+import { ref, computed } from 'vue'
+import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub, audioPass, audioId, audioHttpPort, radarHost, radarCtrlPort, radarDataPort, radarUseTcp } from '@/store/config'
 import { message, Modal } from 'ant-design-vue'
 
 const sec = ref<'multicam'|'alarm'|'imsi'|'radar'|'seismic'|'drone'>('multicam')
@@ -36,6 +36,89 @@ async function testAudio() {
 
 function saveAndNotify() {
   message.success('设置已保存，相关页面将自动生效')
+}
+
+type RadarTestAttempt = {
+  port: number
+  ok: boolean
+  message: string
+  elapsedMs: number
+}
+
+const radarTesting = ref(false)
+const radarAttempts = ref<RadarTestAttempt[]>([])
+const radarTimestamp = ref<string | null>(null)
+const radarError = ref<string | null>(null)
+
+const radarTableData = computed(() => radarAttempts.value.map((a, idx) => ({
+  key: idx,
+  port: a.port,
+  result: a.ok ? '成功' : '失败',
+  elapsed: a.elapsedMs,
+  message: a.message
+})))
+
+const radarTimestampDisplay = computed(() => {
+  if (!radarTimestamp.value) return '—'
+  const d = new Date(radarTimestamp.value)
+  return Number.isNaN(d.getTime()) ? radarTimestamp.value : d.toLocaleString()
+})
+
+const radarColumns = [
+  { title: '端口', dataIndex: 'port', key: 'port', width: 120 },
+  { title: '结果', dataIndex: 'result', key: 'result', width: 120 },
+  { title: '耗时 (ms)', dataIndex: 'elapsed', key: 'elapsed', width: 120 },
+  { title: '说明', dataIndex: 'message', key: 'message' }
+]
+
+async function testRadar() {
+  const host = (radarHost.value || '').trim()
+  if (!host) {
+    message.error('请先填写雷达 IP 地址')
+    return
+  }
+  radarTesting.value = true
+  radarError.value = null
+  radarAttempts.value = []
+  radarTimestamp.value = null
+  try {
+    const ports = [radarCtrlPort.value, radarDataPort.value]
+      .filter((p): p is number => typeof p === 'number' && Number.isFinite(p) && p > 0 && p <= 65535)
+    const resp = await fetch('/api/radar/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host, ports })
+    })
+    if (!resp.ok) {
+      throw new Error(`请求失败 (${resp.status})`)
+    }
+    const data: any = await resp.json()
+    radarTimestamp.value = data?.timestamp ?? null
+    if (Array.isArray(data?.attempts)) {
+      radarAttempts.value = data.attempts.map((it: any) => ({
+        port: Number(it.port),
+        ok: Boolean(it.ok),
+        message: String(it.message ?? ''),
+        elapsedMs: Number(it.elapsedMs ?? 0)
+      }))
+    }
+    if (data?.error) {
+      radarError.value = data.error
+      message.error(data.error)
+      return
+    }
+    if (data?.ok) {
+      message.success('雷达连接测试成功')
+    } else {
+      const firstFail = radarAttempts.value.find(a => !a.ok)
+      message.error(firstFail ? `雷达连接失败：${firstFail.message}` : '雷达连接失败')
+    }
+  } catch (e: any) {
+    radarError.value = e?.message || String(e)
+    message.error('测试失败：' + radarError.value)
+  } finally {
+    radarTesting.value = false
+  }
 }
 
 // 清除缓存（删除 HLS 清单与分片）
@@ -136,6 +219,53 @@ async function clearHls() {
               </a-form-item>
             </a-form>
             <a-alert type="info" show-icon :message="'说明：当告警到达时，系统将调用 /api/nvr/ipc/audioAlarm/test 以【默认ID】触发摄像头声音；此处的“摄像头端口”仅用于该触发请求，不影响NVR接口。'" />
+          </template>
+
+          <template v-else-if="sec==='radar'">
+            <a-typography-title :level="5" style="color: var(--text-color)">雷达 · 网络连接</a-typography-title>
+            <a-form layout="horizontal" :label-col="{ span: 5 }" :wrapper-col="{ span: 16 }">
+              <a-form-item label="雷达 IP">
+                <a-input v-model:value="radarHost" style="width:220px" placeholder="例如 192.168.2.100" />
+              </a-form-item>
+              <a-form-item label="指令端口">
+                <a-input-number v-model:value="radarCtrlPort" :min="1" :max="65535" style="width:220px" />
+              </a-form-item>
+              <a-form-item label="数据端口">
+                <a-input-number v-model:value="radarDataPort" :min="1" :max="65535" style="width:220px" />
+              </a-form-item>
+              <a-form-item label="数据使用 TCP">
+                <a-switch v-model:checked="radarUseTcp" />
+              </a-form-item>
+              <a-form-item :wrapper-col="{ offset: 5 }">
+                <a-space>
+                  <a-button type="primary" @click="saveAndNotify">保存</a-button>
+                  <a-button @click="testRadar" :loading="radarTesting">测试连接</a-button>
+                </a-space>
+              </a-form-item>
+            </a-form>
+            <a-spin :spinning="radarTesting">
+              <div v-if="radarTimestamp || radarAttempts.length" style="margin-top:12px;">
+                <span style="color: rgba(0,0,0,0.65);">上次测试时间：{{ radarTimestampDisplay }}</span>
+              </div>
+              <a-alert v-if="radarError" type="error" :message="radarError" show-icon style="margin-top:12px;" />
+              <a-table
+                v-if="radarAttempts.length"
+                size="small"
+                bordered
+                :columns="radarColumns"
+                :data-source="radarTableData"
+                :pagination="false"
+                style="margin-top:12px;"
+              />
+              <a-alert
+                v-else
+                type="info"
+                show-icon
+                message="尚未进行连接测试。点击“测试连接”以验证雷达端口响应。"
+                style="margin-top:12px;"
+              />
+            </a-spin>
+            <a-alert type="info" show-icon message="说明：测试会对指定端口发起 TCP 握手以验证网络可达性，通常对应协议文档中的 20000/20001 端口。" style="margin-top:12px;" />
           </template>
 
           <template v-else>

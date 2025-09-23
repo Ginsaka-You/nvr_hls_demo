@@ -20,3 +20,9 @@ export const audioPass = ref<string>('YouloveWill')
 export const audioId = ref<number>(12)
 // Camera HTTP port for audio alarm triggering (not NVR port)
 export const audioHttpPort = ref<number | null>(65007)
+
+// Radar connectivity
+export const radarHost = ref<string>('192.168.2.100')
+export const radarCtrlPort = ref<number>(20000)
+export const radarDataPort = ref<number>(20001)
+export const radarUseTcp = ref<boolean>(true)
