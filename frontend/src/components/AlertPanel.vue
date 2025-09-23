@@ -12,7 +12,7 @@ function levelColor(a: Alarm) {
 </script>
 
 <template>
-  <div class="no-scrollbar panel-alerts">
+  <div class="panel-alerts">
     <a-card v-for="a in alarms" :key="a.id" size="small" :bordered="true" :bodyStyle="{padding:'8px'}" class="alert-card">
       <div class="alert-row">
         <span class="level-bar" :style="{ background: levelColor(a) }"></span>
@@ -32,6 +32,10 @@ function levelColor(a: Alarm) {
 
 <style scoped>
 .panel-alerts { display:flex; flex-direction:column; gap:8px; flex:1; overflow:hidden; }
+.panel-alerts { max-height: 100%; overflow-y: auto; padding-right:4px; }
+.panel-alerts:hover { scrollbar-width: thin; }
+.panel-alerts::-webkit-scrollbar { width: 6px; }
+.panel-alerts::-webkit-scrollbar-thumb { background: rgba(79, 121, 191, 0.6); border-radius: 3px; }
 .alert-card { background: var(--panel-bg); border-color: var(--panel-border); color: var(--text-color); }
 .alert-row { display:flex; gap:8px; align-items:center; cursor:pointer; }
 .level-bar { width:6px; height:32px; display:inline-block; }

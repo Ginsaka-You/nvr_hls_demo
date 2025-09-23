@@ -13,6 +13,10 @@ export type Alarm = {
 
 export const alarms: Ref<Alarm[]> = ref([])
 
+function pushAlarm(a: Alarm) {
+  alarms.value = [a, ...alarms.value].slice(0, 200)
+}
+
 let esPush: EventSource | null = null
 let esPull: EventSource | null = null
 let connected = false
@@ -88,7 +92,7 @@ export function pushAlarmFromEvent(ev: any) {
     summary,
     deviceId: camId
   }
-  alarms.value = [a, ...alarms.value].slice(0, 200)
+  pushAlarm(a)
 
   // Trigger camera audio alarm using configured ID (not NVR port)
   try { triggerCameraAudio() } catch {}
@@ -111,4 +115,27 @@ export async function triggerCameraAudio() {
       body: p.toString()
     })
   } catch {}
+}
+
+export function pushRadarAlarm(data: {
+  id?: string | number
+  range: number
+  speed: number
+  place?: string
+  angle?: number
+}) {
+  const rangeStr = Number.isFinite(data.range) ? data.range.toFixed(1) : String(data.range)
+  const speedStr = Number.isFinite(data.speed) ? data.speed.toFixed(1) : String(data.speed)
+  const angleStr = data.angle != null && Number.isFinite(data.angle)
+    ? `${data.angle.toFixed(1)}°`
+    : ''
+  const alarm: Alarm = {
+    id: `radar-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    level: 'major',
+    source: 'radar',
+    place: data.place || '相控阵雷达',
+    time: new Date().toLocaleTimeString(),
+    summary: `发现目标 距离 ${rangeStr}m 速度 ${speedStr}m/s${angleStr ? ` 角度 ${angleStr}` : ''}`,
+  }
+  pushAlarm(alarm)
 }

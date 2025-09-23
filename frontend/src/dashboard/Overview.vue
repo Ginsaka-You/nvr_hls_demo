@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import AlertPanel from '@/components/AlertPanel.vue'
 import { loadAmap } from '@/lib/loadAmap'
-import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort } from '@/store/config'
+import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, radarHost, radarCtrlPort, radarUseTcp, radarDataPort, portCount } from '@/store/config'
 
 type Cam = { id: string, name: string, lat?: number, lng?: number }
 type Alarm = { id: string, level: 'info'|'minor'|'major'|'critical', source: string, place: string, time: string, summary: string, deviceId?: string }
@@ -26,9 +26,177 @@ function onPickAlarm(a: Alarm) {
   }
 }
 
+type DeviceState = {
+  status: 'unknown'|'ok'|'error'
+  message: string
+  failureCount: number
+}
+
+const radarState = ref<DeviceState>({ status: 'unknown', message: '正在检测...', failureCount: 0 })
+const camState = ref<DeviceState>({ status: 'unknown', message: '正在检测...', failureCount: 0 })
+
+const radarStatusClass = computed(() => ({ ok: radarState.value.status === 'ok', error: radarState.value.status === 'error' }))
+const radarStatusMessage = computed(() => radarState.value.message)
+const camStatusClass = computed(() => ({ ok: camState.value.status === 'ok', error: camState.value.status === 'error' }))
+const camStatusMessage = computed(() => camState.value.message)
+
+let radarTimer: number | null = null
+let camTimer: number | null = null
+const DETECT_INTERVAL_MS = 60000
+const FAILURE_THRESHOLD = 3
+
+async function checkRadar() {
+  const host = (radarHost.value || '').trim()
+  if (!host) {
+    radarState.value = { status: 'error', message: '未配置', failureCount: FAILURE_THRESHOLD }
+    return
+  }
+  try {
+    const ctrl = Number(radarCtrlPort.value) || 20000
+    const dataPort = Number(radarDataPort.value) || ctrl
+    const useTcp = !!radarUseTcp.value
+    const resp = await fetch('/api/radar/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host, ports: [ctrl, dataPort], timeoutMs: 2000, useTcp })
+    })
+    const data: any = await resp.json().catch(() => ({}))
+    if (data?.ok) {
+      radarState.value = { status: 'ok', message: '连接正常', failureCount: 0 }
+    } else {
+      const count = radarState.value.failureCount + 1
+      radarState.value = {
+        status: count >= FAILURE_THRESHOLD ? 'error' : radarState.value.status,
+        message: data?.error || '连接失败',
+        failureCount: count
+      }
+    }
+  } catch (e: any) {
+    const count = radarState.value.failureCount + 1
+    radarState.value = {
+      status: count >= FAILURE_THRESHOLD ? 'error' : radarState.value.status,
+      message: e?.message || '连接失败',
+      failureCount: count
+    }
+  }
+}
+
+async function checkCameras() {
+  const host = (nvrHost.value || '').trim()
+  const user = (nvrUser.value || '').trim()
+  const pass = (nvrPass.value || '').trim()
+  if (!host || !user || !pass) {
+    camState.value = { status: 'error', message: '未配置', failureCount: FAILURE_THRESHOLD }
+    return
+  }
+  try {
+    const totalPorts = await detectCameraPorts()
+    if (!totalPorts.length) {
+      camState.value = { status: 'error', message: '无可用通道', failureCount: FAILURE_THRESHOLD }
+      return
+    }
+    const started = await startAllCameraStreams(totalPorts, host, user, pass)
+    if (started > 0) {
+      camState.value = { status: 'ok', message: `运行 ${started} 路`, failureCount: 0 }
+    } else {
+      const count = camState.value.failureCount + 1
+      camState.value = {
+        status: count >= FAILURE_THRESHOLD ? 'error' : camState.value.status,
+        message: '启动失败',
+        failureCount: count
+      }
+    }
+  } catch (e: any) {
+    const count = camState.value.failureCount + 1
+    camState.value = {
+      status: count >= FAILURE_THRESHOLD ? 'error' : camState.value.status,
+      message: e?.message || '连接失败',
+      failureCount: count
+    }
+  }
+}
+
+async function detectCameraPorts(): Promise<number[]> {
+  const host = (nvrHost.value || '').trim()
+  const user = (nvrUser.value || '').trim()
+  const pass = (nvrPass.value || '').trim()
+  const params = new URLSearchParams({ host, user, pass, scheme: nvrScheme.value })
+  if (nvrHttpPort.value) params.set('httpPort', String(nvrHttpPort.value))
+  try {
+    const resp = await fetch(`/api/nvr/channels?${params.toString()}`)
+    if (!resp.ok) return []
+    const data: any = await resp.json().catch(() => ({}))
+    if (data?.ok) {
+      const ports = new Set<number>()
+      const channels: any[] = Array.isArray(data.channels) ? data.channels : []
+      channels.forEach(ch => {
+        const id = Number(ch?.id || ch?.channelId || ch?.index)
+        if (!Number.isFinite(id)) return
+        const port = Math.floor(id / 100)
+        ports.add(port > 0 ? port : id)
+      })
+      const normalized = Array.from(ports).filter(p => p > 0)
+      if (normalized.length) {
+        return normalized.sort((a, b) => a - b)
+      }
+    }
+  } catch {}
+  const fallback = Math.max(8, portCount.value || 0)
+  return Array.from({ length: fallback }, (_, i) => i + 1)
+}
+
+async function startAllCameraStreams(ports: number[], host: string, user: string, pass: string): Promise<number> {
+  const maxPorts = Math.max(8, portCount.value || 0)
+  const attempts = Math.min(ports.length || maxPorts, maxPorts)
+  const tasks = ports.slice(0, attempts).map(async port => {
+    if (!port) return false
+    const idSub = `cam${port}02`
+    if (await startCameraStream(idSub, host, user, pass)) return true
+    const idMain = `cam${port}01`
+    return startCameraStream(idMain, host, user, pass)
+  })
+  const results = await Promise.all(tasks)
+  return results.filter(Boolean).length
+}
+
+async function startCameraStream(id: string, host: string, user: string, pass: string): Promise<boolean> {
+  const digits = id.match(/\d+/)?.[0] || ''
+  if (!digits) return false
+  const rtsp = `rtsp://${user}:${encodeURIComponent(pass)}@${host}:554/Streaming/Channels/${digits}`
+  try {
+    const resp = await fetch(`/api/streams/${id}/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `rtspUrl=${encodeURIComponent(rtsp)}`
+    })
+    if (!resp.ok) return false
+    return waitStreamReady(id)
+  } catch {
+    return false
+  }
+}
+
+async function waitStreamReady(id: string, timeoutMs = 5000, pollMs = 400) {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const resp = await fetch(`/api/streams/${id}/status`)
+      if (resp.ok) {
+        const s = await resp.json()
+        if (s?.probe?.m3u8Exists) return true
+      }
+    } catch {}
+    await new Promise(r => setTimeout(r, pollMs))
+  }
+  return false
+}
+
 onMounted(async () => {
   // auto select first camera
   if (cameras.value.length && !selectedCamId.value) selectedCamId.value = cameras.value[0].id
+  await Promise.all([checkRadar(), checkCameras()])
+  radarTimer = window.setInterval(() => { void checkRadar() }, DETECT_INTERVAL_MS)
+  camTimer = window.setInterval(() => { void checkCameras() }, DETECT_INTERVAL_MS)
   // init map (AMap)
   try {
     const AMap = await loadAmap()
@@ -63,6 +231,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   try { map.value && map.value.destroy && map.value.destroy() } catch (_) {}
+  if (radarTimer) window.clearInterval(radarTimer)
+  if (camTimer) window.clearInterval(camTimer)
 })
 
 // keep only map logic here; alerts are handled globally in App via store
@@ -92,8 +262,15 @@ onBeforeUnmount(() => {
           </div>
           <div class="panel-card">
             <div class="panel-header">设备状态</div>
-            <div class="panel-body">
-              <div class="muted">暂无数据</div>
+            <div class="panel-body device-status">
+              <div class="status-item" :class="camStatusClass">
+                <span class="label">摄像头</span>
+                <span class="value">{{ camStatusMessage }}</span>
+              </div>
+              <div class="status-item" :class="radarStatusClass">
+                <span class="label">雷达</span>
+                <span class="value">{{ radarStatusMessage }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -128,8 +305,16 @@ onBeforeUnmount(() => {
 .panel-card { background: var(--panel-bg); border:1px solid var(--panel-border); border-radius:8px; box-shadow:0 2px 10px rgba(0,0,0,0.25); overflow:hidden; backdrop-filter: blur(2px); }
 .panel-header { font-weight:600; color: var(--accent-color); padding:8px 10px; border-bottom:1px solid rgba(27,146,253,0.25); }
 .panel-body { padding:10px; color: var(--text-color); min-height:100px; }
+.device-status { display:flex; flex-direction:column; gap:8px; }
+.status-item { display:flex; justify-content:space-between; padding:6px 8px; border:1px solid rgba(27,146,253,0.2); border-radius:6px; }
+.status-item.ok { border-color: rgba(82, 196, 26, 0.45); color: #52c41a; }
+.status-item.error { border-color: rgba(255,77,79,0.45); color: #ff4d4f; }
+.status-item .label { font-weight:600; }
+.status-item .value { font-size:14px; }
 .muted { color: var(--text-muted); }
 /* 右侧三个悬浮面板栈 */
 .right-panels { position:absolute; right:12px; top:12px; width:380px; display:flex; flex-direction:column; gap:12px; }
 .panel-card.tall { min-height:260px; }
 </style>
+watch([radarHost, radarCtrlPort, radarUseTcp, radarDataPort], () => { void checkRadar() })
+watch([nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort], () => { void checkCameras() })

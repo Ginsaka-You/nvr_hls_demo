@@ -72,7 +72,7 @@ watch([nvrUser, nvrPass, nvrHost, detectMain, detectSub, portCount], () => {
 async function detect() {
   loading.value = true
   try {
-    const maxPort = portCount.value || 8
+    const maxPort = Math.max(8, portCount.value || 0)
     // 初始化 8 宫格占位，显示检测中
     const init: CamEntry[] = []
     for (let i = 1; i <= maxPort; i++) {
@@ -119,7 +119,7 @@ async function discoverPorts() {
     const data: any = await resp.json()
     const pc = Number(data?.portCount || 0)
     if (pc && pc > 0) {
-      portCount.value = pc
+      portCount.value = Math.max(8, pc)
     }
   } catch (_) {
     // ignore

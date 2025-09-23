@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, onUnmounted } from 'vue'
 import { radarHost, radarCtrlPort, radarDataPort, radarUseTcp } from '@/store/config'
+import { pushRadarAlarm } from '@/store/alerts'
 
 interface RadarTarget {
   id: number
@@ -113,9 +114,20 @@ async function loadTargets() {
     const currentTargets = Array.isArray(data.targets) ? data.targets : []
 
     if (currentTargets.length) {
+      const previousIds = new Set(tableTargets.value.map(t => t.id))
       displayedTargets.value = mergeTargets(displayedTargets.value, currentTargets)
       tableTargets.value = mergeTableTargets(tableTargets.value, currentTargets)
       updateTrails(currentTargets)
+      const newTargets = currentTargets.filter(t => !previousIds.has(t.id))
+      newTargets.forEach(t => {
+        pushRadarAlarm({
+          id: t.id,
+          range: t.range,
+          speed: t.speed,
+          place: '相控阵雷达',
+          angle: t.angle
+        })
+      })
       info.value = null
     } else if (!displayedTargets.value.length) {
       info.value = '未检测到目标。这可能表示当前雷达周围没有目标，或雷达尚未输出目标信息。'
