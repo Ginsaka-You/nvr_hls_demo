@@ -14,6 +14,8 @@ import BigDataView67 from './pages/BigDataView67.vue'
 import AxureDemo from './pages/AxureDemo.vue'
 import AlertPanel from './components/AlertPanel.vue'
 import { connectAlerts } from './store/alerts'
+import { connectRadar } from './store/radar'
+import { connectDeviceMonitoring } from './store/devices'
 
 type Tab = 'main'|'multicam'|'imsi'|'radar'|'seismic'|'drone'|'big8'|'big61'|'big67'|'axure'|'settings'
 const tab = ref<Tab>('main')
@@ -58,6 +60,8 @@ function gotoHome() { tab.value = 'main' }
 
 // 全局建立告警订阅（推送/拉取），保持在所有页面可用
 connectAlerts()
+connectRadar()
+connectDeviceMonitoring()
 </script>
 
 <template>
