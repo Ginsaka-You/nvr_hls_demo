@@ -200,13 +200,7 @@ function normalizeError(message: any) {
   return text
 }
 
-onMounted(async () => {
-  // auto select first camera
-  if (cameras.value.length && !selectedCamId.value) selectedCamId.value = cameras.value[0].id
-  await Promise.all([checkRadar(), checkCameras()])
-  radarTimer = window.setInterval(() => { void checkRadar() }, DETECT_INTERVAL_MS)
-  camTimer = window.setInterval(() => { void checkCameras() }, DETECT_INTERVAL_MS)
-  // init map (AMap)
+async function initMap() {
   try {
     const AMap = await loadAmap()
     if (!mapEl.value) return
@@ -220,7 +214,6 @@ onMounted(async () => {
     })
     map.value.addControl(new AMap.Scale())
     map.value.addControl(new AMap.ToolBar())
-    // add camera markers
     cameras.value.forEach(cam => {
       if (cam.lng && cam.lat) {
         const el = document.createElement('div')
@@ -246,6 +239,23 @@ onMounted(async () => {
     mapError.value = e?.message || String(e)
     mapLoading.value = false
   }
+}
+
+async function runInitialDeviceChecks() {
+  try {
+    await Promise.all([checkRadar(), checkCameras()])
+  } catch (e) {
+    console.warn('[device-check]', e)
+  } finally {
+    if (!radarTimer) radarTimer = window.setInterval(() => { void checkRadar() }, DETECT_INTERVAL_MS)
+    if (!camTimer) camTimer = window.setInterval(() => { void checkCameras() }, DETECT_INTERVAL_MS)
+  }
+}
+
+onMounted(() => {
+  if (cameras.value.length && !selectedCamId.value) selectedCamId.value = cameras.value[0].id
+  void runInitialDeviceChecks()
+  void initMap()
 })
 
 onBeforeUnmount(() => {
