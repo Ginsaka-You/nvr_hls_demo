@@ -7,11 +7,13 @@ import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, radarHost, radarCtrl
 type Cam = { id: string, name: string, lat?: number, lng?: number }
 type Alarm = { id: string, level: 'info'|'minor'|'major'|'critical', source: string, place: string, time: string, summary: string, deviceId?: string }
 
+// Map start location (上坊孙吴墓)
+const startedPin = [118.9146, 31.9626]
 // Devices (map markers)
 const cameras = ref<Cam[]>([
-  { id: 'cam401', name: '北门401', lat: 34.1239, lng: 117.1231 },
-  { id: 'cam402', name: '北门402', lat: 34.1237, lng: 117.1233 },
-  { id: 'cam403', name: '南侧403', lat: 34.1229, lng: 117.1239 }
+  { id: 'cam401', name: '入口摄像头', lat: 31.9627, lng: 118.9146 },
+  { id: 'cam402', name: '停车场摄像头', lat: 31.9624, lng: 118.9152 },
+  { id: 'cam403', name: '馆内摄像头', lat: 31.9620, lng: 118.9150 },
 ])
 const selectedCamId = ref<string>('cam402')
 const mapEl = ref<HTMLDivElement|null>(null)
@@ -66,16 +68,16 @@ async function checkRadar() {
     } else {
       const count = radarState.value.failureCount + 1
       radarState.value = {
-        status: count >= FAILURE_THRESHOLD ? 'error' : radarState.value.status,
-        message: data?.error || '连接失败',
+        status: 'error',
+        message: normalizeError(data?.error),
         failureCount: count
       }
     }
   } catch (e: any) {
     const count = radarState.value.failureCount + 1
     radarState.value = {
-      status: count >= FAILURE_THRESHOLD ? 'error' : radarState.value.status,
-      message: e?.message || '连接失败',
+      status: 'error',
+      message: normalizeError(e?.message),
       failureCount: count
     }
   }
@@ -101,7 +103,7 @@ async function checkCameras() {
     } else {
       const count = camState.value.failureCount + 1
       camState.value = {
-        status: count >= FAILURE_THRESHOLD ? 'error' : camState.value.status,
+        status: 'error',
         message: '启动失败',
         failureCount: count
       }
@@ -109,8 +111,8 @@ async function checkCameras() {
   } catch (e: any) {
     const count = camState.value.failureCount + 1
     camState.value = {
-      status: count >= FAILURE_THRESHOLD ? 'error' : camState.value.status,
-      message: e?.message || '连接失败',
+      status: 'error',
+      message: normalizeError(e?.message),
       failureCount: count
     }
   }
@@ -191,6 +193,13 @@ async function waitStreamReady(id: string, timeoutMs = 5000, pollMs = 400) {
   return false
 }
 
+function normalizeError(message: any) {
+  const text = (message || '').toString()
+  if (!text) return '连接失败'
+  if (text.includes('Failed to fetch') || text.includes('fetch')) return '连接失败'
+  return text
+}
+
 onMounted(async () => {
   // auto select first camera
   if (cameras.value.length && !selectedCamId.value) selectedCamId.value = cameras.value[0].id
@@ -204,8 +213,8 @@ onMounted(async () => {
     const satellite = new AMap.TileLayer.Satellite()
     const roadNet = new AMap.TileLayer.RoadNet()
     map.value = new AMap.Map(mapEl.value, {
-      center: [cameras.value[0].lng || 117.1233, cameras.value[0].lat || 34.1237],
-      zoom: 16,
+      center: startedPin,
+      zoom: 18,
       viewMode: '3D',
       layers: [satellite, roadNet]
     })
@@ -217,8 +226,18 @@ onMounted(async () => {
         const el = document.createElement('div')
         el.className = 'marker-camera'
         el.title = cam.name
-        el.addEventListener('click', () => { selectedCamId.value = cam.id })
-        const marker = new AMap.Marker({ position: [cam.lng, cam.lat], anchor: 'center', content: el })
+        const label = document.createElement('div')
+        label.className = 'marker-label'
+        label.textContent = cam.name
+        const wrapper = document.createElement('div')
+        const icon = document.createElement('div')
+        icon.className = 'marker-icon'
+        icon.innerHTML = '<svg width="18" height="22" viewBox="0 0 18 22" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 0C4.02944 0 0 3.9625 0 8.84375C0 13.725 6.75 22 9 22C11.25 22 18 13.725 18 8.84375C18 3.9625 13.9706 0 9 0ZM9 12.375C7.15906 12.375 5.6875 10.9356 5.6875 9.125C5.6875 7.31438 7.15906 5.875 9 5.875C10.8409 5.875 12.3125 7.31438 12.3125 9.125C12.3125 10.9356 10.8409 12.375 9 12.375Z" fill="#FF4D4F"/></svg>'
+        wrapper.appendChild(icon)
+        wrapper.appendChild(label)
+        wrapper.className = 'marker-wrapper'
+        wrapper.addEventListener('click', () => { selectedCamId.value = cam.id })
+        const marker = new AMap.Marker({ position: [cam.lng, cam.lat], anchor: 'bottom-center', content: wrapper, offset: new AMap.Pixel(-9, -18) })
         marker.setMap(map.value)
       }
     })
@@ -300,6 +319,9 @@ onBeforeUnmount(() => {
 <style scoped>
 .mapwrap { position:absolute; inset:0; }
 .marker-camera { width:12px; height:12px; border-radius:50%; background: var(--accent-color); border:2px solid rgba(27,146,253,0.6); box-shadow:0 0 0 2px rgba(27,146,253,0.35); cursor:pointer; }
+.marker-wrapper { position: relative; display:flex; flex-direction:column; align-items:center; gap:4px; pointer-events:auto; }
+.marker-icon { width:18px; height:22px; display:flex; justify-content:center; align-items:center; }
+.marker-label { background: rgba(0,0,0,0.65); color:#fff; padding:2px 6px; border-radius:4px; font-size:12px; white-space:nowrap; box-shadow:0 2px 6px rgba(0,0,0,0.25); }
 /* 左侧三个悬浮面板栈 */
 .left-panels { position:absolute; left:12px; top:12px; width:300px; display:flex; flex-direction:column; gap:12px; }
 .panel-card { background: var(--panel-bg); border:1px solid var(--panel-border); border-radius:8px; box-shadow:0 2px 10px rgba(0,0,0,0.25); overflow:hidden; backdrop-filter: blur(2px); }

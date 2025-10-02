@@ -14,7 +14,9 @@ export type Alarm = {
 export const alarms: Ref<Alarm[]> = ref([])
 
 function pushAlarm(a: Alarm) {
-  alarms.value = [a, ...alarms.value].slice(0, 200)
+  const existed = alarms.value.some(item => item.id === a.id)
+  alarms.value = [a, ...alarms.value.filter(item => item.id !== a.id)].slice(0, 200)
+  if (!existed) void triggerCameraAudio()
 }
 
 let esPush: EventSource | null = null
@@ -93,9 +95,6 @@ export function pushAlarmFromEvent(ev: any) {
     deviceId: camId
   }
   pushAlarm(a)
-
-  // Trigger camera audio alarm using configured ID (not NVR port)
-  try { triggerCameraAudio() } catch {}
 }
 
 export async function triggerCameraAudio() {
