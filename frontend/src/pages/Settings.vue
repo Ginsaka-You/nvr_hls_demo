@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub, audioPass, audioId, audioHttpPort, radarHost, radarCtrlPort, radarDataPort, radarUseTcp } from '@/store/config'
+import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub, audioPass, audioId, audioHttpPort, radarHost, radarCtrlPort, radarDataPort, radarUseTcp, dbType, dbHost, dbPort, dbName, dbUser, dbPass } from '@/store/config'
 import { message, Modal } from 'ant-design-vue'
 
-const sec = ref<'multicam'|'alarm'|'imsi'|'radar'|'seismic'|'drone'>('multicam')
+const sec = ref<'multicam'|'alarm'|'imsi'|'radar'|'seismic'|'drone'|'database'>('multicam')
 
 async function testAudio() {
   try {
@@ -169,6 +169,7 @@ async function clearHls() {
             <a-menu-item key="radar" @click="sec='radar'">雷达</a-menu-item>
             <a-menu-item key="seismic" @click="sec='seismic'">震动</a-menu-item>
             <a-menu-item key="drone" @click="sec='drone'">无人机</a-menu-item>
+            <a-menu-item key="database" @click="sec='database'">数据库</a-menu-item>
           </a-menu>
         </div>
 
@@ -266,6 +267,38 @@ async function clearHls() {
               />
             </a-spin>
             <a-alert type="info" show-icon message="说明：测试会对指定端口发起 TCP 握手以验证网络可达性，通常对应协议文档中的 20000/20001 端口。" style="margin-top:12px;" />
+          </template>
+
+          <template v-else-if="sec==='database'">
+            <a-typography-title :level="5" style="color: var(--text-color)">数据库连接</a-typography-title>
+            <a-form layout="horizontal" :label-col="{ span: 5 }" :wrapper-col="{ span: 16 }">
+              <a-form-item label="数据库类型">
+                <a-select v-model:value="dbType" style="width:220px">
+                  <a-select-option value="mysql">MySQL / MariaDB</a-select-option>
+                  <a-select-option value="postgres">PostgreSQL</a-select-option>
+                  <a-select-option value="sqlserver">SQL Server</a-select-option>
+                </a-select>
+              </a-form-item>
+              <a-form-item label="主机">
+                <a-input v-model:value="dbHost" style="width:220px" placeholder="例如 127.0.0.1" />
+              </a-form-item>
+              <a-form-item label="端口">
+                <a-input-number v-model:value="dbPort" :min="1" :max="65535" style="width:220px" />
+              </a-form-item>
+              <a-form-item label="数据库名">
+                <a-input v-model:value="dbName" style="width:220px" placeholder="例如 nvr" />
+              </a-form-item>
+              <a-form-item label="用户名">
+                <a-input v-model:value="dbUser" style="width:220px" placeholder="例如 root" />
+              </a-form-item>
+              <a-form-item label="密码">
+                <a-input-password v-model:value="dbPass" style="width:220px" placeholder="留空则按数据库默认" />
+              </a-form-item>
+              <a-form-item :wrapper-col="{ offset: 5 }">
+                <a-button type="primary" @click="saveAndNotify">保存</a-button>
+              </a-form-item>
+            </a-form>
+            <a-alert type="info" show-icon message="说明：此处仅保存连接信息，服务端可使用这些参数初始化或更新数据库连接池。" />
           </template>
 
           <template v-else>

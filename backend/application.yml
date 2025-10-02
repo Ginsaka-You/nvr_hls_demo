@@ -1,6 +1,21 @@
 server:
   port: 8080
 
+spring:
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:127.0.0.1}:${DB_PORT:5432}/${DB_NAME:nvr_demo}
+    username: ${DB_USER:nvr_app}
+    password: ${DB_PASS:nvrdemo}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQL10Dialect
+    open-in-view: false
+    show-sql: false
+
 nvr:
   # Where HLS files will be written (align with nginx alias)
   hlsRoot: /var/www/streams

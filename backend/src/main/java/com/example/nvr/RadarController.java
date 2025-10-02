@@ -1,5 +1,6 @@
 package com.example.nvr;
 
+import com.example.nvr.persistence.EventStorageService;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -31,6 +32,12 @@ public class RadarController {
     private static final int DEFAULT_TIMEOUT_MS = 1200;
     private static final int DEFAULT_TARGET_TIMEOUT_MS = 12000;
     private static final int MAX_FRAME_BYTES = 2048;
+
+    private final EventStorageService eventStorageService;
+
+    public RadarController(EventStorageService eventStorageService) {
+        this.eventStorageService = eventStorageService;
+    }
 
     @PostMapping("/test")
     public RadarTestResponse test(@RequestBody RadarTestRequest request) {
@@ -100,6 +107,7 @@ public class RadarController {
                     try {
                         RadarTargetsResponse resp = readTargetsViaTcp(host, address, ctrlPort, candidate, timeoutMs, maxFrames);
                         if (resp != null && resp.isOk()) {
+                            eventStorageService.recordRadarTargets(resp);
                             return resp;
                         }
                         if (resp != null && resp.getError() != null) {
@@ -133,7 +141,9 @@ public class RadarController {
                             long elapsed = System.currentTimeMillis() - start;
                             int localPort = socket.getLocalPort();
                             int selectedDataPort = localPort > 0 ? localPort : dataPort;
-                            return RadarTargetsResponse.success(host, ctrlPort, selectedDataPort, timeoutMs, elapsed, frame, false, sourcePort);
+                            RadarTargetsResponse response = RadarTargetsResponse.success(host, ctrlPort, selectedDataPort, timeoutMs, elapsed, frame, false, sourcePort);
+                            eventStorageService.recordRadarTargets(response);
+                            return response;
                         }
                     }
                 }
@@ -181,7 +191,9 @@ public class RadarController {
                 ParsedFrame frame = readFrameFromTcp(tcp);
                 if (frame != null) {
                     long elapsed = System.currentTimeMillis() - start;
-                    return RadarTargetsResponse.success(host, ctrlPort, port, timeoutMs, elapsed, frame, true, frame.sourcePort);
+                    RadarTargetsResponse response = RadarTargetsResponse.success(host, ctrlPort, port, timeoutMs, elapsed, frame, true, frame.sourcePort);
+                    eventStorageService.recordRadarTargets(response);
+                    return response;
                 }
             }
         }

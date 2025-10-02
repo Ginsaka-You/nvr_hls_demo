@@ -26,3 +26,11 @@ export const radarHost = ref<string>('192.168.2.100')
 export const radarCtrlPort = ref<number>(20000)
 export const radarDataPort = ref<number>(20001)
 export const radarUseTcp = ref<boolean>(true)
+
+// Database connection
+export const dbType = ref<'mysql'|'postgres'|'sqlserver'>('mysql')
+export const dbHost = ref<string>('127.0.0.1')
+export const dbPort = ref<number>(3306)
+export const dbName = ref<string>('nvr')
+export const dbUser = ref<string>('root')
+export const dbPass = ref<string>('')

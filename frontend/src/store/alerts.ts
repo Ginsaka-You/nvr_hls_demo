@@ -137,4 +137,29 @@ export function pushRadarAlarm(data: {
     summary: `发现目标 距离 ${rangeStr}m 速度 ${speedStr}m/s${angleStr ? ` 角度 ${angleStr}` : ''}`,
   }
   pushAlarm(alarm)
+  persistRadarAlert(alarm, data)
+}
+
+async function persistRadarAlert(alarm: Alarm, data: { range: number; speed: number; angle?: number; id?: string | number }) {
+  try {
+    const payload = JSON.stringify({
+      id: alarm.id,
+      summary: alarm.summary,
+      range: data.range,
+      speed: data.speed,
+      angle: data.angle ?? null
+    })
+    await fetch('/api/alerts/manual', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        eventId: alarm.id,
+        eventType: 'radar',
+        level: alarm.level,
+        payload,
+        data: payload,
+        eventTime: new Date().toISOString()
+      })
+    })
+  } catch {}
 }

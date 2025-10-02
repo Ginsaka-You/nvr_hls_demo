@@ -1,5 +1,6 @@
 package com.example.nvr;
 
+import com.example.nvr.persistence.EventStorageService;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -15,14 +16,25 @@ import java.util.regex.Pattern;
 @RequestMapping("/api/nvr/alerts")
 public class AlertPushController {
 
+    private final EventStorageService eventStorageService;
+
     private static volatile long lastReceivedAt = 0L;
     private static volatile int lastBytes = 0;
+
+    public AlertPushController(EventStorageService eventStorageService) {
+        this.eventStorageService = eventStorageService;
+    }
 
     @PostMapping(value = "/push", consumes = { MediaType.ALL_VALUE })
     public ResponseEntity<Map<String, Object>> receive(@RequestBody byte[] body) {
         String s = new String(body, StandardCharsets.UTF_8);
         Map<String, Object> ev = parseEvent(s);
         AlertHub.broadcast(ev);
+        try {
+            eventStorageService.recordAlertEvent(ev, s);
+            eventStorageService.recordCameraAlarm(ev, s);
+        } catch (Exception ignored) {
+        }
         Map<String, Object> out = new HashMap<>();
         out.put("ok", true);
         out.put("received", body.length);
