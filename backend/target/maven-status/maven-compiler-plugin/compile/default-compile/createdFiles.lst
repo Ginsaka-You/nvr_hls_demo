@@ -19,7 +19,6 @@ com/example/nvr/RadarController$RadarTestRequest.class
 com/example/nvr/AlertStreamController.class
 com/example/nvr/persistence/EventStorageService.class
 com/example/nvr/MimeConfig.class
-com/example/nvr/WebRtcStreamerService.class
 com/example/nvr/RadarController$RadarTargetsRequest.class
 com/example/nvr/FfmpegService.class
 com/example/nvr/persistence/RadarTargetEntity.class

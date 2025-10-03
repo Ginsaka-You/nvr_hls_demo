@@ -14,8 +14,13 @@ import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.StringTokenizer;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -23,6 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class WebRtcStreamerService {
 
     private static final Logger log = LoggerFactory.getLogger(WebRtcStreamerService.class);
+    private static final int FAILURE_HISTORY_LIMIT = 200;
 
     @Value("${nvr.webrtc.enabled:true}")
     private boolean enabled;
@@ -45,6 +51,8 @@ public class WebRtcStreamerService {
     private Process process;
     private Thread logThread;
     private final AtomicBoolean starting = new AtomicBoolean(false);
+    private final Object failureLock = new Object();
+    private final Deque<FailureRecord> failureHistory = new ArrayDeque<>();
 
     @PostConstruct
     public void init() {
@@ -56,6 +64,9 @@ public class WebRtcStreamerService {
             start();
         } catch (Exception e) {
             log.error("Failed to start WebRTC streamer", e);
+            recordFailure("system", "startup", Map.of(
+                "message", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()
+            ));
         }
     }
 
@@ -134,6 +145,11 @@ public class WebRtcStreamerService {
                 try {
                     int exit = process.waitFor();
                     log.warn("WebRTC streamer exited with code {}", exit);
+                    if (exit != 0) {
+                        recordFailure("system", "exit", Map.of(
+                            "exitCode", exit
+                        ));
+                    }
                 } catch (InterruptedException ignored) {
                     Thread.currentThread().interrupt();
                 } finally {
@@ -144,6 +160,11 @@ public class WebRtcStreamerService {
             }, "webrtc-streamer-wait");
             waitThread.setDaemon(true);
             waitThread.start();
+        } catch (IOException | RuntimeException e) {
+            recordFailure("system", "launch", Map.of(
+                "message", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()
+            ));
+            throw e;
         } finally {
             starting.set(false);
         }
@@ -187,5 +208,98 @@ public class WebRtcStreamerService {
             tokens.add(tokenizer.nextToken());
         }
         return tokens;
+    }
+
+    public List<Map<String, Object>> listRecentFailures(long windowMs) {
+        long effectiveWindow = Math.max(windowMs, 0L);
+        long cutoff = System.currentTimeMillis() - effectiveWindow;
+        List<Map<String, Object>> results = new ArrayList<>();
+        synchronized (failureLock) {
+            for (FailureRecord record : failureHistory) {
+                if (record.timestamp < cutoff) {
+                    break;
+                }
+                results.add(recordAsMap(record));
+            }
+        }
+        return results;
+    }
+
+    public Map<String, Object> describeFailure(String channel, long windowMs) {
+        if (channel == null) {
+            return null;
+        }
+        String normalized = channel.trim();
+        if (normalized.isEmpty()) {
+            normalized = "unknown";
+        }
+        long effectiveWindow = Math.max(windowMs, 0L);
+        long cutoff = System.currentTimeMillis() - effectiveWindow;
+        synchronized (failureLock) {
+            for (FailureRecord record : failureHistory) {
+                if (record.timestamp < cutoff) {
+                    break;
+                }
+                if (record.channel.equalsIgnoreCase(normalized)) {
+                    return recordAsMap(record);
+                }
+            }
+        }
+        return null;
+    }
+
+    public void clearFailures() {
+        synchronized (failureLock) {
+            failureHistory.clear();
+        }
+    }
+
+    public void recordFailure(String channel, String reason) {
+        Map<String, Object> details = new HashMap<>();
+        if (reason != null && !reason.isBlank()) {
+            details.put("message", reason);
+        }
+        recordFailure(channel, "error", details);
+    }
+
+    public void recordFailure(String channel, String code, Map<String, Object> details) {
+        String normalizedChannel = (channel == null || channel.trim().isEmpty()) ? "unknown" : channel.trim();
+        Map<String, Object> payload = new HashMap<>();
+        if (details != null) {
+            for (Map.Entry<String, Object> entry : details.entrySet()) {
+                if (entry.getKey() != null && entry.getValue() != null) {
+                    payload.put(entry.getKey(), entry.getValue());
+                }
+            }
+        }
+        String normalizedCode = (code == null || code.isBlank()) ? "error" : code.trim();
+        payload.put("code", normalizedCode);
+        FailureRecord record = new FailureRecord(normalizedChannel, System.currentTimeMillis(), payload);
+        synchronized (failureLock) {
+            failureHistory.addFirst(record);
+            while (failureHistory.size() > FAILURE_HISTORY_LIMIT) {
+                failureHistory.removeLast();
+            }
+        }
+    }
+
+    private Map<String, Object> recordAsMap(FailureRecord record) {
+        Map<String, Object> view = new HashMap<>(record.details);
+        view.putIfAbsent("code", "error");
+        view.put("timestamp", record.timestamp);
+        view.put("channel", record.channel);
+        return view;
+    }
+
+    private static final class FailureRecord {
+        private final String channel;
+        private final long timestamp;
+        private final Map<String, Object> details;
+
+        private FailureRecord(String channel, long timestamp, Map<String, Object> details) {
+            this.channel = channel;
+            this.timestamp = timestamp;
+            this.details = Collections.unmodifiableMap(new HashMap<>(details));
+        }
     }
 }
