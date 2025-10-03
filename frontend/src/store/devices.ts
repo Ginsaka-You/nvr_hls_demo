@@ -1,5 +1,5 @@
 import { readonly, ref, watch, WatchStopHandle } from 'vue'
-import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, radarHost, radarCtrlPort, radarDataPort, radarUseTcp } from './config'
+import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, radarHost, radarCtrlPort, radarDataPort, radarUseTcp, streamMode, webrtcServer } from './config'
 
 export type DeviceState = {
   status: 'unknown' | 'ok' | 'error'
@@ -151,6 +151,15 @@ async function runCameraCheck() {
       cameraState.value = { status: 'error', message: '无可用通道', failureCount: FAILURE_THRESHOLD }
       return
     }
+    if (streamMode.value === 'webrtc') {
+      const server = (webrtcServer.value || '').trim()
+      if (!server) {
+        cameraState.value = { status: 'error', message: '请在设置中配置 WebRTC 服务地址', failureCount: FAILURE_THRESHOLD }
+        return
+      }
+      cameraState.value = { status: 'ok', message: `WebRTC 模式，可用 ${totalPorts.length} 路`, failureCount: 0 }
+      return
+    }
     const started = await startAllCameraStreams(totalPorts, host, user, pass)
     if (started > 0) {
       cameraState.value = { status: 'ok', message: `运行 ${started} 路`, failureCount: 0 }
@@ -191,7 +200,7 @@ function setupConfigWatchers() {
     }, 300)
   })
 
-  cameraWatchStop = watch([nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount], () => {
+  cameraWatchStop = watch([nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, streamMode, webrtcServer], () => {
     if (cameraConfigDebounce) window.clearTimeout(cameraConfigDebounce)
     cameraConfigDebounce = window.setTimeout(() => {
       cameraState.value = { status: 'unknown', message: '正在检测...', failureCount: 0 }

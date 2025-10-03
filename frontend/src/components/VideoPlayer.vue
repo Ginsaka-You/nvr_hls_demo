@@ -1,28 +1,47 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, watch, defineProps, nextTick } from 'vue'
+import { onMounted, onBeforeUnmount, ref, watch, defineProps, defineEmits, nextTick } from 'vue'
 // @ts-ignore
 import Hls from 'hls.js'
+import { StreamSource, isHlsSource, isWebRtcSource } from '@/types/stream'
+import { WebRtcStreamerClient } from '@/lib/WebRtcStreamer'
 
-const props = defineProps<{ src: string }>()
+const props = defineProps<{ source?: StreamSource | null }>()
+const emit = defineEmits<{
+  (e: 'loading'): void
+  (e: 'connected'): void
+  (e: 'failed', reason?: string): void
+}>()
 
-const videoRef = ref<HTMLVideoElement|null>(null)
+const videoRef = ref<HTMLVideoElement | null>(null)
 let hls: any
-let retryTimer: any = null
+let webrtc: WebRtcStreamerClient | null = null
+let retryTimer: ReturnType<typeof setTimeout> | null = null
 let retries = 0
 const maxRetries = 30
-let lastSrc: string | null = null
+
+async function cleanup() {
+  if (retryTimer) {
+    clearTimeout(retryTimer)
+    retryTimer = null
+  }
+  retries = 0
+  if (hls) {
+    try { hls.destroy() } catch (err) { console.warn('Hls destroy failed', err) }
+    hls = null
+  }
+  if (webrtc) {
+    await webrtc.disconnect()
+    webrtc = null
+  }
+}
 
 function setupHls(video: HTMLVideoElement, src: string) {
   if (hls) { try { hls.destroy() } catch (_) {} hls = null }
-  // Prefer Hls.js whenever supported (more controllable, visible in XHR)
   if (Hls.isSupported()) {
     console.log('[VideoPlayer] Using hls.js for', src)
-    if (hls) { try { hls.destroy() } catch (_) {} hls = null }
     retries = 0
     hls = new Hls({
-      // Stay close to live edge and limit buffer to reduce lag
       lowLatencyMode: false,
-      // Use count-based live edge control (do not mix with duration-based)
       liveSyncDurationCount: 1,
       liveMaxLatencyDurationCount: 3,
       maxBufferLength: 5,
@@ -33,12 +52,14 @@ function setupHls(video: HTMLVideoElement, src: string) {
     })
     hls.attachMedia(video)
     hls.on(Hls.Events.MEDIA_ATTACHED, () => {
-      // Cache-bust to avoid any intermediary caching of the live manifest
       const cacheBusted = src + (src.includes('?') ? '&' : '?') + 'cb=' + Date.now()
       hls.loadSource(cacheBusted)
     })
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
-      void video.play().catch(err => console.error('Video play error:', err))
+      void video.play().then(() => emit('connected')).catch(err => {
+        console.error('Video play error:', err)
+        emit('failed', err?.message || String(err))
+      })
     })
     hls.on(Hls.Events.ERROR, (_e: any, data: any) => {
       console.error('HLS error:', data)
@@ -46,9 +67,9 @@ function setupHls(video: HTMLVideoElement, src: string) {
       if (data?.type === Hls.ErrorTypes.NETWORK_ERROR && (data?.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR || data?.details === Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT)) {
         if (retries < maxRetries) {
           const delay = Math.min(2000, 300 + retries * 200)
-          clearTimeout(retryTimer)
+          if (retryTimer) clearTimeout(retryTimer)
           retryTimer = setTimeout(() => {
-            try { hls.loadSource(src); hls.startLoad() } catch (_) {}
+            try { hls.loadSource(src); hls.startLoad() } catch (err) { console.error('Retry HLS failed', err) }
           }, delay)
           retries++
         }
@@ -57,40 +78,80 @@ function setupHls(video: HTMLVideoElement, src: string) {
       } else if (fatal) {
         try { hls.destroy() } catch (_) {}
         hls = null
+        emit('failed', data?.details || 'HLS fatal error')
       }
     })
   } else {
-    // Fallback: native HLS (Safari/iOS)
     console.log('[VideoPlayer] Using native HLS for', src)
     if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = src
-      void video.play().catch(err => console.error('Video play error:', err))
+      const onLoaded = () => {
+        emit('connected')
+        video.removeEventListener('loadeddata', onLoaded)
+      }
+      video.addEventListener('loadeddata', onLoaded)
+      void video.play().catch(err => {
+        console.error('Video play error:', err)
+        emit('failed', err?.message || String(err))
+      })
     } else {
-      console.error('HLS not supported in this browser')
+      const reason = 'HLS not supported in this browser'
+      console.error(reason)
+      emit('failed', reason)
     }
   }
 }
 
-async function play(src: string) {
-  lastSrc = src
-  if (!src) return
-  await nextTick()
-  const video = videoRef.value
-  if (!video) return // wait for mount
-  setupHls(video, src)
+async function setupWebRtc(video: HTMLVideoElement, source: StreamSource) {
+  if (!isWebRtcSource(source)) return
+  try {
+    video.muted = true
+    webrtc = new WebRtcStreamerClient(video, source.server)
+    webrtc.onConnected(() => emit('connected'))
+    webrtc.onIceState((state) => {
+      if (state === 'connected') {
+        emit('connected')
+      } else if (state === 'failed' || state === 'closed') {
+        emit('failed', `ICE ${state}`)
+      }
+    })
+    webrtc.onError(reason => emit('failed', reason))
+    await webrtc.connect({
+      videoUrl: source.url,
+      audioUrl: source.audioUrl,
+      options: source.options,
+      preferredCodec: source.preferCodec
+    })
+  } catch (err) {
+    console.error('[VideoPlayer] WebRTC connect failed', err)
+    emit('failed', err instanceof Error ? err.message : String(err))
+  }
 }
 
-watch(() => props.src, (val) => {
-  if (val) { void play(val) }
+async function play(source?: StreamSource | null) {
+  await cleanup()
+  if (!source) return
+  emit('loading')
+  await nextTick()
+  const video = videoRef.value
+  if (!video) return
+  if (isHlsSource(source)) {
+    setupHls(video, source.url)
+  } else if (isWebRtcSource(source)) {
+    await setupWebRtc(video, source)
+  }
+}
+
+watch(() => props.source, (val) => {
+  void play(val || undefined)
 })
 
 onMounted(() => {
-  if (props.src) { void play(props.src) }
+  void play(props.source)
 })
 
 onBeforeUnmount(() => {
-  if (hls) { try { hls.destroy() } catch (_) {} }
-  if (retryTimer) { try { clearTimeout(retryTimer) } catch (_) {} retryTimer = null }
+  void cleanup()
 })
 </script>
 

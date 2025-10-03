@@ -1,18 +1,33 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, reactive, onBeforeUnmount } from 'vue'
+import { ref, onMounted, watch, reactive, onBeforeUnmount, computed } from 'vue'
 import { message } from 'ant-design-vue'
 import { CameraOutlined } from '@ant-design/icons-vue'
 import VideoPlayer from '@/components/VideoPlayer.vue'
 
 // 基础连接参数（与单摄像头页一致）
-import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub } from '@/store/config'
+import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub, streamMode, hlsOrigin, webrtcServer, webrtcOptions, webrtcPreferCodec, channelOverrides } from '@/store/config'
+import type { StreamSource } from '@/types/stream'
 
-// HLS URL 缓存（按具体 id，如 cam401）
-const urls = ref<Record<string,string>>({})
+// 直播源缓存（按具体 id，如 cam401）
+const urls = ref<Record<string, StreamSource>>({})
+const useWebRtc = computed(() => streamMode.value === 'webrtc')
+const overridePairs = computed(parseChannelOverrides)
 const loading = ref(false)
 // 摄像头条目（每端口一个）
 type CamStatus = 'detecting'|'ok'|'none'|'error'
-type CamEntry = { port: number; selected: '01'|'02'; hasSub: boolean; hasMain: boolean; idSub: string; idMain: string; url?: string; status: CamStatus; err?: string; snapshotLoading: boolean }
+type CamEntry = {
+  port: number;
+  selected: '01'|'02';
+  hasSub: boolean;
+  hasMain: boolean;
+  idSub: string;
+  idMain: string;
+  stream?: StreamSource;
+  status: CamStatus;
+  err?: string;
+  snapshotLoading: boolean;
+  fallbackTried: boolean;
+}
 const cams = ref<CamEntry[]>([])
 
 const snapshotPreview = reactive({ visible: false, img: '', title: '' })
@@ -46,6 +61,61 @@ onBeforeUnmount(() => cleanupSnapshotUrl())
 async function startOne(id: string, silent = false, timeoutMs = 15000, pollMs = 800): Promise<boolean> {
   const ch = (id.match(/\d+/)?.[0]) || '401'
   const rtsp = `rtsp://${nvrUser.value}:${encodeURIComponent(nvrPass.value)}@${nvrHost.value}:554/Streaming/Channels/${ch}`
+
+  if (useWebRtc.value) {
+    const server = (webrtcServer.value || '').trim()
+    if (!server) {
+      if (!silent) message.error('请在设置里填写 WebRTC-Streamer 地址')
+      return false
+    }
+    const normalizedServer = server.replace(/\/$/, '')
+    let webrtcUrl = rtsp
+    const opts = (webrtcOptions.value || '').trim()
+    if (opts) {
+      const tokens = opts.split('&')
+      const transportOpt = tokens.find(p => p.startsWith('transportmode='))
+      if (transportOpt && !webrtcUrl.includes('transportmode=')) {
+        const [, value] = transportOpt.split('=')
+        if (value) {
+          webrtcUrl += (webrtcUrl.includes('?') ? '&' : '?') + `transportmode=${value}`
+        }
+      }
+      const profileOpt = tokens.find(p => p.startsWith('profile='))
+      if (profileOpt && !webrtcUrl.includes('profile=')) {
+        const [, value] = profileOpt.split('=')
+        if (value) {
+          webrtcUrl += (webrtcUrl.includes('?') ? '&' : '?') + `profile=${value}`
+        }
+      }
+      const codecOpt = tokens.find(p => p.startsWith('forceh264='))
+      if (codecOpt && !webrtcUrl.includes('forceh264=')) {
+        const [, value] = codecOpt.split('=')
+        if (value) {
+          webrtcUrl += (webrtcUrl.includes('?') ? '&' : '?') + `forceh264=${value}`
+        }
+      }
+      const videoCodecOpt = tokens.find(p => p.startsWith('videoCodecType='))
+      if (videoCodecOpt && !webrtcUrl.includes('videoCodecType=')) {
+        const [, value] = videoCodecOpt.split('=')
+        if (value) {
+          webrtcUrl += (webrtcUrl.includes('?') ? '&' : '?') + `videoCodecType=${value}`
+        }
+      }
+    }
+    console.debug('[MultiCam] using WebRTC URL', id, webrtcUrl)
+    urls.value = {
+      ...urls.value,
+      [id]: {
+        kind: 'webrtc',
+        server: normalizedServer,
+        url: webrtcUrl,
+        options: (webrtcOptions.value || '').trim() || undefined,
+        preferCodec: (webrtcPreferCodec.value || '').trim() || undefined
+      }
+    }
+    return true
+  }
+
   try {
     const resp = await fetch(`/api/streams/${id}/start`, {
       method: 'POST',
@@ -57,9 +127,12 @@ async function startOne(id: string, silent = false, timeoutMs = 15000, pollMs = 
     try { data = await resp.json() } catch (_) {}
     const path = (data && data.hls) ? data.hls : `/streams/${id}/index.m3u8`
     const normalized = path.startsWith('/') ? path : `/${path}`
+    const playback = (hlsOrigin.value || '').trim()
+      ? new URL(normalized, hlsOrigin.value).toString()
+      : normalized
     const ok = await waitUntilReady(id, timeoutMs, pollMs)
     if (ok) {
-      urls.value = { ...urls.value, [id]: normalized }
+      urls.value = { ...urls.value, [id]: { kind: 'hls', url: playback } }
     } else if (!silent) {
       message.warning(`${id} 清单未就绪，尝试播放…`)
     }
@@ -69,6 +142,31 @@ async function startOne(id: string, silent = false, timeoutMs = 15000, pollMs = 
     if (!silent) message.error(`${id} 启动失败：` + (e?.message || e))
     return false
   }
+}
+
+type ChannelPair = { main: number; sub?: number }
+
+function parseChannelOverrides(): ChannelPair[] {
+  const raw = (channelOverrides.value || '').trim()
+  if (!raw) return []
+  const pairs: ChannelPair[] = []
+  raw.split(',').forEach(item => {
+    const token = item.trim()
+    if (!token) return
+    const parts = token.split('/')
+    const main = Number(parts[0])
+    if (!Number.isFinite(main)) return
+    let sub: number | undefined
+    if (parts.length > 1) {
+      const parsed = Number(parts[1])
+      if (Number.isFinite(parsed)) sub = parsed
+    }
+    if (!sub || !Number.isFinite(sub)) {
+      sub = main + 1
+    }
+    pairs.push({ main, sub })
+  })
+  return pairs
 }
 
 // 更激进：只要清单存在即认为成功（不必等待首段）
@@ -90,6 +188,12 @@ async function waitUntilReady(id: string, timeoutMs = 10000, pollMs = 800) {
 
 async function stopStream(id: string) {
   if (!id) return
+  if (useWebRtc.value) {
+    const next = { ...urls.value }
+    delete next[id]
+    urls.value = next
+    return
+  }
   try {
     const resp = await fetch(`/api/streams/${id}`, { method: 'DELETE' })
     if (!resp.ok) {
@@ -106,24 +210,93 @@ async function stopStream(id: string) {
   }
 }
 
-onMounted(() => { (async () => { await discoverPorts(); await detect() })() })
+onMounted(() => { (async () => { if (!overridePairs.value.length) await discoverPorts(); await detect() })() })
 
 // 修改连接参数或检测设置时，自动重新检测（500ms 防抖）
 let t: any = null
-watch([nvrUser, nvrPass, nvrHost, detectMain, detectSub, portCount], () => {
+watch([nvrUser, nvrPass, nvrHost, detectMain, detectSub, portCount, streamMode, webrtcServer, webrtcOptions, webrtcPreferCodec, hlsOrigin, channelOverrides], () => {
   if (t) clearTimeout(t)
-  t = setTimeout(async () => { await discoverPorts(); await detect() }, 500)
+  t = setTimeout(async () => {
+    if (!overridePairs.value.length) {
+      await discoverPorts()
+    }
+    await detect()
+  }, 500)
 })
 
 // 自动检测并启动：优先子码流，必要时可尝试主码流
 async function detect() {
   loading.value = true
   try {
+    const overrides = overridePairs.value
+    if (overrides.length) {
+      if (portCount.value !== overrides.length) {
+        portCount.value = overrides.length
+      }
+      const init: CamEntry[] = overrides.map(pair => {
+        const mainId = `cam${pair.main}`
+        const subId = pair.sub ? `cam${pair.sub}` : mainId
+        return {
+          port: pair.main,
+          selected: pair.sub ? '02' : '01',
+          hasSub: false,
+          hasMain: false,
+          idSub: subId,
+          idMain: mainId,
+          stream: undefined,
+          status: 'detecting',
+          err: undefined,
+          snapshotLoading: false,
+          fallbackTried: false
+        }
+      })
+      cams.value = init
+
+      await Promise.all(init.map(async (c, idx) => {
+        try {
+          const canDetectSub = detectSub.value && c.idSub !== c.idMain
+          let okSub = false
+          let okMain = false
+          if (canDetectSub) okSub = await startOne(c.idSub, true, 4000, 250)
+          if (!okSub && detectMain.value) okMain = await startOne(c.idMain, true, 4000, 250)
+          if (okSub || okMain) {
+            c.selected = okSub ? '02' : '01'
+            const id = c.selected === '02' ? c.idSub : c.idMain
+            c.stream = urls.value[id]
+            c.status = useWebRtc.value ? 'detecting' : 'ok'
+            c.err = undefined
+            c.fallbackTried = false
+          } else {
+            c.status = 'none'
+            c.stream = undefined
+            c.err = undefined
+          }
+          cams.value[idx] = { ...c }
+        } catch (e: any) {
+          c.status = 'error'
+          c.err = e?.message || String(e)
+          cams.value[idx] = { ...c }
+        }
+      }))
+      return
+    }
+
     const maxPort = Math.max(8, portCount.value || 0)
     // 初始化 8 宫格占位，显示检测中
     const init: CamEntry[] = []
     for (let i = 1; i <= maxPort; i++) {
-      init.push({ port: i, selected: '02', hasSub: false, hasMain: false, idSub: `cam${i}02`, idMain: `cam${i}01`, url: undefined, status: 'detecting', snapshotLoading: false })
+      init.push({
+        port: i,
+        selected: '02',
+        hasSub: false,
+        hasMain: false,
+        idSub: `cam${i}02`,
+        idMain: `cam${i}01`,
+        stream: undefined,
+        status: 'detecting',
+        snapshotLoading: false,
+        fallbackTried: false
+      })
     }
     cams.value = init
 
@@ -139,11 +312,14 @@ async function detect() {
         if (okSub || okMain) {
           c.selected = okSub ? '02' : '01'
           const id = c.selected === '02' ? c.idSub : c.idMain
-          c.url = urls.value[id]
-          c.status = 'ok'
+          c.stream = urls.value[id]
+          c.status = useWebRtc.value ? 'detecting' : 'ok'
+          c.err = undefined
+          c.fallbackTried = false
         } else {
           c.status = 'none'
-          c.url = undefined
+          c.stream = undefined
+          c.err = undefined
         }
         // 触发响应式更新
         cams.value[idx] = { ...c }
@@ -178,13 +354,64 @@ async function changeStream(c: CamEntry, val: '01'|'02') {
   const otherId = val === '02' ? c.idMain : c.idSub
   const ok = await startOne(id, false)
   if (ok) {
-    c.url = urls.value[id]
+    c.stream = urls.value[id]
     if (val === '01') c.hasMain = true
-    if (val === '02') c.hasSub = true
+    if (val === '02') {
+      c.hasSub = true
+      c.fallbackTried = false
+    }
+    c.status = useWebRtc.value ? 'detecting' : 'ok'
+    c.err = undefined
+    if (useWebRtc.value && val === '01') {
+      c.fallbackTried = true
+    }
     if (otherId && otherId !== id) {
       await stopStream(otherId)
     }
+    const idx = cams.value.findIndex(item => item.port === c.port)
+    if (idx !== -1) cams.value[idx] = { ...c }
   }
+}
+
+function commitCamUpdate(c: CamEntry) {
+  const idx = cams.value.findIndex(item => item.port === c.port)
+  if (idx !== -1) {
+    cams.value[idx] = { ...c }
+  }
+}
+
+function onStreamLoading(c: CamEntry) {
+  if (!c.stream) return
+  if (useWebRtc.value) {
+    c.status = 'detecting'
+    c.err = undefined
+    commitCamUpdate(c)
+  }
+}
+
+function onStreamConnected(c: CamEntry) {
+  if (!c.stream) return
+  c.status = 'ok'
+  c.err = undefined
+  c.fallbackTried = false
+  if (c.selected === '02') c.hasSub = true
+  if (c.selected === '01') c.hasMain = true
+  commitCamUpdate(c)
+}
+
+async function onStreamFailed(c: CamEntry, reason?: string) {
+  if (!c.stream) return
+  c.err = reason || '连接失败'
+  if (c.selected === '02') c.hasSub = false
+  if (c.selected === '01') c.hasMain = false
+  if (useWebRtc.value && c.selected === '02' && detectMain.value && !c.fallbackTried) {
+    c.fallbackTried = true
+    commitCamUpdate(c)
+    await changeStream(c, '01')
+    return
+  }
+  c.status = 'error'
+  commitCamUpdate(c)
 }
 
 async function takeSnapshot(c: CamEntry) {
@@ -238,11 +465,11 @@ async function takeSnapshot(c: CamEntry) {
 
       <div class="multi-panel">
         <div class="grid-3">
-          <div class="cell" :class="{ 'underline-bottom': c.port === 6, 'cell-no-cam': c.status==='detecting' || c.status==='error', 'cell-none': c.status==='none' }" v-for="c in cams" :key="c.port">
+          <div class="cell" :class="{ 'underline-bottom': c.port === 6, 'cell-no-cam': !c.stream && (c.status==='detecting' || c.status==='error'), 'cell-none': c.status==='none' }" v-for="c in cams" :key="c.port">
             <div class="cell-header">
               <span>摄像头 {{ c.port }}</span>
               <div class="cell-controls">
-                <a-select size="small" :value="c.selected" style="width:120px" :disabled="c.status!=='ok'" @change="(v:any)=>changeStream(c, v)">
+                <a-select size="small" :value="c.selected" style="width:120px" :disabled="!c.stream" @change="(v:any)=>changeStream(c, v)">
                   <a-select-option value="02">子码流 (02)</a-select-option>
                   <a-select-option value="01">主码流 (01)</a-select-option>
                 </a-select>
@@ -255,18 +482,22 @@ async function takeSnapshot(c: CamEntry) {
               </div>
             </div>
             <div class="cell-body">
-              <template v-if="c.status==='ok'">
-                <VideoPlayer v-if="c.url" :src="c.url" />
-                <div v-else class="placeholder inverse">等待清单…</div>
-              </template>
-              <template v-else-if="c.status==='detecting'">
-                <div class="placeholder">正在自动检测摄像头…</div>
-              </template>
-              <template v-else-if="c.status==='none'">
-                <div class="placeholder">无摄像头</div>
+              <template v-if="c.stream">
+                <div class="player-wrapper">
+                  <VideoPlayer
+                    :source="c.stream"
+                    @loading="onStreamLoading(c)"
+                    @connected="onStreamConnected(c)"
+                    @failed="onStreamFailed(c, $event)"
+                  />
+                  <div v-if="c.status==='detecting'" class="overlay info">正在连接…</div>
+                  <div v-else-if="c.status==='error'" class="overlay error">{{ c.err || '连接失败' }}</div>
+                </div>
               </template>
               <template v-else>
-                <div class="placeholder">检测失败</div>
+                <div v-if="c.status==='none'" class="placeholder">无摄像头</div>
+                <div v-else-if="c.status==='detecting'" class="placeholder">正在自动检测摄像头…</div>
+                <div v-else class="placeholder">检测失败</div>
               </template>
             </div>
           </div>
@@ -342,6 +573,10 @@ async function takeSnapshot(c: CamEntry) {
 .placeholder { flex: 1; display: flex; align-items: center; justify-content: center; color: #00000099; background: transparent; width: 100%; }
 .placeholder.inverse { color: #ffffff99; }
 .cell-body :deep(video) { width: 100% !important; height: 100% !important; max-width: 100% !important; object-fit: contain; display:block; background:#000; }
+.player-wrapper { position: relative; width: 100%; height: 100%; }
+.overlay { position: absolute; inset: 0; display:flex; align-items:center; justify-content:center; color:#ffffff; font-size:14px; padding:0 12px; text-align:center; }
+.overlay.info { background: rgba(0,0,0,0.45); }
+.overlay.error { background: rgba(217,44,44,0.65); }
 .muted { color: #00000099; }
 .error { color: #d92c2c; }
 /* 摄像头6下方加底线（高亮色） */

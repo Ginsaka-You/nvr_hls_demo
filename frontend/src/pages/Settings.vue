@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub, audioPass, audioId, audioHttpPort, radarHost, radarCtrlPort, radarDataPort, radarUseTcp, dbType, dbHost, dbPort, dbName, dbUser, dbPass } from '@/store/config'
+import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub, streamMode, hlsOrigin, webrtcServer, webrtcOptions, webrtcPreferCodec, channelOverrides, audioPass, audioId, audioHttpPort, radarHost, radarCtrlPort, radarDataPort, radarUseTcp, dbType, dbHost, dbPort, dbName, dbUser, dbPass } from '@/store/config'
 import { message, Modal } from 'ant-design-vue'
 
 const sec = ref<'multicam'|'alarm'|'imsi'|'radar'|'seismic'|'drone'|'database'>('multicam')
@@ -189,9 +189,33 @@ async function clearHls() {
               <a-form-item label="密码"><a-input-password v-model:value="nvrPass" style="width:220px" /></a-form-item>
               <a-form-item label="端口"><a-input-number v-model:value="nvrHttpPort" :min="1" :max="65535" style="width:220px" placeholder="留空=默认(80/443)" /></a-form-item>
               <a-form-item label="端口数"><a-input-number v-model:value="portCount" :min="1" :max="32" style="width:220px" /></a-form-item>
+              <a-form-item label="通道覆盖">
+                <a-input v-model:value="channelOverrides" style="width:320px" placeholder="例如 701/702,801/802（留空=自动检测）" />
+              </a-form-item>
+              <a-form-item :wrapper-col="{ offset: 5 }">
+                <a-alert type="info" show-icon message="格式：主码流/子码流；多个摄像头用逗号分隔（示例：701/702,801/802）。留空则按照端口自动检测。" />
+              </a-form-item>
               <a-form-item label="检测类型">
                 <a-checkbox v-model:checked="detectSub">子(02)</a-checkbox>
                 <a-checkbox v-model:checked="detectMain" style="margin-left:12px">主(01)</a-checkbox>
+              </a-form-item>
+              <a-form-item label="播放模式">
+                <a-radio-group v-model:value="streamMode">
+                  <a-radio value="hls">HLS（兼容）</a-radio>
+                  <a-radio value="webrtc">WebRTC（低延迟）</a-radio>
+                </a-radio-group>
+              </a-form-item>
+              <a-form-item v-if="streamMode==='hls'" label="HLS 域名">
+                <a-input v-model:value="hlsOrigin" style="width:320px" placeholder="可选，例如 http://127.0.0.1:8080" />
+              </a-form-item>
+              <a-form-item v-else label="WebRTC 服务">
+                <a-input v-model:value="webrtcServer" style="width:320px" placeholder="http://127.0.0.1:8000" />
+              </a-form-item>
+              <a-form-item v-if="streamMode==='webrtc'" label="连接参数">
+                <a-input v-model:value="webrtcOptions" style="width:320px" placeholder="rtptransport=tcp&timeout=60" />
+              </a-form-item>
+              <a-form-item v-if="streamMode==='webrtc'" label="优先编码">
+                <a-input v-model:value="webrtcPreferCodec" style="width:320px" placeholder="video/H264" />
               </a-form-item>
               <a-form-item :wrapper-col="{ offset: 5 }">
                 <a-button type="primary" @click="saveAndNotify">保存</a-button>

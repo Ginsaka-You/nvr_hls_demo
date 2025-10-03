@@ -12,6 +12,7 @@
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/RadarController.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/StaticMap.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/StreamController.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/WebRtcStreamerService.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/AlertEventEntity.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/AlertEventRepository.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/CameraAlarmEntity.java

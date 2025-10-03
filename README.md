@@ -30,8 +30,19 @@ java -jar target/nvr-hls-backend-0.1.0.jar**
 ```bash
 curl -X POST "http://127.0.0.1:8080/api/streams/cam402/start" \
   --data-urlencode "rtspUrl=rtsp://admin:00000000a@192.168.50.76:554/Streaming/Channels/402" \
-  --data-urlencode "copy=true"# Expect response with: { "hls": "/streams/cam401/index.m3u8" }
+ --data-urlencode "copy=true"# Expect response with: { "hls": "/streams/cam401/index.m3u8" }
 ```
+
+### WebRTC (低延迟) 替代方案
+
+若需要将延迟从 HLS 的数秒级降到 ~500 ms，可使用
+[webrtc-streamer](docs/webrtc-streamer.md)：
+
+1. `scripts/install_webrtc_streamer.sh` 下载或按文档自行编译。
+2. 将 `third_party/webrtc-streamer/` 准备好，后端启动时会自动拉起该二进制（默认端口 `http://<host>:8800`）。
+3. 在前端设置页 → “多摄像头” 选择 **WebRTC（低延迟）**，填入服务地址以及可选的 `rtptransport=tcp&timeout=60` 参数。
+
+切回 **HLS（兼容）** 即恢复原有流程。
 
 ## 4) Frontend (Vue3 + Vite)
 ```bash

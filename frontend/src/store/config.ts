@@ -11,6 +11,14 @@ export const portCount = ref<number>(8)
 export const detectMain = ref<boolean>(false)
 export const detectSub = ref<boolean>(true)
 
+// Stream delivery (HLS vs WebRTC)
+export const streamMode = ref<'hls' | 'webrtc'>('webrtc')
+export const hlsOrigin = ref<string>('')
+export const webrtcServer = ref<string>('http://127.0.0.1:8800')
+export const webrtcOptions = ref<string>('transportmode=unicast&profile=Profile_1&forceh264=1&videoCodecType=H264&rtptransport=tcp&timeout=60')
+export const webrtcPreferCodec = ref<string>('video/H264')
+export const channelOverrides = ref<string>('')
+
 // Optionally extend later: scheme/httpPort
 
 // Alarm linkage: audio alarm on camera
