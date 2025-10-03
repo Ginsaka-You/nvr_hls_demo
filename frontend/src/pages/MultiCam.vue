@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, reactive, onBeforeUnmount } from 'vue'
 import { message } from 'ant-design-vue'
+import { CameraOutlined } from '@ant-design/icons-vue'
 import VideoPlayer from '@/components/VideoPlayer.vue'
 
 // 基础连接参数（与单摄像头页一致）
@@ -11,8 +12,36 @@ const urls = ref<Record<string,string>>({})
 const loading = ref(false)
 // 摄像头条目（每端口一个）
 type CamStatus = 'detecting'|'ok'|'none'|'error'
-type CamEntry = { port: number; selected: '01'|'02'; hasSub: boolean; hasMain: boolean; idSub: string; idMain: string; url?: string; status: CamStatus; err?: string }
+type CamEntry = { port: number; selected: '01'|'02'; hasSub: boolean; hasMain: boolean; idSub: string; idMain: string; url?: string; status: CamStatus; err?: string; snapshotLoading: boolean }
 const cams = ref<CamEntry[]>([])
+
+const snapshotPreview = reactive({ visible: false, img: '', title: '' })
+let snapshotObjectUrl: string | null = null
+
+function cleanupSnapshotUrl() {
+  if (snapshotObjectUrl) {
+    URL.revokeObjectURL(snapshotObjectUrl)
+    snapshotObjectUrl = null
+  }
+}
+
+function showSnapshot(title: string, blob: Blob) {
+  cleanupSnapshotUrl()
+  snapshotObjectUrl = URL.createObjectURL(blob)
+  snapshotPreview.img = snapshotObjectUrl
+  snapshotPreview.title = title
+  snapshotPreview.visible = true
+}
+
+watch(() => snapshotPreview.visible, v => {
+  if (!v) {
+    snapshotPreview.img = ''
+    snapshotPreview.title = ''
+    cleanupSnapshotUrl()
+  }
+})
+
+onBeforeUnmount(() => cleanupSnapshotUrl())
 
 async function startOne(id: string, silent = false, timeoutMs = 15000, pollMs = 800): Promise<boolean> {
   const ch = (id.match(/\d+/)?.[0]) || '401'
@@ -59,6 +88,24 @@ async function waitUntilReady(id: string, timeoutMs = 10000, pollMs = 800) {
   return false
 }
 
+async function stopStream(id: string) {
+  if (!id) return
+  try {
+    const resp = await fetch(`/api/streams/${id}`, { method: 'DELETE' })
+    if (!resp.ok) {
+      let errText = ''
+      try { errText = await resp.text() } catch (_) {}
+      console.warn(`停止码流 ${id} 失败：`, errText || `HTTP ${resp.status}`)
+      return
+    }
+    const next = { ...urls.value }
+    delete next[id]
+    urls.value = next
+  } catch (err) {
+    console.warn(`停止码流 ${id} 异常：`, err)
+  }
+}
+
 onMounted(() => { (async () => { await discoverPorts(); await detect() })() })
 
 // 修改连接参数或检测设置时，自动重新检测（500ms 防抖）
@@ -76,7 +123,7 @@ async function detect() {
     // 初始化 8 宫格占位，显示检测中
     const init: CamEntry[] = []
     for (let i = 1; i <= maxPort; i++) {
-      init.push({ port: i, selected: '02', hasSub: false, hasMain: false, idSub: `cam${i}02`, idMain: `cam${i}01`, url: undefined, status: 'detecting' })
+      init.push({ port: i, selected: '02', hasSub: false, hasMain: false, idSub: `cam${i}02`, idMain: `cam${i}01`, url: undefined, status: 'detecting', snapshotLoading: false })
     }
     cams.value = init
 
@@ -128,11 +175,59 @@ async function discoverPorts() {
 async function changeStream(c: CamEntry, val: '01'|'02') {
   c.selected = val
   const id = val === '02' ? c.idSub : c.idMain
+  const otherId = val === '02' ? c.idMain : c.idSub
   const ok = await startOne(id, false)
   if (ok) {
     c.url = urls.value[id]
     if (val === '01') c.hasMain = true
     if (val === '02') c.hasSub = true
+    if (otherId && otherId !== id) {
+      await stopStream(otherId)
+    }
+  }
+}
+
+async function takeSnapshot(c: CamEntry) {
+  const idx = cams.value.findIndex(item => item.port === c.port)
+  if (idx === -1) return
+  if (c.status !== 'ok') {
+    message.warning(`摄像头 ${c.port} 未就绪，暂无法抓拍`)
+    return
+  }
+  c.snapshotLoading = true
+  cams.value[idx] = { ...c }
+  try {
+    const channelId = (c.selected === '02' ? c.idSub : c.idMain).replace(/\D+/g, '')
+    if (!channelId) throw new Error('无法解析通道号')
+    const params = new URLSearchParams({
+      host: nvrHost.value,
+      user: nvrUser.value,
+      pass: nvrPass.value,
+      scheme: nvrScheme.value,
+      channel: channelId
+    })
+    if (nvrHttpPort.value) params.set('httpPort', String(nvrHttpPort.value))
+    const resp = await fetch(`/api/nvr/snapshot?${params.toString()}`)
+    if (!resp.ok) {
+      let errText = ''
+      try { errText = await resp.text() } catch (_) {}
+      throw new Error(errText || `HTTP ${resp.status}`)
+    }
+    const blob = await resp.blob()
+    const contentType = (resp.headers.get('Content-Type') || '').toLowerCase()
+    if (!contentType.includes('image')) {
+      let errText = ''
+      try { errText = await blob.text() } catch (_) {}
+      throw new Error(errText || '未返回图片数据')
+    }
+    showSnapshot(`摄像头 ${c.port} - ${c.selected === '02' ? '子码流' : '主码流'}`, blob)
+    message.success(`摄像头 ${c.port} 抓拍成功`)
+  } catch (err: any) {
+    console.error(err)
+    message.error(`摄像头 ${c.port} 抓拍失败：${err?.message || err}`)
+  } finally {
+    c.snapshotLoading = false
+    cams.value[idx] = { ...c }
   }
 }
 </script>
@@ -146,10 +241,18 @@ async function changeStream(c: CamEntry, val: '01'|'02') {
           <div class="cell" :class="{ 'underline-bottom': c.port === 6, 'cell-no-cam': c.status==='detecting' || c.status==='error', 'cell-none': c.status==='none' }" v-for="c in cams" :key="c.port">
             <div class="cell-header">
               <span>摄像头 {{ c.port }}</span>
-              <a-select size="small" :value="c.selected" style="width:120px" :disabled="c.status!=='ok'" @change="(v:any)=>changeStream(c, v)">
-                <a-select-option value="02">子码流 (02)</a-select-option>
-                <a-select-option value="01">主码流 (01)</a-select-option>
-              </a-select>
+              <div class="cell-controls">
+                <a-select size="small" :value="c.selected" style="width:120px" :disabled="c.status!=='ok'" @change="(v:any)=>changeStream(c, v)">
+                  <a-select-option value="02">子码流 (02)</a-select-option>
+                  <a-select-option value="01">主码流 (01)</a-select-option>
+                </a-select>
+                <a-button size="small" :disabled="c.status!=='ok'" :loading="c.snapshotLoading" @click="takeSnapshot(c)">
+                  <template #icon>
+                    <CameraOutlined />
+                  </template>
+                  测试拍照
+                </a-button>
+              </div>
             </div>
             <div class="cell-body">
               <template v-if="c.status==='ok'">
@@ -169,6 +272,13 @@ async function changeStream(c: CamEntry, val: '01'|'02') {
           </div>
         </div>
       </div>
+
+      <a-modal v-model:visible="snapshotPreview.visible" :title="snapshotPreview.title || '抓拍预览'" width="520px" :footer="null">
+        <div class="snapshot-container">
+          <img v-if="snapshotPreview.img" :src="snapshotPreview.img" alt="snapshot preview" />
+          <div v-else class="snapshot-empty">暂无图片</div>
+        </div>
+      </a-modal>
     </a-layout-content>
   </a-layout>
 </template>
@@ -212,6 +322,22 @@ async function changeStream(c: CamEntry, val: '01'|'02') {
   font-weight: 600;
   padding: 6px;
 }
+.cell-controls {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cell-controls :deep(.ant-select-selector .ant-select-selection-item),
+.cell-controls :deep(.ant-select-selector .ant-select-selection-placeholder) {
+  color: #000000 !important;
+}
+.cell-controls :deep(.ant-select-disabled .ant-select-selector),
+.cell-controls :deep(.ant-select-disabled .ant-select-selector .ant-select-selection-item),
+.cell-controls :deep(.ant-select-disabled .ant-select-selector .ant-select-selection-placeholder) {
+  color: #000000 !important;
+  opacity: 1 !important;
+}
 .cell-body { flex: 1; display: flex; align-items: stretch; justify-content: stretch; background:#000; }
 .placeholder { flex: 1; display: flex; align-items: center; justify-content: center; color: #00000099; background: transparent; width: 100%; }
 .placeholder.inverse { color: #ffffff99; }
@@ -226,4 +352,22 @@ async function changeStream(c: CamEntry, val: '01'|'02') {
 .cell-no-cam .cell-body { background: #fff !important; }
 .cell-none { background: #fff; }
 .cell-none .cell-body { background: #fff !important; }
+
+.snapshot-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.snapshot-container img {
+  width: 100%;
+  border-radius: 4px;
+}
+
+.snapshot-empty {
+  width: 100%;
+  text-align: center;
+  color: #00000066;
+  padding: 24px 0;
+}
 </style>

@@ -1,5 +1,8 @@
 package com.example.nvr;
 
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -96,5 +99,56 @@ public class NvrController {
         data.put("portCount", portCount);
         return ResponseEntity.ok(data);
     }
-}
 
+    @GetMapping("/snapshot")
+    public ResponseEntity<byte[]> snapshot(
+            @RequestParam String host,
+            @RequestParam String user,
+            @RequestParam String pass,
+            @RequestParam String channel,
+            @RequestParam(defaultValue = "http") String scheme,
+            @RequestParam(name = "httpPort", required = false) Integer httpPort
+    ) {
+        String normalizedChannel = channel == null ? "" : channel.replaceAll("[^0-9]", "").trim();
+        if (normalizedChannel.isEmpty()) {
+            HttpHeaders headers = new HttpHeaders();
+            headers.set(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_PLAIN_VALUE + ";charset=UTF-8");
+            String err = "channel 参数必填";
+            return new ResponseEntity<>(err.getBytes(StandardCharsets.UTF_8), headers, HttpStatus.BAD_REQUEST);
+        }
+
+        String base = scheme + "://" + host + (httpPort != null ? (":" + httpPort) : "");
+        String url = base + "/ISAPI/Streaming/channels/" + normalizedChannel + "/picture";
+        String basic = Base64.getEncoder().encodeToString((user + ":" + pass).getBytes(StandardCharsets.UTF_8));
+        HttpClient client = HttpClient.newBuilder().build();
+        HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                .header("Authorization", "Basic " + basic)
+                .header("Accept", "image/jpeg")
+                .GET()
+                .build();
+        try {
+            HttpResponse<byte[]> resp = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            int status = resp.statusCode();
+            byte[] body = resp.body();
+            if (status >= 200 && status < 300 && body != null && body.length > 0) {
+                HttpHeaders headers = new HttpHeaders();
+                String contentType = resp.headers().firstValue("Content-Type").orElse(MediaType.IMAGE_JPEG_VALUE);
+                headers.set(HttpHeaders.CONTENT_TYPE, contentType);
+                headers.setContentLength(body.length);
+                return new ResponseEntity<>(body, headers, HttpStatus.OK);
+            }
+            String responseText = body != null && body.length > 0
+                    ? new String(body, StandardCharsets.UTF_8)
+                    : ("HTTP " + status);
+            HttpHeaders headers = new HttpHeaders();
+            headers.set(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_PLAIN_VALUE + ";charset=UTF-8");
+            String err = "抓拍失败：" + responseText;
+            return new ResponseEntity<>(err.getBytes(StandardCharsets.UTF_8), headers, HttpStatus.BAD_GATEWAY);
+        } catch (Exception ex) {
+            HttpHeaders headers = new HttpHeaders();
+            headers.set(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_PLAIN_VALUE + ";charset=UTF-8");
+            String err = "抓拍失败：" + ex.getMessage();
+            return new ResponseEntity<>(err.getBytes(StandardCharsets.UTF_8), headers, HttpStatus.BAD_GATEWAY);
+        }
+    }
+}
