@@ -45,7 +45,7 @@ public class WebRtcStreamerService {
     @Value("${nvr.webrtc.config:third_party/webrtc-streamer/share/webrtc-streamer/config.json}")
     private String configPath;
 
-    @Value("${nvr.webrtc.extraArgs:-o}")
+    @Value("${nvr.webrtc.extraArgs:}")
     private String extraArgs;
 
     private Process process;
@@ -116,9 +116,14 @@ public class WebRtcStreamerService {
                 command.add(resolvedConfig.toAbsolutePath().toString());
             }
             for (String extra : tokenize(extraArgs)) {
-                if (!extra.isBlank()) {
-                    command.add(extra);
+                if (extra.isBlank()) {
+                    continue;
                 }
+                if ("-o".equals(extra)) {
+                    log.warn("Skipping '-o' flag for WebRTC streamer to avoid null-codec instability");
+                    continue;
+                }
+                command.add(extra);
             }
 
             ProcessBuilder pb = new ProcessBuilder(command);
@@ -150,6 +155,7 @@ public class WebRtcStreamerService {
                         recordFailure("system", "exit", Map.of(
                             "exitCode", exit
                         ));
+                        scheduleRestart(exit);
                     }
                 } catch (InterruptedException ignored) {
                     Thread.currentThread().interrupt();
@@ -341,6 +347,34 @@ public class WebRtcStreamerService {
             return null;
         }
         return url.substring(start, end);
+    }
+
+    private void scheduleRestart(int exitCode) {
+        if (!enabled) {
+            return;
+        }
+        Thread restartThread = new Thread(() -> {
+            try {
+                Thread.sleep(2000L);
+                synchronized (WebRtcStreamerService.this) {
+                    if (process == null) {
+                        try {
+                            log.info("Restarting WebRTC streamer after exit code {}", exitCode);
+                            start();
+                        } catch (IOException e) {
+                            log.error("Failed to restart WebRTC streamer", e);
+                            recordFailure("system", "restart", Map.of(
+                                "message", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()
+                            ));
+                        }
+                    }
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }, "webrtc-streamer-restart");
+        restartThread.setDaemon(true);
+        restartThread.start();
     }
 
     private static final class FailureRecord {

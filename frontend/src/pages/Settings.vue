@@ -123,6 +123,14 @@ async function testRadar() {
 
 // 清除缓存（删除 HLS 清单与分片）
 const clearTargetId = ref<string>('')
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)))
+  const value = bytes / Math.pow(1024, index)
+  return `${value.toFixed(index >= 2 ? 2 : 1)} ${units[index]}`
+}
+
 async function clearHls() {
   const id = (clearTargetId.value || '').trim()
   const title = id ? `确定删除 ${id} 的 HLS 文件？` : '确定删除所有流的 HLS 文件？'
@@ -142,7 +150,14 @@ async function clearHls() {
         if (!resp.ok) throw new Error(`API ${resp.status}`)
         const data: any = await resp.json()
         if (data?.ok) {
-          message.success(`已删除 ${data.deleted || 0} 个文件`)
+          const deleted = Number(data?.deleted || 0)
+          const webrtcDirs = Array.isArray(data?.webrtcDirs) ? data.webrtcDirs.length : 0
+          const bytesFreed = Number(data?.bytesFreed || 0)
+          Modal.success({
+            title: '缓存清理完成',
+            content: `释放磁盘空间：${formatBytes(bytesFreed)}（HLS 文件 ${deleted} 个，WebRTC 缓存目录 ${webrtcDirs} 个）`,
+            okText: '好的'
+          })
         } else {
           message.error('删除失败：' + (data?.error || '未知错误'))
         }

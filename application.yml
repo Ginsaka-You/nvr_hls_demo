@@ -20,7 +20,7 @@ nvr:
     hostPort: 0.0.0.0:8800
     webRoot: third_party/webrtc-streamer/share/webrtc-streamer/html
     config: third_party/webrtc-streamer/share/webrtc-streamer/config.json
-    extraArgs: "-o -v"
+    extraArgs: "-v"
 
 spring:
   mvc:

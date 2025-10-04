@@ -114,6 +114,7 @@ async function startOne(id: string, silent = false, timeoutMs = 15000, pollMs = 
         kind: 'webrtc',
         server: normalizedServer,
         url: webrtcUrl,
+        audioUrl: webrtcUrl, // reuse RTSP for audio so peer receives camera audio track
         options: (webrtcOptions.value || '').trim() || undefined,
         preferCodec: (webrtcPreferCodec.value || '').trim() || undefined
       }
@@ -386,6 +387,40 @@ async function changeStream(c: CamEntry, val: '01'|'02') {
   }
 }
 
+async function reloadAll() {
+  if (loading.value) return
+  loading.value = true
+  try {
+    failureTimestamps.clear()
+    const ids = new Set<string>()
+    for (const cam of cams.value) {
+      if (cam.idMain) ids.add(cam.idMain)
+      if (cam.idSub) ids.add(cam.idSub)
+    }
+    if (ids.size) {
+      await Promise.all(Array.from(ids).map(id => stopStream(id)))
+    }
+    urls.value = {}
+    cams.value = cams.value.map(cam => ({
+      ...cam,
+      stream: undefined,
+      status: 'detecting',
+      err: undefined,
+      hasMain: false,
+      hasSub: false,
+      fallbackTried: false
+    }))
+    if (!overridePairs.value.length) {
+      await discoverPorts()
+    }
+    await detect()
+  } finally {
+    if (loading.value) {
+      loading.value = false
+    }
+  }
+}
+
 function commitCamUpdate(c: CamEntry) {
   const idx = cams.value.findIndex(item => item.port === c.port)
   if (idx !== -1) {
@@ -562,6 +597,9 @@ async function applyWebRtcFailure(failure: any) {
     <a-layout-content style="padding:12px; color:#000;">
 
       <div class="multi-panel">
+        <div class="toolbar">
+          <a-button type="primary" size="small" :loading="loading" @click="reloadAll">重新加载摄像头</a-button>
+        </div>
         <div class="grid-3">
           <div class="cell" :class="{ 'underline-bottom': c.port === 6, 'cell-no-cam': !c.stream && (c.status==='detecting' || c.status==='error'), 'cell-none': c.status==='none' }" v-for="c in cams" :key="c.port">
             <div class="cell-header">
@@ -623,14 +661,24 @@ async function applyWebRtcFailure(failure: any) {
   box-shadow: 0 2px 10px rgba(0,0,0,0.06);
   height: calc(100vh - 64px - 24px);
   overflow: hidden; /* 圆角裁剪，和左侧悬浮面板一致 */
+  display: flex;
+  flex-direction: column;
+}
+
+.toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 12px 0;
+  gap: 8px;
 }
 
 /* 宫格（每行3列） */
 .grid-3 {
+  flex: 1;
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  height: 100%;
   grid-auto-rows: 1fr;
+  min-height: 0;
 }
 
 /* 单元格内细分割线 */
