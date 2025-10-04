@@ -53,6 +53,9 @@ public class WebRtcStreamerService {
     private final AtomicBoolean starting = new AtomicBoolean(false);
     private final Object failureLock = new Object();
     private final Deque<FailureRecord> failureHistory = new ArrayDeque<>();
+    private final Object restartLock = new Object();
+    private int autoRestartAttempts = 0;
+    private boolean autoRestartPending = false;
     @PostConstruct
     public void init() {
         if (!enabled) {
@@ -173,6 +176,13 @@ public class WebRtcStreamerService {
             throw e;
         } finally {
             starting.set(false);
+            synchronized (restartLock) {
+                if (autoRestartPending) {
+                    autoRestartPending = false;
+                } else {
+                    autoRestartAttempts = 0;
+                }
+            }
         }
     }
 
@@ -352,7 +362,37 @@ public class WebRtcStreamerService {
         if (!enabled) {
             return;
         }
-        log.warn("WebRTC streamer exit code {} – auto restart disabled; awaiting manual recovery", exitCode);
+        synchronized (restartLock) {
+            if (autoRestartAttempts >= 1) {
+                log.error("Skipping automatic WebRTC streamer restart after repeated failures (exit code {})", exitCode);
+                return;
+            }
+            autoRestartAttempts++;
+            autoRestartPending = true;
+        }
+
+        Thread restartThread = new Thread(() -> {
+            try {
+                Thread.sleep(2000L);
+                synchronized (WebRtcStreamerService.this) {
+                    if (process == null) {
+                        try {
+                            log.info("Restarting WebRTC streamer after exit code {}", exitCode);
+                            start();
+                        } catch (IOException e) {
+                            log.error("Failed to restart WebRTC streamer", e);
+                            recordFailure("system", "restart", Map.of(
+                                "message", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()
+                            ));
+                        }
+                    }
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }, "webrtc-streamer-restart");
+        restartThread.setDaemon(true);
+        restartThread.start();
     }
 
     private static final class FailureRecord {

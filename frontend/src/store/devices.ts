@@ -1,5 +1,6 @@
 import { readonly, ref, watch, WatchStopHandle } from 'vue'
-import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, radarHost, radarCtrlPort, radarDataPort, radarUseTcp, streamMode, webrtcServer } from './config'
+import { radarHost, radarCtrlPort, radarDataPort, radarUseTcp, nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, streamMode, webrtcServer } from './config'
+import { cameraHealth, resetCameraHealth } from './cameraHealth'
 
 export type DeviceState = {
   status: 'unknown' | 'ok' | 'error'
@@ -64,182 +65,13 @@ async function runRadarCheck() {
   }
 }
 
-async function detectCameraPorts(): Promise<number[]> {
-  const host = (nvrHost.value || '').trim()
-  const user = (nvrUser.value || '').trim()
-  const pass = (nvrPass.value || '').trim()
-  const params = new URLSearchParams({ host, user, pass, scheme: nvrScheme.value })
-  if (nvrHttpPort.value) params.set('httpPort', String(nvrHttpPort.value))
-  try {
-    const resp = await fetch(`/api/nvr/channels?${params.toString()}`)
-    if (!resp.ok) return []
-    const json: any = await resp.json().catch(() => ({}))
-    if (json?.ok) {
-      const ports = new Set<number>()
-      const channels: any[] = Array.isArray(json.channels) ? json.channels : []
-      channels.forEach(ch => {
-        const id = Number(ch?.id || ch?.channelId || ch?.index)
-        if (!Number.isFinite(id)) return
-        const port = Math.floor(id / 100)
-        ports.add(port > 0 ? port : id)
-      })
-      const normalized = Array.from(ports).filter(p => p > 0)
-      if (normalized.length) return normalized.sort((a, b) => a - b)
-    }
-  } catch {}
-  const fallback = Math.max(8, portCount.value || 0)
-  return Array.from({ length: fallback }, (_, i) => i + 1)
-}
-
-async function startCameraStream(id: string, host: string, user: string, pass: string): Promise<boolean> {
-  const digits = id.match(/\d+/)?.[0] || ''
-  if (!digits) return false
-  const rtsp = `rtsp://${user}:${encodeURIComponent(pass)}@${host}:554/Streaming/Channels/${digits}`
-  try {
-    const resp = await fetch(`/api/streams/${id}/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `rtspUrl=${encodeURIComponent(rtsp)}`
-    })
-    if (!resp.ok) return false
-    return waitStreamReady(id)
-  } catch {
-    return false
-  }
-}
-
-async function waitStreamReady(id: string, timeoutMs = 5000, pollMs = 400) {
-  const started = Date.now()
-  while (Date.now() - started < timeoutMs) {
-    try {
-      const resp = await fetch(`/api/streams/${id}/status`)
-      if (resp.ok) {
-        const json = await resp.json()
-        if (json?.probe?.m3u8Exists) return true
-      }
-    } catch {}
-    await new Promise(resolve => setTimeout(resolve, pollMs))
-  }
-  return false
-}
-
-async function stopCameraStream(id: string) {
-  try {
-    await fetch(`/api/streams/${id}`, { method: 'DELETE' })
-  } catch (_) {}
-}
-
-async function evaluateHlsAvailability(ports: number[], host: string, user: string, pass: string): Promise<{ available: number }> {
-  let available = 0
-  const started: string[] = []
-  for (const port of ports) {
-    if (!port) continue
-    const subId = `cam${port}02`
-    const mainId = `cam${port}01`
-    let ok = await startCameraStream(subId, host, user, pass)
-    if (ok) {
-      available++
-      started.push(subId)
-      continue
-    }
-    ok = await startCameraStream(mainId, host, user, pass)
-    if (ok) {
-      available++
-      started.push(mainId)
-    }
-  }
-  if (started.length) {
-    await Promise.all(started.map(stopCameraStream))
-  }
-  return { available }
-}
-
-async function fetchRecentWebRtcFailures(windowMs = 20000): Promise<Set<string>> {
-  try {
-    const resp = await fetch(`/api/webrtc/failures?since=${windowMs}`)
-    if (!resp.ok) return new Set<string>()
-    const data: any = await resp.json().catch(() => ({}))
-    const failures: any[] = Array.isArray(data?.failures) ? data.failures : []
-    const channels = new Set<string>()
-    failures.forEach(item => {
-      const channel = String(item?.channel || '').trim()
-      if (channel) {
-        channels.add(channel)
-      }
-    })
-    return channels
-  } catch (_) {
-    return new Set<string>()
-  }
-}
-
-async function evaluateWebRtcAvailability(ports: number[]): Promise<{ available: number }> {
-  const server = (webrtcServer.value || '').trim()
-  if (!server) {
-    return { available: 0 }
-  }
-  const failureChannels = await fetchRecentWebRtcFailures(60000)
-  let available = 0
-  for (const port of ports) {
-    const subId = `cam${port}02`
-    const mainId = `cam${port}01`
-    const subFail = failureChannels.has(subId)
-    const mainFail = failureChannels.has(mainId)
-    if (!subFail || !mainFail) {
-      available++
-    }
-  }
-  return { available }
-}
-
-async function runCameraCheck() {
-  const host = (nvrHost.value || '').trim()
-  const user = (nvrUser.value || '').trim()
-  const pass = (nvrPass.value || '').trim()
-  if (!host || !user || !pass) {
-    cameraState.value = { status: 'error', message: '未配置', failureCount: FAILURE_THRESHOLD }
-    return
-  }
-  try {
-    const totalPorts = await detectCameraPorts()
-    if (!totalPorts.length) {
-      cameraState.value = { status: 'error', message: '无可用通道', failureCount: FAILURE_THRESHOLD }
-      return
-    }
-    const { available } = streamMode.value === 'webrtc'
-      ? await evaluateWebRtcAvailability(totalPorts)
-      : await evaluateHlsAvailability(totalPorts, host, user, pass)
-
-    if (available > 0) {
-      cameraState.value = { status: 'ok', message: `可用 ${available} 路`, failureCount: 0 }
-    } else {
-      const count = Math.min(FAILURE_THRESHOLD, cameraState.value.failureCount + 1)
-      cameraState.value = {
-        status: 'error',
-        message: '无可用摄像头',
-        failureCount: count
-      }
-    }
-  } catch (e: any) {
-    const count = Math.min(FAILURE_THRESHOLD, cameraState.value.failureCount + 1)
-    cameraState.value = {
-      status: 'error',
-      message: normalizeError(e?.message),
-      failureCount: count
-    }
-  }
-}
-
 function startTimers() {
   if (radarTimer) window.clearInterval(radarTimer)
   radarTimer = window.setInterval(() => { void runRadarCheck() }, DETECT_INTERVAL_MS)
-  if (cameraTimer) window.clearInterval(cameraTimer)
-  cameraTimer = window.setInterval(() => { void runCameraCheck() }, DETECT_INTERVAL_MS)
 }
 
 function setupConfigWatchers() {
   if (radarWatchStop) radarWatchStop()
-  if (cameraWatchStop) cameraWatchStop()
 
   radarWatchStop = watch([radarHost, radarCtrlPort, radarDataPort, radarUseTcp], () => {
     if (radarConfigDebounce) window.clearTimeout(radarConfigDebounce)
@@ -248,38 +80,46 @@ function setupConfigWatchers() {
       void runRadarCheck()
     }, 300)
   })
-
-  cameraWatchStop = watch([nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, streamMode, webrtcServer], () => {
-    if (cameraConfigDebounce) window.clearTimeout(cameraConfigDebounce)
-    cameraConfigDebounce = window.setTimeout(() => {
-      cameraState.value = { status: 'unknown', message: '正在检测...', failureCount: 0 }
-      void runCameraCheck()
-    }, 300)
-  })
 }
 
 export function connectDeviceMonitoring() {
   if (connected) return
   connected = true
   void runRadarCheck()
-  void runCameraCheck()
   startTimers()
   setupConfigWatchers()
+
+  cameraWatchStop = watch(
+    [cameraHealth.status, cameraHealth.message, cameraHealth.available, cameraHealth.total],
+    () => {
+      const statusValue = cameraHealth.status.value
+      const messageValue = cameraHealth.message.value
+      const failureCount = statusValue === 'error' ? FAILURE_THRESHOLD : 0
+      cameraState.value = { status: statusValue, message: messageValue, failureCount }
+    },
+    { immediate: true }
+  )
+
+  watch([nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, streamMode, webrtcServer], () => {
+    if (cameraConfigDebounce) window.clearTimeout(cameraConfigDebounce)
+    cameraConfigDebounce = window.setTimeout(() => {
+      resetCameraHealth()
+      cameraState.value = { status: 'unknown', message: '正在检测...', failureCount: 0 }
+    }, 300)
+  })
 }
 
 export function disconnectDeviceMonitoring() {
   connected = false
   if (radarTimer) window.clearInterval(radarTimer)
-  if (cameraTimer) window.clearInterval(cameraTimer)
   radarTimer = null
-  cameraTimer = null
   if (radarWatchStop) radarWatchStop()
-  if (cameraWatchStop) cameraWatchStop()
   radarWatchStop = null
-  cameraWatchStop = null
   if (radarConfigDebounce) window.clearTimeout(radarConfigDebounce)
-  if (cameraConfigDebounce) window.clearTimeout(cameraConfigDebounce)
   radarConfigDebounce = null
+  if (cameraWatchStop) cameraWatchStop()
+  cameraWatchStop = null
+  if (cameraConfigDebounce) window.clearTimeout(cameraConfigDebounce)
   cameraConfigDebounce = null
 }
 
