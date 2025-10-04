@@ -133,6 +133,7 @@ public class WebRtcStreamerService {
                     String line;
                     while ((line = reader.readLine()) != null) {
                         log.info("[webrtc-streamer] {}", line);
+                        handleStreamerLogLine(line);
                     }
                 } catch (IOException ioe) {
                     log.debug("WebRTC streamer log reader stopped", ioe);
@@ -289,6 +290,57 @@ public class WebRtcStreamerService {
         view.put("timestamp", record.timestamp);
         view.put("channel", record.channel);
         return view;
+    }
+
+    private void handleStreamerLogLine(String line) {
+        if (line == null || line.isBlank()) {
+            return;
+        }
+        if (!line.contains("404")) {
+            return;
+        }
+        String url = extractRtspUrl(line);
+        if (url == null) {
+            return;
+        }
+        String channelSuffix = extractChannelSuffix(url);
+        if (channelSuffix == null) {
+            return;
+        }
+        Map<String, Object> details = new HashMap<>();
+        details.put("message", "RTSP 404 Not Found");
+        details.put("rtspUrl", url);
+        details.put("log", line);
+        recordFailure("cam" + channelSuffix, "rtsp-404", details);
+    }
+
+    private String extractRtspUrl(String line) {
+        int idx = line.indexOf("rtsp://");
+        if (idx == -1) {
+            return null;
+        }
+        int end = line.indexOf(' ', idx);
+        if (end == -1) {
+            end = line.length();
+        }
+        return line.substring(idx, end).trim();
+    }
+
+    private String extractChannelSuffix(String url) {
+        final String marker = "/Streaming/Channels/";
+        int idx = url.indexOf(marker);
+        if (idx == -1) {
+            return null;
+        }
+        int start = idx + marker.length();
+        int end = start;
+        while (end < url.length() && Character.isDigit(url.charAt(end))) {
+            end++;
+        }
+        if (end == start) {
+            return null;
+        }
+        return url.substring(start, end);
     }
 
     private static final class FailureRecord {

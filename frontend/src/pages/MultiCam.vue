@@ -32,6 +32,8 @@ const cams = ref<CamEntry[]>([])
 
 const snapshotPreview = reactive({ visible: false, img: '', title: '' })
 let snapshotObjectUrl: string | null = null
+let failureTimer: ReturnType<typeof setInterval> | null = null
+const failureTimestamps = new Map<string, number>()
 
 function cleanupSnapshotUrl() {
   if (snapshotObjectUrl) {
@@ -56,7 +58,10 @@ watch(() => snapshotPreview.visible, v => {
   }
 })
 
-onBeforeUnmount(() => cleanupSnapshotUrl())
+onBeforeUnmount(() => {
+  cleanupSnapshotUrl()
+  stopFailureMonitor()
+})
 
 async function startOne(id: string, silent = false, timeoutMs = 15000, pollMs = 800): Promise<boolean> {
   const ch = (id.match(/\d+/)?.[0]) || '401'
@@ -223,6 +228,14 @@ watch([nvrUser, nvrPass, nvrHost, detectMain, detectSub, portCount, streamMode, 
     await detect()
   }, 500)
 })
+
+watch(() => useWebRtc.value, async val => {
+  if (val) {
+    await startFailureMonitor()
+  } else {
+    stopFailureMonitor()
+  }
+}, { immediate: true })
 
 // 自动检测并启动：优先子码流，必要时可尝试主码流
 async function detect() {
@@ -401,6 +414,26 @@ function onStreamConnected(c: CamEntry) {
 
 async function onStreamFailed(c: CamEntry, reason?: string) {
   if (!c.stream) return
+  const currentId = c.selected === '02' ? c.idSub : c.idMain
+  const otherId = c.selected === '02' ? c.idMain : c.idSub
+  const normalizedReason = (reason || '').toLowerCase()
+  const isWebRtcNotFound = useWebRtc.value && normalizedReason.includes('404')
+
+  if (isWebRtcNotFound) {
+    await stopStream(currentId)
+    if (otherId && otherId !== currentId) {
+      await stopStream(otherId)
+    }
+    c.stream = undefined
+    c.err = '未检测到摄像头'
+    c.hasSub = false
+    c.hasMain = false
+    c.status = 'error'
+    c.fallbackTried = true
+    commitCamUpdate(c)
+    return
+  }
+
   c.err = reason || '连接失败'
   if (c.selected === '02') c.hasSub = false
   if (c.selected === '01') c.hasMain = false
@@ -457,6 +490,71 @@ async function takeSnapshot(c: CamEntry) {
     cams.value[idx] = { ...c }
   }
 }
+
+async function startFailureMonitor() {
+  if (failureTimer) return
+  await fetchWebRtcFailures()
+  failureTimer = setInterval(() => {
+    void fetchWebRtcFailures()
+  }, 5000)
+}
+
+function stopFailureMonitor() {
+  if (failureTimer) {
+    clearInterval(failureTimer)
+    failureTimer = null
+  }
+}
+
+async function fetchWebRtcFailures(windowMs = 20000) {
+  if (!useWebRtc.value) return
+  try {
+    const resp = await fetch(`/api/webrtc/failures?since=${windowMs}`)
+    if (!resp.ok) return
+    const data: any = await resp.json()
+    const failures: any[] = Array.isArray(data?.failures) ? data.failures : []
+    for (const failure of failures) {
+      await applyWebRtcFailure(failure)
+    }
+  } catch (err) {
+    console.debug('[MultiCam] poll webrtc failures error', err)
+  }
+}
+
+async function applyWebRtcFailure(failure: any) {
+  if (!failure) return
+  const channelRaw = failure.channel
+  if (!channelRaw) return
+  const channel = String(channelRaw).trim()
+  if (!channel) return
+  const code = String(failure.code || failure.message || '').toLowerCase()
+  if (!code.includes('404')) return
+  const timestamp = Number(failure.timestamp || Date.now())
+  const lastTs = failureTimestamps.get(channel)
+  if (lastTs && timestamp <= lastTs) {
+    return
+  }
+  failureTimestamps.set(channel, timestamp)
+
+  const cam = cams.value.find(item => item.idSub === channel || item.idMain === channel)
+  if (!cam) return
+
+  const isSubFailure = cam.idSub === channel
+  const isMainFailure = cam.idMain === channel
+  const activeChannel = cam.selected === '02' ? cam.idSub : cam.idMain
+  const shouldStopActive = activeChannel === channel
+
+  if (shouldStopActive) {
+    await stopStream(channel)
+    cam.stream = undefined
+    cam.status = 'error'
+    cam.err = '未检测到摄像头'
+  }
+  if (isSubFailure) cam.hasSub = false
+  if (isMainFailure) cam.hasMain = false
+  cam.fallbackTried = true
+  commitCamUpdate(cam)
+}
 </script>
 
 <template>
@@ -491,12 +589,13 @@ async function takeSnapshot(c: CamEntry) {
                     @failed="onStreamFailed(c, $event)"
                   />
                   <div v-if="c.status==='detecting'" class="overlay info">正在连接…</div>
-                  <div v-else-if="c.status==='error'" class="overlay error">{{ c.err || '连接失败' }}</div>
+                  <div v-else-if="c.status==='error'" class="overlay error">{{ c.err || '未检测到摄像头' }}</div>
                 </div>
               </template>
               <template v-else>
                 <div v-if="c.status==='none'" class="placeholder">无摄像头</div>
                 <div v-else-if="c.status==='detecting'" class="placeholder">正在自动检测摄像头…</div>
+                <div v-else-if="c.status==='error'" class="placeholder error">{{ c.err || '未检测到摄像头' }}</div>
                 <div v-else class="placeholder">检测失败</div>
               </template>
             </div>

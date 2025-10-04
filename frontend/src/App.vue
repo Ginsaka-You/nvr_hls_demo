@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import type { Component } from 'vue'
 import { SettingFilled } from '@ant-design/icons-vue'
 import Overview from './dashboard/Overview.vue'
 import MultiCam from './pages/MultiCam.vue'
@@ -58,6 +59,25 @@ function onMenuClick(e: any) {
 function gotoSettings() { tab.value = 'settings' }
 function gotoHome() { tab.value = 'main' }
 
+type NonMultiCamTab = Exclude<Tab, 'multicam'>
+const tabComponents: Record<NonMultiCamTab, Component> = {
+  main: Overview,
+  imsi: ImsiTrend,
+  radar: RadarPlot,
+  seismic: SeismicWave,
+  drone: DroneTelemetry,
+  big8: BigDataView8,
+  big61: BigDataView61,
+  big67: BigDataView67,
+  axure: AxureDemo,
+  settings: Settings
+}
+
+const activeComponent = computed<Component | null>(() => {
+  if (tab.value === 'multicam') return null
+  return tabComponents[tab.value as NonMultiCamTab] ?? null
+})
+
 // 全局建立告警订阅（推送/拉取），保持在所有页面可用
 connectAlerts()
 connectRadar()
@@ -111,17 +131,13 @@ connectDeviceMonitoring()
     </a-layout-header>
     <a-layout>
       <a-layout-content>
-        <Overview v-if="tab==='main'" />
-        <MultiCam v-else-if="tab==='multicam'" />
-        <ImsiTrend v-else-if="tab==='imsi'" />
-        <RadarPlot v-else-if="tab==='radar'" />
-        <SeismicWave v-else-if="tab==='seismic'" />
-        <DroneTelemetry v-else-if="tab==='drone'" />
-        <BigDataView8 v-else-if="tab==='big8'" />
-        <BigDataView61 v-else-if="tab==='big61'" />
-        <BigDataView67 v-else-if="tab==='big67'" />
-        <AxureDemo v-else-if="tab==='axure'" />
-        <Settings v-else-if="tab==='settings'" />
+        <MultiCam class="tab-view" v-show="tab==='multicam'" />
+        <component
+          v-if="activeComponent"
+          :key="tab"
+          :is="activeComponent"
+          class="tab-view"
+        />
       </a-layout-content>
     </a-layout>
   </a-layout>

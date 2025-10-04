@@ -81,7 +81,12 @@ export class WebRtcStreamerClient {
       body: JSON.stringify(offer),
       headers: { 'Content-Type': 'application/json' }
     })
-    if (!callResp.ok) throw new Error(`call HTTP ${callResp.status}`)
+    if (!callResp.ok) {
+      if (callResp.status === 404) {
+        throw new Error('WebRTC stream not found (404)')
+      }
+      throw new Error(`call HTTP ${callResp.status}`)
+    }
 
     const answer = await callResp.json()
     await peer.setRemoteDescription(new RTCSessionDescription(answer))
