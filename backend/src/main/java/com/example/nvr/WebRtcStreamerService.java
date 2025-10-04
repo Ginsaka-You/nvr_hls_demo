@@ -54,8 +54,8 @@ public class WebRtcStreamerService {
     private final Object failureLock = new Object();
     private final Deque<FailureRecord> failureHistory = new ArrayDeque<>();
     private final Object restartLock = new Object();
-    private int autoRestartAttempts = 0;
-    private boolean autoRestartPending = false;
+    private long lastRestartTimestamp = 0L;
+    private int restartAttempts = 0;
     @PostConstruct
     public void init() {
         if (!enabled) {
@@ -176,13 +176,6 @@ public class WebRtcStreamerService {
             throw e;
         } finally {
             starting.set(false);
-            synchronized (restartLock) {
-                if (autoRestartPending) {
-                    autoRestartPending = false;
-                } else {
-                    autoRestartAttempts = 0;
-                }
-            }
         }
     }
 
@@ -362,13 +355,17 @@ public class WebRtcStreamerService {
         if (!enabled) {
             return;
         }
+        long now = System.currentTimeMillis();
         synchronized (restartLock) {
-            if (autoRestartAttempts >= 1) {
-                log.error("Skipping automatic WebRTC streamer restart after repeated failures (exit code {})", exitCode);
+            if (now - lastRestartTimestamp > 60_000L) {
+                restartAttempts = 0;
+            }
+            if (restartAttempts >= 1) {
+                log.warn("WebRTC streamer exited with code {}; automatic restart already attempted recently, waiting for manual recovery.", exitCode);
                 return;
             }
-            autoRestartAttempts++;
-            autoRestartPending = true;
+            restartAttempts++;
+            lastRestartTimestamp = now;
         }
 
         Thread restartThread = new Thread(() -> {

@@ -86,6 +86,8 @@ export function connectDeviceMonitoring() {
   if (connected) return
   connected = true
   void runRadarCheck()
+  cameraState.value = { status: 'unknown', message: '正在检测...', failureCount: 0 }
+  resetCameraHealth()
   startTimers()
   setupConfigWatchers()
 

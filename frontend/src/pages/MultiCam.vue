@@ -36,6 +36,8 @@ let snapshotObjectUrl: string | null = null
 let failureTimer: ReturnType<typeof setInterval> | null = null
 const failureTimestamps = new Map<string, number>()
 let lastRestartHandled = 0
+let detectionInProgress = false
+const FAILURE_SUPPRESS_MS = 60_000
 
 function cleanupSnapshotUrl() {
   if (snapshotObjectUrl) {
@@ -66,6 +68,10 @@ onBeforeUnmount(() => {
 })
 
 function updateCameraHealthFromCams() {
+  if (detectionInProgress) {
+    resetCameraHealth('正在检测...')
+    return
+  }
   const list = cams.value
   const total = list.length
   const ok = list.filter(item => item.status === 'ok').length
@@ -78,6 +84,11 @@ function updateCameraHealthFromCams() {
   } else {
     setCameraHealth(0, total)
   }
+}
+
+function isSuppressed(id: string) {
+  const ts = failureTimestamps.get(id)
+  return !!ts && Date.now() - ts < FAILURE_SUPPRESS_MS
 }
 
 async function startOne(id: string, silent = false, timeoutMs = 15000, pollMs = 800): Promise<boolean> {
@@ -259,6 +270,7 @@ watch(() => useWebRtc.value, async val => {
 async function detect() {
   resetCameraHealth()
   loading.value = true
+  detectionInProgress = true
   try {
     const overrides = overridePairs.value
     if (overrides.length) {
@@ -290,8 +302,12 @@ async function detect() {
           const canDetectSub = detectSub.value && c.idSub !== c.idMain
           let okSub = false
           let okMain = false
-          if (canDetectSub) okSub = await startOne(c.idSub, true, 4000, 250)
-          if (!okSub && detectMain.value) okMain = await startOne(c.idMain, true, 4000, 250)
+          if (canDetectSub && !(useWebRtc.value && isSuppressed(c.idSub))) {
+            okSub = await startOne(c.idSub, true, 4000, 250)
+          }
+          if (!okSub && detectMain.value && !(useWebRtc.value && isSuppressed(c.idMain))) {
+            okMain = await startOne(c.idMain, true, 4000, 250)
+          }
           if (okSub || okMain) {
             c.selected = okSub ? '02' : '01'
             const id = c.selected === '02' ? c.idSub : c.idMain
@@ -339,8 +355,12 @@ async function detect() {
       try {
         let okSub = false
         let okMain = false
-        if (detectSub.value) okSub = await startOne(c.idSub, true, 4000, 250)
-        if (!okSub && detectMain.value) okMain = await startOne(c.idMain, true, 4000, 250)
+        if (detectSub.value && !(useWebRtc.value && isSuppressed(c.idSub))) {
+          okSub = await startOne(c.idSub, true, 4000, 250)
+        }
+        if (!okSub && detectMain.value && !(useWebRtc.value && isSuppressed(c.idMain))) {
+          okMain = await startOne(c.idMain, true, 4000, 250)
+        }
         c.hasSub = okSub
         c.hasMain = okMain
         if (okSub || okMain) {
@@ -364,6 +384,8 @@ async function detect() {
     }
     updateCameraHealthFromCams()
   } finally {
+    detectionInProgress = false
+    updateCameraHealthFromCams()
     loading.value = false
   }
 }
@@ -409,12 +431,15 @@ async function changeStream(c: CamEntry, val: '01'|'02') {
   }
 }
 
-async function reloadAll() {
+async function reloadAll(options: { preserveFailures?: boolean } = {}) {
+  const { preserveFailures = false } = options
   if (loading.value) return
   loading.value = true
   try {
     resetCameraHealth()
-    failureTimestamps.clear()
+    if (!preserveFailures) {
+      failureTimestamps.clear()
+    }
     const ids = new Set<string>()
     for (const cam of cams.value) {
       if (cam.idMain) ids.add(cam.idMain)
@@ -442,6 +467,31 @@ async function reloadAll() {
       loading.value = false
     }
   }
+}
+
+async function disconnectAll() {
+  if (loading.value) return
+  resetCameraHealth('已断开，待检测…')
+  failureTimestamps.clear()
+  const ids = new Set<string>()
+  for (const cam of cams.value) {
+    if (cam.idMain) ids.add(cam.idMain)
+    if (cam.idSub) ids.add(cam.idSub)
+  }
+  if (ids.size) {
+    await Promise.all(Array.from(ids).map(id => stopStream(id)))
+  }
+  cams.value = cams.value.map(cam => ({
+    ...cam,
+    stream: undefined,
+    status: 'none',
+    err: undefined,
+    hasMain: false,
+    hasSub: false,
+    fallbackTried: false
+  }))
+  urls.value = {}
+  updateCameraHealthFromCams()
 }
 
 function commitCamUpdate(c: CamEntry) {
@@ -591,7 +641,7 @@ async function applyWebRtcFailure(failure: any) {
     const ts = Number(failure.timestamp || Date.now())
     if (ts > lastRestartHandled && (code.includes('restart') || code.includes('exit'))) {
       lastRestartHandled = ts
-      await reloadAll()
+      await reloadAll({ preserveFailures: true })
     }
     return
   }
@@ -631,6 +681,7 @@ async function applyWebRtcFailure(failure: any) {
 
       <div class="multi-panel">
         <div class="toolbar">
+          <a-button size="small" :disabled="loading" @click="disconnectAll">断开所有摄像头</a-button>
           <a-button type="primary" size="small" :loading="loading" @click="reloadAll">重新加载摄像头</a-button>
         </div>
         <div class="grid-3">
