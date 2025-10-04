@@ -356,10 +356,23 @@ public class RadarController {
         long start = System.currentTimeMillis();
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress(host, port), timeoutMs);
+            socket.setSoTimeout(timeoutMs);
+            OutputStream out = socket.getOutputStream();
+            InputStream in = socket.getInputStream();
+            out.write(CMD_VERSION_REQUEST);
+            out.flush();
+
+            byte[] buf = new byte[16];
+            int read = in.read(buf);
+            if (read <= 0) {
+                throw new IOException("未收到响应数据");
+            }
+
             long elapsed = System.currentTimeMillis() - start;
             Map<String, Object> details = new LinkedHashMap<>();
             details.put("localAddress", socket.getLocalAddress().getHostAddress());
             details.put("localPort", socket.getLocalPort());
+            details.put("bytesReceived", read);
             return new RadarTestAttempt(port, true, "连接成功", elapsed, details);
         } catch (Exception e) {
             long elapsed = System.currentTimeMillis() - start;

@@ -123,18 +123,73 @@ async function waitStreamReady(id: string, timeoutMs = 5000, pollMs = 400) {
   return false
 }
 
-async function startAllCameraStreams(ports: number[], host: string, user: string, pass: string): Promise<number> {
-  const maxPorts = Math.max(8, portCount.value || 0)
-  const attempts = Math.min(ports.length || maxPorts, maxPorts)
-  const tasks = ports.slice(0, attempts).map(async port => {
-    if (!port) return false
+async function stopCameraStream(id: string) {
+  try {
+    await fetch(`/api/streams/${id}`, { method: 'DELETE' })
+  } catch (_) {}
+}
+
+async function evaluateHlsAvailability(ports: number[], host: string, user: string, pass: string): Promise<{ available: number }> {
+  let available = 0
+  const started: string[] = []
+  for (const port of ports) {
+    if (!port) continue
     const subId = `cam${port}02`
-    if (await startCameraStream(subId, host, user, pass)) return true
     const mainId = `cam${port}01`
-    return startCameraStream(mainId, host, user, pass)
-  })
-  const results = await Promise.all(tasks)
-  return results.filter(Boolean).length
+    let ok = await startCameraStream(subId, host, user, pass)
+    if (ok) {
+      available++
+      started.push(subId)
+      continue
+    }
+    ok = await startCameraStream(mainId, host, user, pass)
+    if (ok) {
+      available++
+      started.push(mainId)
+    }
+  }
+  if (started.length) {
+    await Promise.all(started.map(stopCameraStream))
+  }
+  return { available }
+}
+
+async function fetchRecentWebRtcFailures(windowMs = 20000): Promise<Set<string>> {
+  try {
+    const resp = await fetch(`/api/webrtc/failures?since=${windowMs}`)
+    if (!resp.ok) return new Set<string>()
+    const data: any = await resp.json().catch(() => ({}))
+    const failures: any[] = Array.isArray(data?.failures) ? data.failures : []
+    const channels = new Set<string>()
+    failures.forEach(item => {
+      const channel = String(item?.channel || '').trim()
+      if (channel) {
+        channels.add(channel)
+      }
+    })
+    return channels
+  } catch (_) {
+    return new Set<string>()
+  }
+}
+
+async function evaluateWebRtcAvailability(ports: number[]): Promise<{ available: number }> {
+  const server = (webrtcServer.value || '').trim()
+  if (!server) {
+    return { available: 0 }
+  }
+  const failureChannels = await fetchRecentWebRtcFailures(60000)
+  let available = 0
+  for (const port of ports) {
+    const subId = `cam${port}02`
+    const mainId = `cam${port}01`
+    const subFail = failureChannels.has(subId)
+    const mainFail = failureChannels.has(mainId)
+    if (!subFail || !mainFail) {
+      available++
+    }
+  }
+  return { available }
 }
 
 async function runCameraCheck() {
@@ -151,23 +206,17 @@ async function runCameraCheck() {
       cameraState.value = { status: 'error', message: '无可用通道', failureCount: FAILURE_THRESHOLD }
       return
     }
-    if (streamMode.value === 'webrtc') {
-      const server = (webrtcServer.value || '').trim()
-      if (!server) {
-        cameraState.value = { status: 'error', message: '请在设置中配置 WebRTC 服务地址', failureCount: FAILURE_THRESHOLD }
-        return
-      }
-      cameraState.value = { status: 'ok', message: `WebRTC 模式，可用 ${totalPorts.length} 路`, failureCount: 0 }
-      return
-    }
-    const started = await startAllCameraStreams(totalPorts, host, user, pass)
-    if (started > 0) {
-      cameraState.value = { status: 'ok', message: `运行 ${started} 路`, failureCount: 0 }
+    const { available } = streamMode.value === 'webrtc'
+      ? await evaluateWebRtcAvailability(totalPorts)
+      : await evaluateHlsAvailability(totalPorts, host, user, pass)
+
+    if (available > 0) {
+      cameraState.value = { status: 'ok', message: `可用 ${available} 路`, failureCount: 0 }
     } else {
       const count = Math.min(FAILURE_THRESHOLD, cameraState.value.failureCount + 1)
       cameraState.value = {
         status: 'error',
-        message: '启动失败',
+        message: '无可用摄像头',
         failureCount: count
       }
     }

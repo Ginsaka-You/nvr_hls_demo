@@ -34,6 +34,7 @@ const snapshotPreview = reactive({ visible: false, img: '', title: '' })
 let snapshotObjectUrl: string | null = null
 let failureTimer: ReturnType<typeof setInterval> | null = null
 const failureTimestamps = new Map<string, number>()
+let lastRestartHandled = 0
 
 function cleanupSnapshotUrl() {
   if (snapshotObjectUrl) {
@@ -266,7 +267,8 @@ async function detect() {
       })
       cams.value = init
 
-      await Promise.all(init.map(async (c, idx) => {
+      for (let idx = 0; idx < init.length; idx++) {
+        const c = init[idx]
         try {
           const canDetectSub = detectSub.value && c.idSub !== c.idMain
           let okSub = false
@@ -285,13 +287,13 @@ async function detect() {
             c.stream = undefined
             c.err = undefined
           }
-          cams.value[idx] = { ...c }
         } catch (e: any) {
           c.status = 'error'
           c.err = e?.message || String(e)
+        } finally {
           cams.value[idx] = { ...c }
         }
-      }))
+      }
       return
     }
 
@@ -314,8 +316,8 @@ async function detect() {
     }
     cams.value = init
 
-    // 并行检测每个端口
-    await Promise.all(init.map(async (c, idx) => {
+    for (let idx = 0; idx < init.length; idx++) {
+      const c = init[idx]
       try {
         let okSub = false
         let okMain = false
@@ -335,12 +337,13 @@ async function detect() {
           c.stream = undefined
           c.err = undefined
         }
-        // 触发响应式更新
-        cams.value[idx] = { ...c }
       } catch (e: any) {
-        c.status = 'error'; c.err = e?.message || String(e); cams.value[idx] = { ...c }
+        c.status = 'error'
+        c.err = e?.message || String(e)
+      } finally {
+        cams.value[idx] = { ...c }
       }
-    }))
+    }
   } finally {
     loading.value = false
   }
@@ -563,6 +566,15 @@ async function applyWebRtcFailure(failure: any) {
   const channel = String(channelRaw).trim()
   if (!channel) return
   const code = String(failure.code || failure.message || '').toLowerCase()
+  if (channel === 'system') {
+    const ts = Number(failure.timestamp || Date.now())
+    if (ts > lastRestartHandled && (code.includes('restart') || code.includes('exit'))) {
+      lastRestartHandled = ts
+      await reloadAll()
+    }
+    return
+  }
+
   if (!code.includes('404')) return
   const timestamp = Number(failure.timestamp || Date.now())
   const lastTs = failureTimestamps.get(channel)
