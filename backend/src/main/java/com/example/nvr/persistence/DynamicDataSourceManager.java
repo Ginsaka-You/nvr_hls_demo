@@ -95,27 +95,36 @@ public class DynamicDataSourceManager {
                     "id SERIAL PRIMARY KEY, " +
                     "event_id VARCHAR(128) NOT NULL, " +
                     "event_type VARCHAR(128), " +
-                    "channel_id INT, " +
-                    "port INT, " +
+                    "cam_channel VARCHAR(32), " +
                     "level VARCHAR(32), " +
                     "event_time VARCHAR(64), " +
-                    "raw_payload TEXT, " +
-                    "created_at TIMESTAMPTZ DEFAULT NOW()" +
+                    "status VARCHAR(32) DEFAULT '未处理'" +
                     ")");
-            st.execute("CREATE INDEX IF NOT EXISTS idx_alert_events_created_at ON alert_events(created_at DESC)");
+            st.execute("CREATE INDEX IF NOT EXISTS idx_alert_events_event_time ON alert_events(event_time DESC)");
+            st.execute("ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS cam_channel VARCHAR(32)");
+            st.execute("ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT '未处理'");
+            st.execute("UPDATE alert_events SET cam_channel = COALESCE(cam_channel, channel_id::text, port::text) WHERE cam_channel IS NULL");
+            st.execute("UPDATE alert_events SET status = COALESCE(NULLIF(status, ''), '未处理')");
+            st.execute("ALTER TABLE alert_events DROP COLUMN IF EXISTS raw_payload");
+            st.execute("ALTER TABLE alert_events DROP COLUMN IF EXISTS channel_id");
+            st.execute("ALTER TABLE alert_events DROP COLUMN IF EXISTS port");
+            st.execute("ALTER TABLE alert_events DROP COLUMN IF EXISTS created_at");
 
             st.execute("CREATE TABLE IF NOT EXISTS camera_alarms (" +
                     "id SERIAL PRIMARY KEY, " +
                     "event_id VARCHAR(128) NOT NULL, " +
                     "event_type VARCHAR(128), " +
-                    "channel_id INT, " +
-                    "port INT, " +
+                    "cam_channel VARCHAR(32), " +
                     "level VARCHAR(32), " +
                     "event_time VARCHAR(64), " +
-                    "raw_payload TEXT, " +
                     "created_at TIMESTAMPTZ DEFAULT NOW()" +
                     ")");
             st.execute("CREATE INDEX IF NOT EXISTS idx_camera_alarms_created_at ON camera_alarms(created_at DESC)");
+            st.execute("ALTER TABLE camera_alarms ADD COLUMN IF NOT EXISTS cam_channel VARCHAR(32)");
+            st.execute("UPDATE camera_alarms SET cam_channel = COALESCE(cam_channel, channel_id::text, port::text) WHERE cam_channel IS NULL");
+            st.execute("ALTER TABLE camera_alarms DROP COLUMN IF EXISTS channel_id");
+            st.execute("ALTER TABLE camera_alarms DROP COLUMN IF EXISTS port");
+            st.execute("ALTER TABLE camera_alarms DROP COLUMN IF EXISTS raw_payload");
 
             st.execute("CREATE TABLE IF NOT EXISTS radar_targets (" +
                     "id SERIAL PRIMARY KEY, " +

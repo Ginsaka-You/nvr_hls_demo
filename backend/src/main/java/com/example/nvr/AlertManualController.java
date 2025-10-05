@@ -36,7 +36,7 @@ public class AlertManualController {
         if (payload == null && request.getData() != null) {
             payload = request.getData();
         }
-        eventStorageService.recordManualAlert(eventId, eventType, request.getChannelId(), request.getPort(), level, eventTime, payload);
+        eventStorageService.recordManualAlert(eventId, eventType, request.getChannelId(), request.getPort(), level, eventTime);
         Map<String, Object> out = new HashMap<>();
         out.put("ok", true);
         out.put("eventId", eventId);

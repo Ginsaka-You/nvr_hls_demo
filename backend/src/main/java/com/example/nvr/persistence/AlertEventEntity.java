@@ -17,11 +17,8 @@ public class AlertEventEntity {
     @Column(name = "event_type", length = 128)
     private String eventType;
 
-    @Column(name = "channel_id")
-    private Integer channelId;
-
-    @Column(name = "port")
-    private Integer port;
+    @Column(name = "cam_channel", length = 32)
+    private String camChannel;
 
     @Column(name = "level", length = 32)
     private String level;
@@ -29,9 +26,8 @@ public class AlertEventEntity {
     @Column(name = "event_time", length = 64)
     private String eventTime;
 
-    @Lob
-    @Column(name = "raw_payload")
-    private String rawPayload;
+    @Column(name = "status", length = 32)
+    private String status = "未处理";
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
@@ -39,15 +35,14 @@ public class AlertEventEntity {
     public AlertEventEntity() {
     }
 
-    public AlertEventEntity(String eventId, String eventType, Integer channelId, Integer port,
-                            String level, String eventTime, String rawPayload) {
+    public AlertEventEntity(String eventId, String eventType, String camChannel,
+                            String level, String eventTime, String status) {
         this.eventId = eventId;
         this.eventType = eventType;
-        this.channelId = channelId;
-        this.port = port;
+        this.camChannel = camChannel;
         this.level = level;
         this.eventTime = eventTime;
-        this.rawPayload = rawPayload;
+        this.status = (status == null || status.isBlank()) ? "未处理" : status.trim();
     }
 
     public Long getId() {
@@ -62,12 +57,8 @@ public class AlertEventEntity {
         return eventType;
     }
 
-    public Integer getChannelId() {
-        return channelId;
-    }
-
-    public Integer getPort() {
-        return port;
+    public String getCamChannel() {
+        return camChannel;
     }
 
     public String getLevel() {
@@ -78,8 +69,16 @@ public class AlertEventEntity {
         return eventTime;
     }
 
-    public String getRawPayload() {
-        return rawPayload;
+    public String getStatus() {
+        return status;
+    }
+
+    public void setStatus(String status) {
+        this.status = (status == null || status.isBlank()) ? "未处理" : status.trim();
+    }
+
+    public void setCamChannel(String camChannel) {
+        this.camChannel = camChannel;
     }
 
     public Instant getCreatedAt() {

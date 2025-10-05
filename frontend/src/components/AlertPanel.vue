@@ -23,7 +23,7 @@ function levelColor(a: Alarm) {
           </div>
           <div class="alert-summary">{{ a.summary }}</div>
         </div>
-        <a-button type="link" size="small" class="link-accent">接单</a-button>
+        <a-button type="link" size="small" class="link-accent">处理</a-button>
       </div>
     </a-card>
     <div v-if="alarms.length===0" class="muted empty">暂无告警</div>

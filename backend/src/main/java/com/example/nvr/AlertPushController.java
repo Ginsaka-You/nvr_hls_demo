@@ -76,6 +76,10 @@ public class AlertPushController {
         m.put("eventType", eventType);
         m.put("channelID", channel);
         m.put("port", port);
+        String camChannel = deriveCamChannel(channel, port);
+        if (camChannel != null) {
+            m.put("camChannel", camChannel);
+        }
         if (time != null) m.put("time", time);
         String level = "minor";
         if (eventType != null) {
@@ -91,6 +95,23 @@ public class AlertPushController {
         Pattern p = Pattern.compile("<" + tag + ">\\s*(.*?)\\s*</" + tag + ">", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
         Matcher m = p.matcher(xml);
         if (m.find()) return m.group(1);
+        return null;
+    }
+
+    private String deriveCamChannel(Integer channelId, Integer port) {
+        if (channelId != null && channelId > 0) {
+            int base = channelId;
+            int physical = base;
+            int stream = 1;
+            if (base > 32) {
+                physical = ((base - 1) % 32) + 1;
+                stream = ((base - 1) / 32) + 1;
+            }
+            return String.format("%d%02d", physical, stream);
+        }
+        if (port != null && port > 0) {
+            return String.format("%d%02d", port, 1);
+        }
         return null;
     }
 }

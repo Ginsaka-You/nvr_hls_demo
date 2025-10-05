@@ -35,13 +35,18 @@ public class EventStorageService {
             if (eventId == null) {
                 eventId = "evt-" + Instant.now().toEpochMilli();
             }
-            String eventType = stringValue(event.get("eventType"));
+            String eventType = normalizeEventType(stringValue(event.get("eventType")));
             Integer channelId = intValue(event.get("channelID"));
             Integer port = intValue(event.get("port"));
             String level = stringValue(event.get("level"));
             String eventTime = stringValue(event.get("time"));
+            String camChannel = stringValue(event.get("camChannel"));
+            if (camChannel == null) {
+                camChannel = deriveCamChannel(channelId, port);
+            }
+            String status = stringValue(event.get("status"));
 
-            AlertEventEntity entity = new AlertEventEntity(eventId, eventType, channelId, port, level, eventTime, rawPayload);
+            AlertEventEntity entity = new AlertEventEntity(eventId, eventType, camChannel, level, eventTime, status);
             alertEventRepository.save(entity);
         } catch (Exception ex) {
             log.warn("Failed to persist alert event", ex);
@@ -59,12 +64,13 @@ public class EventStorageService {
             if (eventId == null) {
                 eventId = "cam-" + Instant.now().toEpochMilli();
             }
-            String eventType = stringValue(event.get("eventType"));
+            String eventType = normalizeEventType(stringValue(event.get("eventType")));
             Integer channelId = intValue(event.get("channelID"));
             String level = stringValue(event.get("level"));
             String eventTime = stringValue(event.get("time"));
 
-            CameraAlarmEntity entity = new CameraAlarmEntity(eventId, eventType, channelId, port, level, eventTime, rawPayload);
+            String camChannel = deriveCamChannel(channelId, port);
+            CameraAlarmEntity entity = new CameraAlarmEntity(eventId, eventType, camChannel, level, eventTime);
             cameraAlarmRepository.save(entity);
         } catch (Exception ex) {
             log.warn("Failed to persist camera alarm", ex);
@@ -120,10 +126,11 @@ public class EventStorageService {
 
     @Transactional
     public void recordManualAlert(String eventId, String eventType, Integer channelId, Integer port,
-                                  String level, String eventTime, String payload) {
+                                  String level, String eventTime) {
         try {
             String normalizedId = eventId != null ? eventId : "manual-" + Instant.now().toEpochMilli();
-            AlertEventEntity entity = new AlertEventEntity(normalizedId, eventType, channelId, port, level, eventTime, payload);
+            String camChannel = deriveCamChannel(channelId, port);
+            AlertEventEntity entity = new AlertEventEntity(normalizedId, normalizeEventType(eventType), camChannel, level, eventTime, null);
             alertEventRepository.save(entity);
         } catch (Exception ex) {
             log.warn("Failed to persist manual alert", ex);
@@ -148,5 +155,37 @@ public class EventStorageService {
         } catch (NumberFormatException ex) {
             return null;
         }
+    }
+
+    private String deriveCamChannel(Integer channelId, Integer port) {
+        if (channelId != null) {
+            int base = channelId;
+            int physical = base;
+            int stream = 1;
+            if (base > 32) {
+                physical = ((base - 1) % 32) + 1;
+                stream = ((base - 1) / 32) + 1;
+            }
+            return String.format("%d%02d", physical, stream);
+        }
+        if (port != null) {
+            return String.format("%d%02d", port, 1);
+        }
+        return null;
+    }
+
+    private String normalizeEventType(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        String lower = trimmed.toLowerCase();
+        if ("radar".equals(lower)) {
+            return "检测到入侵";
+        }
+        if ("fielddetection".equals(lower)) {
+            return "检测到区域入侵";
+        }
+        return trimmed;
     }
 }

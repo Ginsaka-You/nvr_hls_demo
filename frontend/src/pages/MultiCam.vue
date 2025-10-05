@@ -682,7 +682,7 @@ async function applyWebRtcFailure(failure: any) {
       <div class="multi-panel">
         <div class="toolbar">
           <a-button size="small" :disabled="loading" @click="disconnectAll">断开所有摄像头</a-button>
-          <a-button type="primary" size="small" :loading="loading" @click="reloadAll">重新加载摄像头</a-button>
+          <a-button type="primary" size="small" :loading="loading" @click="() => reloadAll()">重新加载摄像头</a-button>
         </div>
         <div class="grid-3">
           <div class="cell" :class="{ 'underline-bottom': c.port === 6, 'cell-no-cam': !c.stream && (c.status==='detecting' || c.status==='error'), 'cell-none': c.status==='none' }" v-for="c in cams" :key="c.port">

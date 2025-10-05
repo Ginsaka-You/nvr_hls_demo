@@ -13,6 +13,23 @@ export type Alarm = {
 
 export const alarms: Ref<Alarm[]> = ref([])
 
+function deriveCamChannel(channelId?: number, port?: number): string | undefined {
+  if (typeof channelId === 'number' && channelId > 0) {
+    const base = channelId
+    let physical = base
+    let stream = 1
+    if (base > 32) {
+      physical = ((base - 1) % 32) + 1
+      stream = ((base - 1) / 32) + 1
+    }
+    return `${physical}${stream.toString().padStart(2, '0')}`
+  }
+  if (typeof port === 'number' && port > 0) {
+    return `${port}01`
+  }
+  return undefined
+}
+
 function pushAlarm(a: Alarm) {
   const existed = alarms.value.some(item => item.id === a.id)
   alarms.value = [a, ...alarms.value.filter(item => item.id !== a.id)].slice(0, 200)
@@ -79,17 +96,31 @@ function mapEventType(et: string) {
   return et
 }
 
+function toNumber(value: any): number | undefined {
+  if (value === null || value === undefined) return undefined
+  const text = String(value).trim()
+  if (!text) return undefined
+  const num = Number(text)
+  return Number.isFinite(num) ? num : undefined
+}
+
 export function pushAlarmFromEvent(ev: any) {
-  const port: number | undefined = ev?.port
-  const ch = typeof port === 'number' ? port : undefined
-  const camId = ch ? `cam${ch}02` : undefined
+  const camChannelRaw = typeof ev?.camChannel === 'string' ? ev.camChannel.trim() : undefined
+  const channelRaw = toNumber(ev?.channelID)
+  const portRaw = toNumber(ev?.port)
+  const channelId = channelRaw !== undefined ? Math.trunc(channelRaw) : undefined
+  const port = portRaw !== undefined ? Math.trunc(portRaw) : undefined
+  const camChannel = camChannelRaw && camChannelRaw.length > 0
+    ? camChannelRaw
+    : deriveCamChannel(channelId, port)
+  const camId = camChannel ? `cam${camChannel}` : undefined
   const et: string = (ev?.eventType || '').toString()
   const summary = et ? mapEventType(et) : '事件告警'
   const a: Alarm = {
     id: ev?.id || Math.random().toString(36).slice(2),
     level: (ev?.level || 'major') as any,
-    source: 'camera',
-    place: ch ? `摄像头 ${ch}` : '摄像头',
+    source: '摄像头',
+    place: camChannel ? camChannel : '摄像头',
     time: new Date().toLocaleTimeString(),
     summary,
     deviceId: camId
@@ -131,8 +162,8 @@ export function pushRadarAlarm(data: {
   const alarm: Alarm = {
     id: `radar-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     level: 'major',
-    source: 'radar',
-    place: data.place || '相控阵雷达',
+    source: '雷达',
+    place: data.place || '雷达',
     time: new Date().toLocaleTimeString(),
     summary: `发现目标 距离 ${rangeStr}m 速度 ${speedStr}m/s${angleStr ? ` 角度 ${angleStr}` : ''}`,
   }
