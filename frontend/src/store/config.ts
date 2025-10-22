@@ -30,10 +30,10 @@ export const audioId = ref<number>(12)
 export const audioHttpPort = ref<number | null>(65007)
 
 // Radar connectivity
-export const radarHost = ref<string>('192.168.2.100')
+export const radarHost = ref<string>('192.168.2.40')
 export const radarCtrlPort = ref<number>(20000)
 export const radarDataPort = ref<number>(20001)
-export const radarUseTcp = ref<boolean>(true)
+export const radarUseTcp = ref<boolean>(false)
 
 // Database connection
 export const dbType = ref<'mysql'|'postgres'|'sqlserver'>('postgres')

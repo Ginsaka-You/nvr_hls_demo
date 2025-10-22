@@ -71,23 +71,39 @@ const radarColumns = [
   { title: '说明', dataIndex: 'message', key: 'message' }
 ]
 
+const radarProtocolDisplay = computed(() => (radarUseTcp.value ? 'TCP' : 'UDP'))
+const radarTestHint = computed(() => (
+  radarUseTcp.value
+    ? '测试会尝试通过 TCP 握手（版本请求）验证雷达端口连通性。'
+    : '测试会通过 UDP 发送启动指令并等待数据帧，验证雷达是否按期返回。'
+))
+
 async function testRadar() {
   const host = (radarHost.value || '').trim()
   if (!host) {
     message.error('请先填写雷达 IP 地址')
     return
   }
+  const ctrlPort = Number(radarCtrlPort.value) || 20000
+  const dataPort = Number(radarDataPort.value) || ctrlPort
+  const useTcp = !!radarUseTcp.value
+  const ports = Array.from(new Set([ctrlPort, dataPort].filter((p): p is number => Number.isInteger(p) && p > 0 && p <= 65535)))
   radarTesting.value = true
   radarError.value = null
   radarAttempts.value = []
   radarTimestamp.value = null
   try {
-    const ports = [radarCtrlPort.value, radarDataPort.value]
-      .filter((p): p is number => typeof p === 'number' && Number.isFinite(p) && p > 0 && p <= 65535)
     const resp = await fetch('/api/radar/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host, ports })
+      body: JSON.stringify({
+        host,
+        controlPort: ctrlPort,
+        dataPort,
+        ports,
+        useTcp,
+        timeoutMs: 4000
+      })
     })
     if (!resp.ok) {
       throw new Error(`请求失败 (${resp.status})`)
@@ -108,7 +124,7 @@ async function testRadar() {
       return
     }
     if (data?.ok) {
-      message.success('雷达连接测试成功')
+      message.success(`雷达连接测试成功（协议：${radarProtocolDisplay.value}）`)
     } else {
       const firstFail = radarAttempts.value.find(a => !a.ok)
       message.error(firstFail ? `雷达连接失败：${firstFail.message}` : '雷达连接失败')
@@ -265,7 +281,7 @@ async function clearHls() {
             <a-typography-title :level="5" style="color: var(--text-color)">雷达 · 网络连接</a-typography-title>
             <a-form layout="horizontal" :label-col="{ span: 5 }" :wrapper-col="{ span: 16 }">
               <a-form-item label="雷达 IP">
-                <a-input v-model:value="radarHost" style="width:220px" placeholder="例如 192.168.2.100" />
+                <a-input v-model:value="radarHost" style="width:220px" placeholder="例如 192.168.2.40" />
               </a-form-item>
               <a-form-item label="指令端口">
                 <a-input-number v-model:value="radarCtrlPort" :min="1" :max="65535" style="width:220px" />
@@ -273,13 +289,17 @@ async function clearHls() {
               <a-form-item label="数据端口">
                 <a-input-number v-model:value="radarDataPort" :min="1" :max="65535" style="width:220px" />
               </a-form-item>
-              <a-form-item label="数据使用 TCP">
-                <a-switch v-model:checked="radarUseTcp" />
+              <a-form-item label="传输协议">
+                <a-radio-group v-model:value="radarUseTcp">
+                  <a-radio :value="false">UDP</a-radio>
+                  <a-radio :value="true">TCP</a-radio>
+                </a-radio-group>
               </a-form-item>
               <a-form-item :wrapper-col="{ offset: 5 }">
                 <a-space>
                   <a-button type="primary" @click="saveAndNotify">保存</a-button>
-                  <a-button @click="testRadar" :loading="radarTesting">测试连接</a-button>
+                  <a-button @click="testRadar" :loading="radarTesting" :disabled="radarTesting">测试连接</a-button>
+                  <span style="color: rgba(0,0,0,0.45);">当前协议：{{ radarProtocolDisplay }}</span>
                 </a-space>
               </a-form-item>
             </a-form>
@@ -305,7 +325,12 @@ async function clearHls() {
                 style="margin-top:12px;"
               />
             </a-spin>
-            <a-alert type="info" show-icon message="说明：测试会对指定端口发起 TCP 握手以验证网络可达性，通常对应协议文档中的 20000/20001 端口。" style="margin-top:12px;" />
+            <a-alert
+              type="info"
+              show-icon
+              :message="`说明：${radarTestHint}（当前协议：${radarProtocolDisplay}）`"
+              style="margin-top:12px;"
+            />
           </template>
 
           <template v-else-if="sec==='database'">

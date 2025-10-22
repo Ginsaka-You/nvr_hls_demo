@@ -48,22 +48,76 @@ public class RadarController {
 
         int timeoutMs = request != null && request.getTimeoutMs() != null && request.getTimeoutMs() > 0
                 ? request.getTimeoutMs() : DEFAULT_TARGET_TIMEOUT_MS;
-        List<Integer> ports = request != null ? request.getPorts() : null;
-        if (ports == null || ports.isEmpty()) {
-            ports = List.of(DEFAULT_CTRL_PORT, 20001);
+        boolean useTcp = request == null || request.getUseTcp() == null ? true : request.getUseTcp();
+
+        int ctrlPort = DEFAULT_CTRL_PORT;
+        int dataPort = DEFAULT_CTRL_PORT;
+
+        if (request != null) {
+            if (isValidPort(request.getControlPort())) {
+                ctrlPort = request.getControlPort();
+            }
+            if (isValidPort(request.getDataPort())) {
+                dataPort = request.getDataPort();
+            }
+        }
+
+        List<Integer> validRequestedPorts = new ArrayList<>();
+        if (request != null && request.getPorts() != null) {
+            for (Integer port : request.getPorts()) {
+                if (isValidPort(port) && !validRequestedPorts.contains(port)) {
+                    validRequestedPorts.add(port);
+                }
+            }
+        }
+
+        if (!validRequestedPorts.isEmpty()) {
+            ctrlPort = validRequestedPorts.get(0);
+            if (validRequestedPorts.size() > 1) {
+                dataPort = validRequestedPorts.get(1);
+            }
+        }
+
+        if (!isValidPort(dataPort)) {
+            dataPort = ctrlPort;
         }
 
         List<RadarTestAttempt> attempts = new ArrayList<>();
-        boolean ok = false;
-        for (Integer port : ports) {
-            if (port == null || port <= 0 || port > 65535) {
-                continue;
+        boolean ok;
+        if (useTcp) {
+            List<Integer> tcpPorts = new ArrayList<>();
+            if (isValidPort(ctrlPort) && !tcpPorts.contains(ctrlPort)) {
+                tcpPorts.add(ctrlPort);
             }
-            RadarTestAttempt attempt = attemptTcp(host, port, timeoutMs);
-            attempts.add(attempt);
-            if (attempt.isOk()) {
-                ok = true;
+            if (isValidPort(dataPort) && dataPort != ctrlPort && !tcpPorts.contains(dataPort)) {
+                tcpPorts.add(dataPort);
             }
+            for (Integer port : validRequestedPorts) {
+                if (isValidPort(port) && !tcpPorts.contains(port)) {
+                    tcpPorts.add(port);
+                }
+            }
+            if (tcpPorts.isEmpty()) {
+                tcpPorts.add(DEFAULT_CTRL_PORT);
+                if (!tcpPorts.contains(20001)) {
+                    tcpPorts.add(20001);
+                }
+            }
+
+            ok = false;
+            for (Integer port : tcpPorts) {
+                RadarTestAttempt attempt = attemptTcp(host, port, timeoutMs);
+                attempts.add(attempt);
+                if (attempt.isOk()) {
+                    ok = true;
+                }
+            }
+        } else {
+            RadarTestAttempt controlAttempt = attemptUdpControl(host, ctrlPort, timeoutMs);
+            attempts.add(controlAttempt);
+            RadarTestAttempt dataAttempt = attemptUdpData(host, ctrlPort, dataPort, timeoutMs);
+            attempts.add(dataAttempt);
+            ok = controlAttempt.isOk() && dataAttempt.isOk();
         }
 
         if (attempts.isEmpty()) {
@@ -380,10 +434,86 @@ public class RadarController {
         }
     }
 
+    private RadarTestAttempt attemptUdpControl(String host, int ctrlPort, int timeoutMs) {
+        long start = System.currentTimeMillis();
+        if (!isValidPort(ctrlPort)) {
+            return new RadarTestAttempt(ctrlPort, false, "控制端口无效", 0, null);
+        }
+        try {
+            InetAddress address = InetAddress.getByName(host);
+            try (DatagramSocket socket = new DatagramSocket()) {
+                socket.setSoTimeout(timeoutMs);
+                sendCommand(socket, address, ctrlPort, CMD_RESUME_OUTPUT);
+                sendCommand(socket, address, ctrlPort, CMD_TARGET_MODE);
+                sendCommand(socket, address, ctrlPort, CMD_VERSION_REQUEST);
+                long elapsed = System.currentTimeMillis() - start;
+                Map<String, Object> details = new LinkedHashMap<>();
+                details.put("localPort", socket.getLocalPort());
+                details.put("commandsSent", 3);
+                return new RadarTestAttempt(ctrlPort, true, "已发送启动命令", elapsed, details);
+            }
+        } catch (Exception e) {
+            long elapsed = System.currentTimeMillis() - start;
+            return new RadarTestAttempt(ctrlPort, false, e.getClass().getSimpleName() + ": " + e.getMessage(), elapsed, null);
+        }
+    }
+
+    private RadarTestAttempt attemptUdpData(String host, int ctrlPort, int dataPort, int timeoutMs) {
+        long start = System.currentTimeMillis();
+        int targetPort = isValidPort(dataPort) ? dataPort : ctrlPort;
+        try {
+            InetAddress address = InetAddress.getByName(host);
+            int listenPort = isValidPort(targetPort) ? targetPort : 0;
+            try (DatagramSocket socket = new DatagramSocket(listenPort)) {
+                socket.setSoTimeout(timeoutMs);
+                sendCommand(socket, address, ctrlPort, CMD_RESUME_OUTPUT);
+                sendCommand(socket, address, ctrlPort, CMD_TARGET_MODE);
+                sendCommand(socket, address, ctrlPort, CMD_VERSION_REQUEST);
+
+                byte[] buffer = new byte[MAX_FRAME_BYTES];
+                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                while (true) {
+                    socket.receive(packet);
+                    if (!packet.getAddress().equals(address)) {
+                        continue;
+                    }
+                    long elapsed = System.currentTimeMillis() - start;
+                    Map<String, Object> details = new LinkedHashMap<>();
+                    details.put("localPort", socket.getLocalPort());
+                    details.put("remotePort", packet.getPort());
+                    details.put("bytesReceived", packet.getLength());
+
+                    ParsedFrame frame = parseTargetFrame(packet.getData(), packet.getOffset(), packet.getLength(), packet.getPort());
+                    String message;
+                    if (frame != null) {
+                        details.put("targets", frame.targetCount);
+                        details.put("payloadLength", frame.payloadLength);
+                        message = frame.targetCount > 0 ? "收到 UDP 数据（目标 " + frame.targetCount + "）" : "收到 UDP 心跳";
+                    } else {
+                        message = "收到 UDP 数据";
+                    }
+                    return new RadarTestAttempt(targetPort, true, message, elapsed, details);
+                }
+            }
+        } catch (Exception e) {
+            long elapsed = System.currentTimeMillis() - start;
+            int reportPort = isValidPort(targetPort) ? targetPort : ctrlPort;
+            return new RadarTestAttempt(reportPort, false, e.getClass().getSimpleName() + ": " + e.getMessage(), elapsed, null);
+        }
+    }
+
     private String trimToNull(String input) {
         if (input == null) return null;
         String trimmed = input.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private boolean isValidPort(Integer port) {
+        return port != null && port > 0 && port <= 65535;
+    }
+
+    private boolean isValidPort(int port) {
+        return port > 0 && port <= 65535;
     }
 
     private static class ParsedFrame {
@@ -666,6 +796,9 @@ public class RadarController {
         private String host;
         private List<Integer> ports;
         private Integer timeoutMs;
+        private Integer controlPort;
+        private Integer dataPort;
+        private Boolean useTcp;
 
         public RadarTestRequest() {
         }
@@ -692,6 +825,30 @@ public class RadarController {
 
         public void setTimeoutMs(Integer timeoutMs) {
             this.timeoutMs = timeoutMs;
+        }
+
+        public Integer getControlPort() {
+            return controlPort;
+        }
+
+        public void setControlPort(Integer controlPort) {
+            this.controlPort = controlPort;
+        }
+
+        public Integer getDataPort() {
+            return dataPort;
+        }
+
+        public void setDataPort(Integer dataPort) {
+            this.dataPort = dataPort;
+        }
+
+        public Boolean getUseTcp() {
+            return useTcp;
+        }
+
+        public void setUseTcp(Boolean useTcp) {
+            this.useTcp = useTcp;
         }
     }
 

@@ -42,7 +42,14 @@ async function runRadarCheck() {
     const resp = await fetch('/api/radar/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host, ports: [ctrl, data], timeoutMs: 2000, useTcp })
+      body: JSON.stringify({
+        host,
+        controlPort: ctrl,
+        dataPort: data,
+        ports: [ctrl, data],
+        timeoutMs: 2000,
+        useTcp
+      })
     })
     const json: any = await resp.json().catch(() => ({}))
     if (json?.ok) {
