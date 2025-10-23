@@ -1,13 +1,19 @@
 package com.example.nvr.persistence;
 
+import com.example.nvr.ImsiController;
 import com.example.nvr.RadarController;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -19,13 +25,84 @@ public class EventStorageService {
     private final AlertEventRepository alertEventRepository;
     private final CameraAlarmRepository cameraAlarmRepository;
     private final RadarTargetRepository radarTargetRepository;
+    private final ImsiRecordRepository imsiRecordRepository;
 
     public EventStorageService(AlertEventRepository alertEventRepository,
                                CameraAlarmRepository cameraAlarmRepository,
-                               RadarTargetRepository radarTargetRepository) {
+                               RadarTargetRepository radarTargetRepository,
+                               ImsiRecordRepository imsiRecordRepository) {
         this.alertEventRepository = alertEventRepository;
         this.cameraAlarmRepository = cameraAlarmRepository;
         this.radarTargetRepository = radarTargetRepository;
+        this.imsiRecordRepository = imsiRecordRepository;
+    }
+
+    @Transactional
+    public void recordImsiRecords(List<ImsiController.ImsiRecord> records,
+                                  Instant fetchedAt,
+                                  long elapsedMs,
+                                  String host,
+                                  Integer port,
+                                  String directory,
+                                  String message) {
+        if (records == null || records.isEmpty()) {
+            try {
+                ImsiRecordEntity summary = new ImsiRecordEntity(
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        safeTrim(host),
+                        port,
+                        safeTrim(directory),
+                        safeTrim(message),
+                        elapsedMs,
+                        fetchedAt
+                );
+                imsiRecordRepository.save(summary);
+            } catch (Exception ex) {
+                log.warn("Failed to persist IMSI sync summary", ex);
+            }
+            return;
+        }
+        try {
+            List<ImsiRecordEntity> entities = new ArrayList<>(records.size());
+            for (ImsiController.ImsiRecord record : records) {
+                ImsiRecordEntity entity = new ImsiRecordEntity(
+                        safeTrim(record.getDeviceId()),
+                        safeTrim(record.getImsi()),
+                        safeTrim(record.getOperator()),
+                        safeTrim(record.getArea()),
+                        safeTrim(record.getRptDate()),
+                        safeTrim(record.getRptTime()),
+                        safeTrim(record.getSourceFile()),
+                        record.getLineNumber(),
+                        safeTrim(host),
+                        port,
+                        safeTrim(directory),
+                        safeTrim(message),
+                        elapsedMs,
+                        fetchedAt
+                );
+                entities.add(entity);
+            }
+            imsiRecordRepository.saveAll(entities);
+        } catch (Exception ex) {
+            log.warn("Failed to persist IMSI records", ex);
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public List<ImsiRecordEntity> findRecentImsiRecords(int limit) {
+        int size = Math.max(1, Math.min(limit, 2000));
+        Sort sort = Sort.by(Sort.Order.desc("fetchedAt"), Sort.Order.desc("id"));
+        Pageable pageable = PageRequest.of(0, size, sort);
+        Page<ImsiRecordEntity> page = imsiRecordRepository.findAll(pageable);
+        return page.getContent();
     }
 
     @Transactional
@@ -135,6 +212,14 @@ public class EventStorageService {
         } catch (Exception ex) {
             log.warn("Failed to persist manual alert", ex);
         }
+    }
+
+    private String safeTrim(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 
     private String stringValue(Object value) {

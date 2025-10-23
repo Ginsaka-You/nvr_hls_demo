@@ -35,6 +35,16 @@ export const radarCtrlPort = ref<number>(20000)
 export const radarDataPort = ref<number>(20001)
 export const radarUseTcp = ref<boolean>(false)
 
+// IMSI FTP synchronization
+export const imsiFtpHost = ref<string>('47.98.168.56')
+export const imsiFtpPort = ref<number>(4721)
+export const imsiFtpUser = ref<string>('ftpuser')
+export const imsiFtpPass = ref<string>('ftpPass@47')
+export const imsiSyncInterval = ref<number>(60)
+export const imsiSyncBatchSize = ref<number>(500)
+export const imsiFilenameTemplate = ref<string>('CTC_{deviceId}_{dateyymmdd}_{timestamp}.txt')
+export const imsiLineTemplate = ref<string>('{deviceId}\\t{imsi}\\t000000000000000\\t{operator:1,2,3,4}\\t{area}\\t{rptTimeyymmdd}\\t{rptTimehhmmss}\\t')
+
 // Database connection
 export const dbType = ref<'mysql'|'postgres'|'sqlserver'>('postgres')
 export const dbHost = ref<string>('127.0.0.1')

@@ -7,6 +7,7 @@
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/EventCenterController.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/FfmpegService.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/HlsAdminController.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/ImsiController.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/IpcAudioAlarmController.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/MimeConfig.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/NvrController.java
@@ -22,5 +23,7 @@
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/DatabaseConfig.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/DynamicDataSourceManager.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/EventStorageService.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/ImsiRecordEntity.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/ImsiRecordRepository.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/RadarTargetEntity.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/RadarTargetRepository.java

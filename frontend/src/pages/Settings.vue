@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub, streamMode, hlsOrigin, webrtcServer, webrtcOptions, webrtcPreferCodec, channelOverrides, audioPass, audioId, audioHttpPort, radarHost, radarCtrlPort, radarDataPort, radarUseTcp, dbType, dbHost, dbPort, dbName, dbUser, dbPass } from '@/store/config'
+import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub, streamMode, hlsOrigin, webrtcServer, webrtcOptions, webrtcPreferCodec, channelOverrides, audioPass, audioId, audioHttpPort, radarHost, radarCtrlPort, radarDataPort, radarUseTcp, imsiFtpHost, imsiFtpPort, imsiFtpUser, imsiFtpPass, imsiSyncInterval, imsiSyncBatchSize, imsiFilenameTemplate, imsiLineTemplate, dbType, dbHost, dbPort, dbName, dbUser, dbPass } from '@/store/config'
 import { message, Modal } from 'ant-design-vue'
 
 const sec = ref<'multicam'|'alarm'|'imsi'|'radar'|'seismic'|'drone'|'database'>('multicam')
@@ -78,6 +78,46 @@ const radarTestHint = computed(() => (
     : '测试会通过 UDP 发送启动指令并等待数据帧，验证雷达是否按期返回。'
 ))
 
+const imsiTesting = ref(false)
+const imsiTestResult = ref<any | null>(null)
+const imsiTestError = ref<string | null>(null)
+
+const imsiDetailLabels: Record<string, string> = {
+  host: 'FTP IP',
+  port: 'FTP 端口',
+  user: 'FTP 用户',
+  pass: 'FTP 密码',
+  connectReplyCode: '连接回复码',
+  loginReplyCode: '登录回复码',
+  workingDirectory: '当前目录',
+  passive: '被动模式',
+  fileType: '文件类型'
+}
+
+const imsiTestTimestampDisplay = computed(() => {
+  const ts = imsiTestResult.value?.timestamp
+  if (!ts) return '—'
+  const d = new Date(ts)
+  return Number.isNaN(d.getTime()) ? ts : d.toLocaleString()
+})
+
+function formatImsiDetailValue(value: unknown): string {
+  if (typeof value === 'boolean') return value ? '是' : '否'
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+const imsiTestDetailsList = computed(() => {
+  const details = imsiTestResult.value?.details
+  if (!details || typeof details !== 'object') return []
+  return Object.entries(details as Record<string, unknown>).map(([key, value]) => ({
+    key,
+    label: imsiDetailLabels[key] ?? key,
+    value: formatImsiDetailValue(value)
+  }))
+})
+
 async function testRadar() {
   const host = (radarHost.value || '').trim()
   if (!host) {
@@ -134,6 +174,59 @@ async function testRadar() {
     message.error('测试失败：' + radarError.value)
   } finally {
     radarTesting.value = false
+  }
+}
+
+async function testImsiFtp() {
+  const host = (imsiFtpHost.value || '').trim()
+  const user = (imsiFtpUser.value || '').trim()
+  const pass = (imsiFtpPass.value || '').trim()
+  if (!host || !user || !pass) {
+    message.error('请先填写 FTP IP、用户名与密码')
+    return
+  }
+  const port = Number(imsiFtpPort.value) || 21
+  if (port <= 0 || port > 65535) {
+    message.error('请填写有效的 FTP 端口')
+    return
+  }
+  imsiTesting.value = true
+  imsiTestError.value = null
+  imsiTestResult.value = null
+  try {
+    const resp = await fetch('/api/imsi/test-ftp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        host,
+        port,
+        user,
+        pass,
+        timeoutMs: 6000,
+        intervalSeconds: imsiSyncInterval.value,
+        batchSize: imsiSyncBatchSize.value,
+        filenameTemplate: imsiFilenameTemplate.value,
+        lineTemplate: imsiLineTemplate.value
+      })
+    })
+    if (!resp.ok) {
+      throw new Error(`请求失败 (${resp.status})`)
+    }
+    const data: any = await resp.json()
+    imsiTestResult.value = data
+    if (data?.ok) {
+      imsiTestError.value = null
+      message.success('FTP 连接测试成功')
+    } else {
+      imsiTestError.value = null
+      message.error(data?.message || 'FTP 连接失败')
+    }
+  } catch (e: any) {
+    const msg = e?.message || String(e)
+    imsiTestError.value = msg
+    message.error('测试失败：' + msg)
+  } finally {
+    imsiTesting.value = false
   }
 }
 
@@ -275,6 +368,86 @@ async function clearHls() {
               </a-form-item>
             </a-form>
             <a-alert type="info" show-icon :message="'说明：当告警到达时，系统将调用 /api/nvr/ipc/audioAlarm/test 以【默认ID】触发摄像头声音；此处的“摄像头端口”仅用于该触发请求，不影响NVR接口。'" />
+          </template>
+
+          <template v-else-if="sec==='imsi'">
+            <a-typography-title :level="5" style="color: var(--text-color)">IMSI · FTP 数据同步</a-typography-title>
+            <a-form layout="horizontal" :label-col="{ span: 6 }" :wrapper-col="{ span: 16 }">
+              <a-form-item label="FTP IP">
+                <a-input v-model:value="imsiFtpHost" style="width:220px" placeholder="例如 47.98.168.56" />
+              </a-form-item>
+              <a-form-item label="FTP 端口">
+                <a-input-number v-model:value="imsiFtpPort" :min="1" :max="65535" style="width:220px" />
+              </a-form-item>
+              <a-form-item label="FTP 用户">
+                <a-input v-model:value="imsiFtpUser" style="width:220px" placeholder="例如 ftpuser" />
+              </a-form-item>
+              <a-form-item label="FTP 密码">
+                <a-input-password v-model:value="imsiFtpPass" style="width:220px" placeholder="例如 ftpPass@47" />
+              </a-form-item>
+              <a-form-item label="同步间隔 (秒)">
+                <a-input-number v-model:value="imsiSyncInterval" :min="10" :max="86400" style="width:220px" />
+              </a-form-item>
+              <a-form-item label="同步数量">
+                <a-input-number v-model:value="imsiSyncBatchSize" :min="1" :max="20000" style="width:220px" />
+              </a-form-item>
+              <a-form-item label="文件名模板">
+                <a-input v-model:value="imsiFilenameTemplate" style="width:360px" placeholder="CTC_{deviceId}_{dateyymmdd}_{timestamp}.txt" />
+              </a-form-item>
+              <a-form-item label="数据行模板">
+                <a-textarea v-model:value="imsiLineTemplate" style="width:360px" :auto-size="{ minRows: 2, maxRows: 4 }" />
+              </a-form-item>
+              <a-form-item :wrapper-col="{ offset: 6 }">
+                <a-space>
+                  <a-button type="primary" @click="saveAndNotify">保存</a-button>
+                  <a-button @click="testImsiFtp" :loading="imsiTesting" :disabled="imsiTesting">测试连接</a-button>
+                </a-space>
+              </a-form-item>
+            </a-form>
+            <a-spin :spinning="imsiTesting">
+              <div style="margin-top:12px;">
+                <a-alert
+                  v-if="imsiTestError"
+                  type="error"
+                  show-icon
+                  :message="imsiTestError"
+                />
+                <template v-else-if="imsiTestResult">
+                  <a-alert
+                    :type="imsiTestResult?.ok ? 'success' : 'warning'"
+                    show-icon
+                    :message="imsiTestResult?.message || (imsiTestResult?.ok ? 'FTP 连接成功' : 'FTP 连接失败')"
+                  />
+                  <div style="margin-top:8px; color: rgba(0,0,0,0.65);">
+                    <span>上次测试时间：{{ imsiTestTimestampDisplay }}</span>
+                    <span v-if="imsiTestResult?.elapsedMs" style="margin-left:16px;">耗时：{{ imsiTestResult.elapsedMs }} ms</span>
+                  </div>
+                  <a-descriptions
+                    v-if="imsiTestDetailsList.length"
+                    size="small"
+                    bordered
+                    :column="1"
+                    style="margin-top:8px;"
+                  >
+                    <a-descriptions-item v-for="item in imsiTestDetailsList" :key="item.key" :label="item.label">
+                      {{ item.value }}
+                    </a-descriptions-item>
+                  </a-descriptions>
+                </template>
+                <a-alert
+                  v-else
+                  type="info"
+                  show-icon
+                  message="尚未进行 FTP 测试。点击“测试连接”验证配置。"
+                />
+              </div>
+            </a-spin>
+            <a-alert
+              type="info"
+              show-icon
+              message="说明：模板字段支持 {deviceId}/{imsi}/{operator}/{area}/{rptTimeyymmdd}/{rptTimehhmmss}/{timestamp} 等占位符；数据行中的 \\t 按照实际制表符导出。"
+              style="margin-top:12px;"
+            />
           </template>
 
           <template v-else-if="sec==='radar'">
