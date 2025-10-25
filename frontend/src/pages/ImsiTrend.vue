@@ -28,6 +28,7 @@ const lastUpdated = ref<string | null>(null)
 const metaMessage = ref<string | null>(null)
 const elapsedMs = ref<number | null>(null)
 const deviceFilter = ref<string>('njtest001')
+const imsiFilter = ref<string>('')
 const syncing = ref(false)
 
 let autoSyncTimer: number | null = null
@@ -80,9 +81,13 @@ const tableColumns = [
 ]
 
 const filteredRecords = computed(() => {
-  const filter = (deviceFilter.value || '').trim().toLowerCase()
-  if (!filter) return records.value
-  return records.value.filter(record => (record.deviceId || '').trim().toLowerCase() === filter)
+  const device = (deviceFilter.value || '').trim().toLowerCase()
+  const imsi = (imsiFilter.value || '').trim()
+  return records.value.filter(record => {
+    const deviceOk = !device || (record.deviceId || '').trim().toLowerCase() === device
+    const imsiOk = !imsi || (record.imsi || '').includes(imsi)
+    return deviceOk && imsiOk
+  })
 })
 
 const tableData = computed<TableRow[]>(() => filteredRecords.value.map((record, index) => ({
@@ -101,22 +106,12 @@ const uniqueImsiCount = computed(() => {
   return set.size
 })
 
-const operatorSummary = computed(() => {
-  const map = new Map<string, number>()
-  filteredRecords.value.forEach(rec => {
-    const label = toOperatorLabel(rec.operator)
-    map.set(label, (map.get(label) || 0) + 1)
-  })
-  return Array.from(map.entries()).map(([label, count]) => ({ label, count }))
-})
-
 const lastUpdatedDisplay = computed(() => {
   if (!lastUpdated.value) return '—'
   const date = new Date(lastUpdated.value)
   return Number.isNaN(date.getTime()) ? lastUpdated.value : date.toLocaleString()
 })
 
-const filesDisplay = computed(() => sourceFiles.value)
 
 const isConfigReady = computed(() => {
   return !!(imsiFtpHost.value && imsiFtpUser.value && imsiFtpPass.value)
@@ -161,8 +156,7 @@ async function fetchImsiRecords(silent = false) {
         lineNumber: Number(item?.lineNumber ?? 0)
       })) as ImsiRecord[]
       : []
-    sourceFiles.value = Array.isArray(data?.sourceFiles) ? data.sourceFiles : []
-    lastUpdated.value = data?.timestamp ?? null
+        lastUpdated.value = data?.timestamp ?? null
 
     if (!data?.ok) {
       const msg = data?.message || '读取 IMSI 数据失败'
@@ -289,6 +283,13 @@ const hasRawData = computed(() => records.value.length > 0)
               placeholder="筛选设备ID"
               :allowClear="true"
             />
+            <a-input
+              v-model:value="imsiFilter"
+              style="width:200px"
+              placeholder="筛选 IMSI"
+              :allowClear="true"
+            />
+            <a-button :disabled="loading || syncing" @click="applyFilters">筛选</a-button>
             <a-button type="link" :loading="syncing" :disabled="loading || syncing" @click="refreshImsiRecords(false)">刷新</a-button>
           </a-space>
         </template>
@@ -309,20 +310,6 @@ const hasRawData = computed(() => records.value.length > 0)
                 :message="metaMessage"
                 :description="elapsedMs ? `耗时 ${elapsedMs} ms` : undefined"
               />
-              <div v-if="filesDisplay.length" style="margin-top:8px;">
-                <span style="color:rgba(0,0,0,0.65); margin-right:8px;">数据文件：</span>
-                <a-space wrap>
-                  <a-tag v-for="file in filesDisplay" :key="file">{{ file }}</a-tag>
-                </a-space>
-              </div>
-              <div v-if="operatorSummary.length" style="margin-top:8px;">
-                <span style="color:rgba(0,0,0,0.65); margin-right:8px;">运营商分布：</span>
-                <a-space wrap>
-                  <a-tag color="green" v-for="item in operatorSummary" :key="item.label">
-                    {{ item.label }}：{{ item.count }}
-                  </a-tag>
-                </a-space>
-              </div>
             </div>
 
             <a-alert
