@@ -163,7 +163,9 @@ public class RadarController {
                     try {
                         RadarTargetsResponse resp = readTargetsViaTcp(host, address, ctrlPort, candidate, timeoutMs, maxFrames);
                         if (resp != null && resp.isOk()) {
-                            eventStorageService.recordRadarTargets(resp);
+                            if (resp.getTargetCount() != null && resp.getTargetCount() > 0) {
+                                eventStorageService.recordRadarTargets(resp);
+                            }
                             return resp;
                         }
                         if (resp != null && resp.getError() != null) {
@@ -185,6 +187,7 @@ public class RadarController {
                     sendCommand(socket, address, ctrlPort, CMD_RESUME_OUTPUT);
                     sendCommand(socket, address, ctrlPort, CMD_TARGET_MODE);
 
+                    RadarTargetsResponse heartbeat = null;
                     for (int i = 0; i < maxFrames; i++) {
                         DatagramPacket packet = new DatagramPacket(new byte[MAX_FRAME_BYTES], MAX_FRAME_BYTES);
                         socket.receive(packet);
@@ -193,14 +196,20 @@ public class RadarController {
                         }
                         int sourcePort = packet.getPort();
                         ParsedFrame frame = parseTargetFrame(packet.getData(), packet.getOffset(), packet.getLength(), sourcePort);
+                        long elapsed = System.currentTimeMillis() - start;
+                        int localPort = socket.getLocalPort();
+                        int selectedDataPort = localPort > 0 ? localPort : dataPort;
                         if (frame != null) {
-                            long elapsed = System.currentTimeMillis() - start;
-                            int localPort = socket.getLocalPort();
-                            int selectedDataPort = localPort > 0 ? localPort : dataPort;
                             RadarTargetsResponse response = RadarTargetsResponse.success(host, ctrlPort, selectedDataPort, timeoutMs, elapsed, frame, false, sourcePort);
-                            eventStorageService.recordRadarTargets(response);
+                            if (response.getTargetCount() != null && response.getTargetCount() > 0) {
+                                eventStorageService.recordRadarTargets(response);
+                            }
                             return response;
                         }
+                        heartbeat = RadarTargetsResponse.heartbeat(host, ctrlPort, selectedDataPort, timeoutMs, elapsed, packet.getLength(), sourcePort, false);
+                    }
+                    if (heartbeat != null) {
+                        return heartbeat;
                     }
                 }
             }
@@ -243,14 +252,19 @@ public class RadarController {
             out.write(CMD_VERSION_REQUEST);
             out.flush();
 
+            RadarTargetsResponse heartbeat = null;
             for (int i = 0; i < maxFrames; i++) {
                 ParsedFrame frame = readFrameFromTcp(tcp);
+                long elapsed = System.currentTimeMillis() - start;
                 if (frame != null) {
-                    long elapsed = System.currentTimeMillis() - start;
                     RadarTargetsResponse response = RadarTargetsResponse.success(host, ctrlPort, port, timeoutMs, elapsed, frame, true, frame.sourcePort);
                     eventStorageService.recordRadarTargets(response);
                     return response;
                 }
+                heartbeat = RadarTargetsResponse.heartbeat(host, ctrlPort, port, timeoutMs, elapsed, 0, port, true);
+            }
+            if (heartbeat != null) {
+                return heartbeat;
             }
         }
         return null;
@@ -752,6 +766,12 @@ public class RadarController {
                                                    long elapsedMs, ParsedFrame frame, boolean tcp, int actualPort) {
             return new RadarTargetsResponse(true, host, controlPort, dataPort, timeoutMs, elapsedMs,
                     frame.status, frame.targetCount, frame.targets, null, frame.payloadLength, actualPort, tcp);
+        }
+
+        public static RadarTargetsResponse heartbeat(String host, int controlPort, int dataPort, int timeoutMs,
+                                                      long elapsedMs, int payloadLength, int actualPort, boolean tcp) {
+            return new RadarTargetsResponse(true, host, controlPort, dataPort, timeoutMs, elapsedMs,
+                    null, 0, List.of(), null, payloadLength, actualPort, tcp);
         }
 
         public static RadarTargetsResponse error(String host, int controlPort, int dataPort, String message, boolean tcp) {
