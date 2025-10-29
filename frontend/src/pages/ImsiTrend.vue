@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { imsiFtpHost, imsiFtpPort, imsiFtpUser, imsiFtpPass, imsiSyncInterval, imsiSyncBatchSize, imsiFilenameTemplate, imsiLineTemplate } from '@/store/config'
+import { imsiFtpHost, imsiFtpUser, imsiFtpPass, imsiSyncInterval, imsiDeviceFilter } from '@/store/config'
 
 type ImsiRecord = {
   deviceId: string
@@ -27,7 +27,7 @@ const sourceFiles = ref<string[]>([])
 const lastUpdated = ref<string | null>(null)
 const metaMessage = ref<string | null>(null)
 const elapsedMs = ref<number | null>(null)
-const deviceFilter = ref<string>('njtest001')
+const deviceFilter = ref<string>('')
 const imsiFilter = ref<string>('')
 const syncing = ref(false)
 
@@ -129,7 +129,7 @@ function scheduleAutoSync() {
   const seconds = Number(imsiSyncInterval.value) || 60
   if (!isConfigReady.value || seconds <= 0) return
   autoSyncTimer = window.setInterval(() => {
-    void refreshImsiRecords(true)
+    void fetchImsiRecords(true)
   }, seconds * 1000)
 }
 
@@ -156,7 +156,10 @@ async function fetchImsiRecords(silent = false) {
         lineNumber: Number(item?.lineNumber ?? 0)
       })) as ImsiRecord[]
       : []
-        lastUpdated.value = data?.timestamp ?? null
+    lastUpdated.value = data?.timestamp ?? null
+    sourceFiles.value = Array.isArray(data?.sourceFiles)
+      ? data.sourceFiles.map((item: any) => String(item ?? ''))
+      : []
 
     if (!data?.ok) {
       const msg = data?.message || '读取 IMSI 数据失败'
@@ -179,12 +182,7 @@ async function fetchImsiRecords(silent = false) {
 async function refreshImsiRecords(silent = false) {
   if (syncing.value) return
 
-  const host = (imsiFtpHost.value || '').trim()
-  const user = (imsiFtpUser.value || '').trim()
-  const pass = (imsiFtpPass.value || '').trim()
-  const port = Number(imsiFtpPort.value) || 21
-
-  if (!host || !user || !pass) {
+  if (!isConfigReady.value) {
     if (!silent) message.error('请在设置 > IMSI 中填写 FTP 连接信息')
     await fetchImsiRecords(true)
     return
@@ -193,22 +191,7 @@ async function refreshImsiRecords(silent = false) {
   syncing.value = true
   try {
     const resp = await fetch('/api/imsi/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        host,
-        port,
-        user,
-        pass,
-        timeoutMs: 6000,
-        limit: fetchLimit,
-        maxFiles: 6,
-        directory: null,
-        intervalSeconds: imsiSyncInterval.value,
-        batchSize: imsiSyncBatchSize.value,
-        filenameTemplate: imsiFilenameTemplate.value,
-        lineTemplate: imsiLineTemplate.value
-      })
+      method: 'POST'
     })
     if (!resp.ok) {
       throw new Error(`请求失败 (${resp.status})`)
@@ -228,16 +211,16 @@ async function refreshImsiRecords(silent = false) {
   }
 
   await fetchImsiRecords(true)
-  if (!silent) scheduleAutoSync()
+  scheduleAutoSync()
 }
 
 
 let configTimer: number | null = null
 
-watch([imsiFtpHost, imsiFtpPort, imsiFtpUser, imsiFtpPass], () => {
+watch([imsiFtpHost, imsiFtpUser, imsiFtpPass, imsiDeviceFilter], () => {
   if (configTimer) window.clearTimeout(configTimer)
   configTimer = window.setTimeout(() => {
-    void refreshImsiRecords(true)
+    void fetchImsiRecords(true)
   }, 600)
   scheduleAutoSync()
 })

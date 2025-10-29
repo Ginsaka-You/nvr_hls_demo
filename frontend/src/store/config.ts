@@ -35,6 +35,7 @@ export interface SettingsPayload {
   imsiSyncMaxFiles: number
   imsiFilenameTemplate: string
   imsiLineTemplate: string
+  imsiDeviceFilter: string
   dbType: DbType
   dbHost: string
   dbPort: number
@@ -74,6 +75,7 @@ const defaultSettings: SettingsPayload = {
   imsiSyncMaxFiles: 6,
   imsiFilenameTemplate: 'CTC_{deviceId}_{dateyymmdd}_{timestamp}.txt',
   imsiLineTemplate: '{deviceId}\\t{imsi}\\t000000000000000\\t{operator:1,2,3,4}\\t{area}\\t{rptTimeyymmdd}\\t{rptTimehhmmss}\\t',
+  imsiDeviceFilter: 'njtest001',
   dbType: 'postgres',
   dbHost: '127.0.0.1',
   dbPort: 5432,
@@ -117,6 +119,7 @@ export const imsiSyncBatchSize = ref<number>(defaultSettings.imsiSyncBatchSize)
 export const imsiSyncMaxFiles = ref<number>(defaultSettings.imsiSyncMaxFiles)
 export const imsiFilenameTemplate = ref<string>(defaultSettings.imsiFilenameTemplate)
 export const imsiLineTemplate = ref<string>(defaultSettings.imsiLineTemplate)
+export const imsiDeviceFilter = ref<string>(defaultSettings.imsiDeviceFilter)
 
 export const dbType = ref<DbType>(defaultSettings.dbType)
 export const dbHost = ref<string>(defaultSettings.dbHost)
@@ -268,6 +271,9 @@ function applySettings(payload: Record<string, unknown> | null | undefined) {
       case 'imsiLineTemplate':
         imsiLineTemplate.value = toStringValue(raw, defaultSettings.imsiLineTemplate)
         break
+      case 'imsiDeviceFilter':
+        imsiDeviceFilter.value = toStringValue(raw, defaultSettings.imsiDeviceFilter)
+        break
       case 'dbType':
         dbType.value = toEnum<DbType>(raw, ['mysql', 'postgres', 'sqlserver'], defaultSettings.dbType)
         break
@@ -341,6 +347,7 @@ function buildPayload(): SettingsPayload & Record<string, unknown> {
     imsiSyncMaxFiles: sanitizeInt(imsiSyncMaxFiles.value, defaultSettings.imsiSyncMaxFiles),
     imsiFilenameTemplate: sanitizeString(imsiFilenameTemplate.value),
     imsiLineTemplate: sanitizeString(imsiLineTemplate.value),
+    imsiDeviceFilter: sanitizeString(imsiDeviceFilter.value, true),
     dbType: ['mysql', 'sqlserver'].includes(dbType.value) ? dbType.value : 'postgres',
     dbHost: sanitizeString(dbHost.value, true),
     dbPort: sanitizeInt(dbPort.value, defaultSettings.dbPort),

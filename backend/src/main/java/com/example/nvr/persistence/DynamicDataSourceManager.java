@@ -154,6 +154,7 @@ public class DynamicDataSourceManager {
                     "captured_at TIMESTAMPTZ DEFAULT NOW()" +
                     ")");
             st.execute("CREATE INDEX IF NOT EXISTS idx_radar_targets_captured_at ON radar_targets(captured_at DESC)");
+            executeSilently(st, "ALTER TABLE imsi_sync_config ADD COLUMN IF NOT EXISTS device_filter VARCHAR(255)");
         }
     }
 

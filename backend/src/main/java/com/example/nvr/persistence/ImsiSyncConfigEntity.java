@@ -34,6 +34,9 @@ public class ImsiSyncConfigEntity {
     @Column(name = "max_files")
     private Integer maxFiles;
 
+    @Column(name = "device_filter", length = 255)
+    private String deviceFilter;
+
     @Column(name = "last_sync_ok")
     private Boolean lastSyncOk;
 
@@ -128,6 +131,14 @@ public class ImsiSyncConfigEntity {
 
     public void setMaxFiles(Integer maxFiles) {
         this.maxFiles = maxFiles;
+    }
+
+    public String getDeviceFilter() {
+        return deviceFilter;
+    }
+
+    public void setDeviceFilter(String deviceFilter) {
+        this.deviceFilter = deviceFilter;
     }
 
     public Boolean getLastSyncOk() {

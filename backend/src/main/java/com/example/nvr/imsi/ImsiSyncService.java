@@ -104,6 +104,9 @@ public class ImsiSyncService {
         int limit = config.getBatchSize() == null ? 500 : Math.max(1, Math.min(config.getBatchSize(), 20000));
         int maxFiles = config.getMaxFiles() == null ? 6 : Math.max(1, Math.min(config.getMaxFiles(), 50));
         String directory = trimToNull(config.getFtpDirectory());
+        String deviceFilterRaw = trimToNull(config.getDeviceFilter());
+        Set<String> allowedDevices = parseDeviceFilter(deviceFilterRaw);
+        boolean filterActive = allowedDevices != null && !allowedDevices.isEmpty();
 
         FTPClient client = new FTPClient();
         client.setConnectTimeout(DEFAULT_TIMEOUT_MS);
@@ -186,6 +189,12 @@ public class ImsiSyncService {
                         if (parts.length < 2) continue;
 
                         String deviceId = parts.length > 0 ? parts[0].trim() : "";
+                        if (filterActive) {
+                            String normalizedDeviceId = deviceId.toLowerCase(Locale.ROOT);
+                            if (normalizedDeviceId.isEmpty() || !allowedDevices.contains(normalizedDeviceId)) {
+                                continue;
+                            }
+                        }
                         String imsi = parts.length > 1 ? parts[1].trim() : "";
                         String operator = parts.length > 3 ? parts[3].trim() : "";
                         String area = parts.length > 4 ? parts[4].trim() : "";
@@ -205,9 +214,12 @@ public class ImsiSyncService {
             details.put("host", host);
             details.put("port", port);
             details.put("user", user);
+            if (filterActive) {
+                details.put("deviceFilter", deviceFilterRaw);
+            }
 
             if (records.isEmpty()) {
-                message = "未解析到 IMSI 数据";
+                message = filterActive ? "未匹配到配置的设备数据" : "未解析到 IMSI 数据";
                 return finalizeAndRecord(config, true, message, records, sourceFiles, details, start);
             }
 
@@ -272,6 +284,17 @@ public class ImsiSyncService {
                 && trimToNull(config.getFtpHost()) != null
                 && trimToNull(config.getFtpUser()) != null
                 && config.getFtpPass() != null && !config.getFtpPass().isEmpty();
+    }
+
+    private Set<String> parseDeviceFilter(String filter) {
+        if (filter == null || filter.isEmpty()) {
+            return Collections.emptySet();
+        }
+        return Arrays.stream(filter.split("/"))
+                .map(part -> part == null ? "" : part.trim())
+                .filter(part -> !part.isEmpty())
+                .map(part -> part.toLowerCase(Locale.ROOT))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
     private String trimToNull(String value) {

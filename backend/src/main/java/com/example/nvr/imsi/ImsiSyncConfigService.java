@@ -16,6 +16,7 @@ public class ImsiSyncConfigService {
     private static final int DEFAULT_INTERVAL_SECONDS = 300;
     private static final int DEFAULT_BATCH_SIZE = 500;
     private static final int DEFAULT_MAX_FILES = 6;
+    private static final String DEFAULT_DEVICE_FILTER = "njtest001";
 
     private final ImsiSyncConfigRepository repository;
 
@@ -30,12 +31,20 @@ public class ImsiSyncConfigService {
 
     @Transactional
     public ImsiSyncConfigEntity getOrCreateConfig() {
-        return repository.findById(CONFIG_ID).orElseGet(() -> {
+        return repository.findById(CONFIG_ID).map(entity -> {
+            if (entity.getDeviceFilter() == null) {
+                entity.setDeviceFilter(DEFAULT_DEVICE_FILTER);
+                entity.setUpdatedAt(Instant.now());
+                repository.save(entity);
+            }
+            return entity;
+        }).orElseGet(() -> {
             ImsiSyncConfigEntity entity = new ImsiSyncConfigEntity();
             entity.setId(CONFIG_ID);
             entity.setIntervalSeconds(DEFAULT_INTERVAL_SECONDS);
             entity.setBatchSize(DEFAULT_BATCH_SIZE);
             entity.setMaxFiles(DEFAULT_MAX_FILES);
+            entity.setDeviceFilter(DEFAULT_DEVICE_FILTER);
             entity.setCreatedAt(Instant.now());
             entity.setUpdatedAt(Instant.now());
             return repository.save(entity);
@@ -60,6 +69,16 @@ public class ImsiSyncConfigService {
         entity.setIntervalSeconds(normalizeInterval(incoming.getIntervalSeconds()));
         entity.setBatchSize(normalizeBatchSize(incoming.getBatchSize()));
         entity.setMaxFiles(normalizeMaxFiles(incoming.getMaxFiles()));
+        String normalizedFilter;
+        if (incoming.getDeviceFilter() == null) {
+            normalizedFilter = entity.getDeviceFilter();
+            if (normalizedFilter == null) {
+                normalizedFilter = DEFAULT_DEVICE_FILTER;
+            }
+        } else {
+            normalizedFilter = normalizeDeviceFilter(incoming.getDeviceFilter());
+        }
+        entity.setDeviceFilter(normalizedFilter);
         entity.setUpdatedAt(Instant.now());
         return repository.save(entity);
     }
@@ -90,6 +109,7 @@ public class ImsiSyncConfigService {
         incoming.setIntervalSeconds(normalizeInterval(settings.getImsiSyncInterval()));
         incoming.setBatchSize(normalizeBatchSize(settings.getImsiSyncBatchSize()));
         incoming.setMaxFiles(normalizeMaxFiles(settings.getImsiSyncMaxFiles()));
+        incoming.setDeviceFilter(settings.getImsiDeviceFilter());
         updateConfig(incoming);
     }
 
@@ -130,5 +150,16 @@ public class ImsiSyncConfigService {
             return DEFAULT_MAX_FILES;
         }
         return Math.min(maxFiles, 50);
+    }
+
+    private String normalizeDeviceFilter(String filter) {
+        if (filter == null) {
+            return null;
+        }
+        String trimmed = filter.trim();
+        if (trimmed.length() > 255) {
+            trimmed = trimmed.substring(0, 255);
+        }
+        return trimmed;
     }
 }

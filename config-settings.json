@@ -29,6 +29,7 @@
   "imsiSyncMaxFiles": 6,
   "imsiFilenameTemplate": "CTC_{deviceId}_{dateyymmdd}_{timestamp}.txt",
   "imsiLineTemplate": "{deviceId}\\t{imsi}\\t000000000000000\\t{operator:1,2,3,4}\\t{area}\\t{rptTimeyymmdd}\\t{rptTimehhmmss}\\t",
+  "imsiDeviceFilter": "njtest001",
   "dbType": "postgres",
   "dbHost": "127.0.0.1",
   "dbPort": 5432,

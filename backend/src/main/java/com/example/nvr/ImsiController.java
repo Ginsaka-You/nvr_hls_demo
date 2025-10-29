@@ -2,9 +2,8 @@ package com.example.nvr;
 
 import org.apache.commons.net.ftp.FTP;
 import org.apache.commons.net.ftp.FTPClient;
-import org.apache.commons.net.ftp.FTPFile;
 import org.apache.commons.net.ftp.FTPReply;
-import com.example.nvr.imsi.ImsiRecordPayload;
+import com.example.nvr.imsi.ImsiSyncService;
 import com.example.nvr.persistence.EventStorageService;
 import com.example.nvr.persistence.ImsiRecordEntity;
 import org.slf4j.Logger;
@@ -20,18 +19,13 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.time.Instant;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -44,9 +38,12 @@ public class ImsiController {
 
     private static final int DEFAULT_TIMEOUT_MS = 8000;
     private final EventStorageService eventStorageService;
+    private final ImsiSyncService imsiSyncService;
 
-    public ImsiController(EventStorageService eventStorageService) {
+    public ImsiController(EventStorageService eventStorageService,
+                          ImsiSyncService imsiSyncService) {
         this.eventStorageService = eventStorageService;
+        this.imsiSyncService = imsiSyncService;
     }
 
 
@@ -188,192 +185,9 @@ public class ImsiController {
     }
 
     @PostMapping("/sync")
-    public ResponseEntity<FtpRecordsResponse> syncRecords(@RequestBody FtpRecordsRequest request) {
-        if (request == null) {
-            return ResponseEntity.ok(FtpRecordsResponse.error("缺少请求参数"));
-        }
-        String host = trimToNull(request.getHost());
-        if (host == null) {
-            return ResponseEntity.ok(FtpRecordsResponse.error("请填写 FTP IP 地址"));
-        }
-        String user = trimToNull(request.getUser());
-        String pass = trimToNull(request.getPass());
-        if (user == null || pass == null) {
-            return ResponseEntity.ok(FtpRecordsResponse.error("请填写 FTP 用户名与密码"));
-        }
-        int port = request.getPort() != null && request.getPort() > 0 && request.getPort() <= 65535 ? request.getPort() : 21;
-        int timeout = request.getTimeoutMs() != null && request.getTimeoutMs() > 0 ? request.getTimeoutMs() : DEFAULT_TIMEOUT_MS;
-        int limit = request.getLimit() != null && request.getLimit() > 0 ? Math.min(request.getLimit(), 2000) : 500;
-        int maxFiles = request.getMaxFiles() != null && request.getMaxFiles() > 0 ? Math.min(request.getMaxFiles(), 50) : 5;
-        String directory = trimToNull(request.getDirectory());
-
-        FTPClient client = new FTPClient();
-        client.setConnectTimeout(timeout);
-        client.setDefaultTimeout(timeout);
-        client.setDataTimeout(timeout);
-
-        long start = System.currentTimeMillis();
-        Map<String, Object> details = new LinkedHashMap<>();
-        List<ImsiRecord> records = new ArrayList<>();
-        List<String> sourceFiles = new ArrayList<>();
-
-        try {
-            client.connect(host, port);
-            details.put("connectReplyCode", client.getReplyCode());
-            if (!FTPReply.isPositiveCompletion(client.getReplyCode())) {
-                return ResponseEntity.ok(FtpRecordsResponse.error("FTP 连接失败，回复码：" + client.getReplyCode(), details, records, sourceFiles, start));
-            }
-            if (!client.login(user, pass)) {
-                details.put("loginReplyCode", client.getReplyCode());
-                return ResponseEntity.ok(FtpRecordsResponse.error("FTP 登录失败，回复码：" + client.getReplyCode(), details, records, sourceFiles, start));
-            }
-            details.put("loginReplyCode", client.getReplyCode());
-            client.enterLocalPassiveMode();
-            client.setFileType(FTP.BINARY_FILE_TYPE);
-
-            if (directory != null) {
-                if (!client.changeWorkingDirectory(directory)) {
-                    details.put("directory", directory);
-                    return ResponseEntity.ok(FtpRecordsResponse.error("切换目录失败：" + directory, details, records, sourceFiles, start));
-                }
-            }
-            String workingDirectory = client.printWorkingDirectory();
-            if (workingDirectory != null) {
-                details.put("directory", workingDirectory);
-            }
-
-            FTPFile[] ftpFiles = client.listFiles();
-            if (ftpFiles == null || ftpFiles.length == 0) {
-                details.put("filesProcessed", 0);
-                details.put("recordsReturned", 0);
-                details.put("limit", limit);
-                details.put("maxFiles", maxFiles);
-                details.put("host", host);
-                details.put("port", port);
-                details.put("user", user);
-                details.put("pass", maskPassword(pass));
-                Instant fetchedAt = Instant.now();
-                long elapsed = System.currentTimeMillis() - start;
-                try {
-                    eventStorageService.recordImsiRecords(Collections.emptyList(), fetchedAt, elapsed, host, port, workingDirectory, "目录中没有可用文件");
-                } catch (Exception storageEx) {
-                    log.warn("Failed to record empty IMSI sync", storageEx);
-                }
-                return ResponseEntity.ok(FtpRecordsResponse.success("目录中没有可用文件", details, records, sourceFiles, start));
-            }
-
-            List<FTPFile> sorted = new ArrayList<>(Arrays.asList(ftpFiles));
-            sorted.removeIf(file -> !file.isFile() || !file.getName().toLowerCase(Locale.ROOT).endsWith(".txt"));
-            sorted.sort((a, b) -> {
-                long ta = 0L;
-                long tb = 0L;
-                if (a.getTimestamp() != null) {
-                    ta = a.getTimestamp().getTimeInMillis();
-                }
-                if (b.getTimestamp() != null) {
-                    tb = b.getTimestamp().getTimeInMillis();
-                }
-                return Long.compare(tb, ta);
-            });
-
-            int processedFiles = 0;
-            for (FTPFile file : sorted) {
-                if (processedFiles >= maxFiles || records.size() >= limit) {
-                    break;
-                }
-                processedFiles++;
-                sourceFiles.add(file.getName());
-
-                try (ByteArrayOutputStream buffer = new ByteArrayOutputStream()) {
-                    if (!client.retrieveFile(file.getName(), buffer)) {
-                        details.put("lastRetrieveReplyCode", client.getReplyCode());
-                        continue;
-                    }
-                    String content = buffer.toString(StandardCharsets.UTF_8.name());
-                    String[] lines = content.split("\\r?\\n");
-                    int lineNumber = 0;
-                    for (String rawLine : lines) {
-                        if (records.size() >= limit) {
-                            break;
-                        }
-                        lineNumber++;
-                        String line = rawLine.trim();
-                        if (line.isEmpty()) continue;
-                        String[] parts = line.split("\\t", -1);
-                        if (parts.length < 2) continue;
-
-                        String deviceId = parts.length > 0 ? parts[0].trim() : "";
-                        String imsi = parts.length > 1 ? parts[1].trim() : "";
-                        String operator = parts.length > 3 ? parts[3].trim() : "";
-                        String area = parts.length > 4 ? parts[4].trim() : "";
-                        String rptDate = parts.length > 5 ? parts[5].trim() : "";
-                        String rptTime = parts.length > 6 ? parts[6].trim() : "";
-
-                        records.add(new ImsiRecord(deviceId, imsi, operator, area, rptDate, rptTime, file.getName(), lineNumber));
-                    }
-                } catch (IOException ioEx) {
-                    details.put("lastRetrieveError", ioEx.getClass().getSimpleName() + ": " + ioEx.getMessage());
-                }
-            }
-
-            details.put("filesProcessed", processedFiles);
-            details.put("recordsReturned", records.size());
-            details.put("limit", limit);
-            details.put("maxFiles", maxFiles);
-            details.put("host", host);
-            details.put("port", port);
-            details.put("user", user);
-            details.put("pass", maskPassword(pass));
-
-            if (records.isEmpty()) {
-                Instant fetchedAt = Instant.now();
-                long elapsed = System.currentTimeMillis() - start;
-                try {
-                    eventStorageService.recordImsiRecords(Collections.emptyList(), fetchedAt, elapsed, host, port, workingDirectory, "未解析到 IMSI 数据");
-                } catch (Exception storageEx) {
-                    log.warn("Failed to record empty IMSI data set", storageEx);
-                }
-                return ResponseEntity.ok(FtpRecordsResponse.success("未解析到 IMSI 数据", details, records, sourceFiles, start));
-            }
-
-            String successMessage = "成功获取 IMSI 数据";
-            Instant fetchedAt = Instant.now();
-            long elapsed = System.currentTimeMillis() - start;
-            try {
-                List<ImsiRecordPayload> payloads = records.stream()
-                        .map(rec -> new ImsiRecordPayload(
-                                rec.getDeviceId(),
-                                rec.getImsi(),
-                                rec.getOperator(),
-                                rec.getArea(),
-                                rec.getRptDate(),
-                                rec.getRptTime(),
-                                rec.getSourceFile(),
-                                rec.getLineNumber()))
-                        .collect(Collectors.toList());
-                eventStorageService.recordImsiRecords(payloads, fetchedAt, elapsed, host, port, workingDirectory, successMessage);
-            } catch (Exception storageEx) {
-                log.warn("Failed to record IMSI records", storageEx);
-            }
-            return ResponseEntity.ok(FtpRecordsResponse.success(successMessage, details, records, sourceFiles, start));
-        } catch (IOException ioe) {
-            log.warn("Failed to fetch IMSI records from FTP {}:{}", host, port, ioe);
-            return ResponseEntity.ok(FtpRecordsResponse.error(ioe.getClass().getSimpleName() + ": " + ioe.getMessage(), details, records, sourceFiles, start));
-        } catch (Exception ex) {
-            log.error("Unexpected IMSI fetch error", ex);
-            return ResponseEntity.ok(FtpRecordsResponse.error(ex.getClass().getSimpleName() + ": " + ex.getMessage(), details, records, sourceFiles, start));
-        } finally {
-            if (client.isConnected()) {
-                try {
-                    client.logout();
-                } catch (IOException ignored) {
-                }
-                try {
-                    client.disconnect();
-                } catch (IOException ignored) {
-                }
-            }
-        }
+    public ResponseEntity<FtpRecordsResponse> syncRecords() {
+        com.example.nvr.imsi.dto.FtpRecordsResponse response = imsiSyncService.triggerManualSync();
+        return ResponseEntity.ok(FtpRecordsResponse.fromServiceResponse(response));
     }
 
     private String trimToNull(String value) {
@@ -541,85 +355,6 @@ public class ImsiController {
         }
     }
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class FtpRecordsRequest {
-        private String host;
-        private Integer port;
-        private String user;
-        private String pass;
-        private Integer timeoutMs;
-        private Integer limit;
-        private Integer maxFiles;
-        private String directory;
-
-        public FtpRecordsRequest() {
-        }
-
-        public String getHost() {
-            return host;
-        }
-
-        public void setHost(String host) {
-            this.host = host;
-        }
-
-        public Integer getPort() {
-            return port;
-        }
-
-        public void setPort(Integer port) {
-            this.port = port;
-        }
-
-        public String getUser() {
-            return user;
-        }
-
-        public void setUser(String user) {
-            this.user = user;
-        }
-
-        public String getPass() {
-            return pass;
-        }
-
-        public void setPass(String pass) {
-            this.pass = pass;
-        }
-
-        public Integer getTimeoutMs() {
-            return timeoutMs;
-        }
-
-        public void setTimeoutMs(Integer timeoutMs) {
-            this.timeoutMs = timeoutMs;
-        }
-
-        public Integer getLimit() {
-            return limit;
-        }
-
-        public void setLimit(Integer limit) {
-            this.limit = limit;
-        }
-
-        public Integer getMaxFiles() {
-            return maxFiles;
-        }
-
-        public void setMaxFiles(Integer maxFiles) {
-            this.maxFiles = maxFiles;
-        }
-
-        public String getDirectory() {
-            return directory;
-        }
-
-        public void setDirectory(String directory) {
-            this.directory = directory;
-        }
-    }
-
     public static class ImsiRecord {
         private final String deviceId;
         private final String imsi;
@@ -682,32 +417,70 @@ public class ImsiController {
         private final List<String> sourceFiles;
         private final Map<String, Object> details;
         private final long elapsedMs;
-        private final Instant timestamp = Instant.now();
+        private final Instant timestamp;
 
-        private FtpRecordsResponse(boolean ok, String message, List<ImsiRecord> records,
-                                   List<String> sourceFiles, Map<String, Object> details, long elapsedMs) {
+        private FtpRecordsResponse(boolean ok,
+                                   String message,
+                                   List<ImsiRecord> records,
+                                   List<String> sourceFiles,
+                                   Map<String, Object> details,
+                                   long elapsedMs,
+                                   Instant timestamp) {
             this.ok = ok;
             this.message = message;
             this.records = records == null ? Collections.emptyList() : List.copyOf(records);
             this.sourceFiles = sourceFiles == null ? Collections.emptyList() : List.copyOf(sourceFiles);
             this.details = sanitizeDetails(details);
             this.elapsedMs = elapsedMs;
+            this.timestamp = timestamp == null ? Instant.now() : timestamp;
         }
 
-        public static FtpRecordsResponse success(String message, Map<String, Object> details,
-                                                 List<ImsiRecord> records, List<String> sourceFiles, long start) {
+        public static FtpRecordsResponse success(String message,
+                                                 Map<String, Object> details,
+                                                 List<ImsiRecord> records,
+                                                 List<String> sourceFiles,
+                                                 long start) {
             long elapsed = System.currentTimeMillis() - start;
-            return new FtpRecordsResponse(true, message, records, sourceFiles, details, elapsed);
+            return new FtpRecordsResponse(true, message, records, sourceFiles, details, elapsed, Instant.now());
         }
 
         public static FtpRecordsResponse error(String message) {
-            return new FtpRecordsResponse(false, message, Collections.emptyList(), Collections.emptyList(), Map.of(), 0);
+            return new FtpRecordsResponse(false, message, Collections.emptyList(), Collections.emptyList(), Map.of(), 0, Instant.now());
         }
 
-        public static FtpRecordsResponse error(String message, Map<String, Object> details,
-                                               List<ImsiRecord> records, List<String> sourceFiles, long start) {
+        public static FtpRecordsResponse error(String message,
+                                               Map<String, Object> details,
+                                               List<ImsiRecord> records,
+                                               List<String> sourceFiles,
+                                               long start) {
             long elapsed = System.currentTimeMillis() - start;
-            return new FtpRecordsResponse(false, message, records, sourceFiles, details, elapsed);
+            return new FtpRecordsResponse(false, message, records, sourceFiles, details, elapsed, Instant.now());
+        }
+
+        public static FtpRecordsResponse fromServiceResponse(com.example.nvr.imsi.dto.FtpRecordsResponse response) {
+            if (response == null) {
+                return error("IMSI 同步结果为空");
+            }
+            List<ImsiRecord> mappedRecords = response.getRecords().stream()
+                    .map(r -> new ImsiRecord(
+                            r.getDeviceId(),
+                            r.getImsi(),
+                            r.getOperator(),
+                            r.getArea(),
+                            r.getRptDate(),
+                            r.getRptTime(),
+                            r.getSourceFile(),
+                            r.getLineNumber()))
+                    .collect(Collectors.toList());
+            return new FtpRecordsResponse(
+                    response.isOk(),
+                    response.getMessage(),
+                    mappedRecords,
+                    response.getSourceFiles(),
+                    response.getDetails(),
+                    response.getElapsedMs(),
+                    response.getTimestamp()
+            );
         }
 
         public boolean isOk() {

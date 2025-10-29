@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub, streamMode, hlsOrigin, webrtcServer, webrtcOptions, webrtcPreferCodec, channelOverrides, audioPass, audioId, audioHttpPort, radarHost, radarCtrlPort, radarDataPort, radarUseTcp, imsiFtpHost, imsiFtpPort, imsiFtpUser, imsiFtpPass, imsiSyncInterval, imsiSyncBatchSize, imsiFilenameTemplate, imsiLineTemplate, dbType, dbHost, dbPort, dbName, dbUser, dbPass, saveSettings } from '@/store/config'
+import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub, streamMode, hlsOrigin, webrtcServer, webrtcOptions, webrtcPreferCodec, channelOverrides, audioPass, audioId, audioHttpPort, radarHost, radarCtrlPort, radarDataPort, radarUseTcp, imsiFtpHost, imsiFtpPort, imsiFtpUser, imsiFtpPass, imsiSyncInterval, imsiSyncBatchSize, imsiFilenameTemplate, imsiLineTemplate, imsiDeviceFilter, dbType, dbHost, dbPort, dbName, dbUser, dbPass, saveSettings } from '@/store/config'
 import { message, Modal } from 'ant-design-vue'
 
 const sec = ref<'multicam'|'alarm'|'imsi'|'radar'|'seismic'|'drone'|'database'>('multicam')
@@ -401,6 +401,12 @@ async function clearHls() {
               </a-form-item>
               <a-form-item label="同步数量">
                 <a-input-number v-model:value="imsiSyncBatchSize" :min="1" :max="20000" style="width:220px" />
+              </a-form-item>
+              <a-form-item label="设备ID筛选">
+                <a-input v-model:value="imsiDeviceFilter" style="width:360px" placeholder="留空=全部，多个用 / 分隔，例如 njtest001/device02" />
+              </a-form-item>
+              <a-form-item :wrapper-col="{ offset: 6 }">
+                <span style="color: rgba(0,0,0,0.45);">说明：仅会保存列出的设备ID数据，留空表示同步所有设备。</span>
               </a-form-item>
               <a-form-item label="文件名模板">
                 <a-input v-model:value="imsiFilenameTemplate" style="width:360px" placeholder="CTC_{deviceId}_{dateyymmdd}_{timestamp}.txt" />

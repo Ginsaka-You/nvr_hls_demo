@@ -40,6 +40,7 @@ public class SettingsConfig {
     private Integer imsiSyncMaxFiles;
     private String imsiFilenameTemplate;
     private String imsiLineTemplate;
+    private String imsiDeviceFilter;
 
     private String dbType;
     private String dbHost;
@@ -83,6 +84,7 @@ public class SettingsConfig {
         config.imsiSyncMaxFiles = 6;
         config.imsiFilenameTemplate = "CTC_{deviceId}_{dateyymmdd}_{timestamp}.txt";
         config.imsiLineTemplate = "{deviceId}\t{imsi}\t000000000000000\t{operator:1,2,3,4}\t{area}\t{rptTimeyymmdd}\t{rptTimehhmmss}\t";
+        config.imsiDeviceFilter = "njtest001";
 
         config.dbType = "postgres";
         config.dbHost = "127.0.0.1";
@@ -128,6 +130,7 @@ public class SettingsConfig {
         if (imsiSyncMaxFiles == null) imsiSyncMaxFiles = defaults.imsiSyncMaxFiles;
         if (imsiFilenameTemplate == null) imsiFilenameTemplate = defaults.imsiFilenameTemplate;
         if (imsiLineTemplate == null) imsiLineTemplate = defaults.imsiLineTemplate;
+        if (imsiDeviceFilter == null) imsiDeviceFilter = defaults.imsiDeviceFilter;
 
         if (dbType == null) dbType = defaults.dbType;
         if (dbHost == null) dbHost = defaults.dbHost;
@@ -377,6 +380,14 @@ public class SettingsConfig {
 
     public void setImsiLineTemplate(String imsiLineTemplate) {
         this.imsiLineTemplate = imsiLineTemplate;
+    }
+
+    public String getImsiDeviceFilter() {
+        return imsiDeviceFilter;
+    }
+
+    public void setImsiDeviceFilter(String imsiDeviceFilter) {
+        this.imsiDeviceFilter = imsiDeviceFilter;
     }
 
     public String getDbType() {
