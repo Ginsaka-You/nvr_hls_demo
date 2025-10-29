@@ -16,6 +16,17 @@
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/StreamController.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/WebRtcDiagnosticsController.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/WebRtcStreamerService.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/config/SettingsConfig.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/config/SettingsController.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/config/SettingsService.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/imsi/ImsiRecordPayload.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/imsi/ImsiSyncConfigService.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/imsi/ImsiSyncService.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/imsi/dto/FtpRecordsRequest.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/imsi/dto/FtpRecordsResponse.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/imsi/dto/FtpTestRequest.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/imsi/dto/FtpTestResponse.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/imsi/dto/ImsiRecordView.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/AlertEventEntity.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/AlertEventRepository.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/CameraAlarmEntity.java
@@ -25,6 +36,8 @@
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/EventStorageService.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/ImsiRecordEntity.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/ImsiRecordRepository.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/ImsiSyncConfigEntity.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/ImsiSyncConfigRepository.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/RadarTargetEntity.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/RadarTargetRepository.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/RiskAssessmentEntity.java

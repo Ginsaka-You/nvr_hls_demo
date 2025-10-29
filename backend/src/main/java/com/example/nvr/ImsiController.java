@@ -4,6 +4,7 @@ import org.apache.commons.net.ftp.FTP;
 import org.apache.commons.net.ftp.FTPClient;
 import org.apache.commons.net.ftp.FTPFile;
 import org.apache.commons.net.ftp.FTPReply;
+import com.example.nvr.imsi.ImsiRecordPayload;
 import com.example.nvr.persistence.EventStorageService;
 import com.example.nvr.persistence.ImsiRecordEntity;
 import org.slf4j.Logger;
@@ -33,6 +34,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/imsi")
@@ -338,7 +340,18 @@ public class ImsiController {
             Instant fetchedAt = Instant.now();
             long elapsed = System.currentTimeMillis() - start;
             try {
-                eventStorageService.recordImsiRecords(records, fetchedAt, elapsed, host, port, workingDirectory, successMessage);
+                List<ImsiRecordPayload> payloads = records.stream()
+                        .map(rec -> new ImsiRecordPayload(
+                                rec.getDeviceId(),
+                                rec.getImsi(),
+                                rec.getOperator(),
+                                rec.getArea(),
+                                rec.getRptDate(),
+                                rec.getRptTime(),
+                                rec.getSourceFile(),
+                                rec.getLineNumber()))
+                        .collect(Collectors.toList());
+                eventStorageService.recordImsiRecords(payloads, fetchedAt, elapsed, host, port, workingDirectory, successMessage);
             } catch (Exception storageEx) {
                 log.warn("Failed to record IMSI records", storageEx);
             }

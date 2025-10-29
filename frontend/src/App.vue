@@ -16,6 +16,7 @@ import AxureDemo from './pages/AxureDemo.vue'
 import EventCenter from './pages/EventCenter.vue'
 import RiskModel from './pages/RiskModel.vue'
 import AlertPanel from './components/AlertPanel.vue'
+import { ensureSettingsLoaded } from './store/config'
 import { connectAlerts } from './store/alerts'
 import { connectRadar } from './store/radar'
 import { connectDeviceMonitoring } from './store/devices'
@@ -55,6 +56,18 @@ onMounted(() => {
 })
 onUnmounted(() => window.removeEventListener('resize', handleResize))
 
+onMounted(async () => {
+  try {
+    await ensureSettingsLoaded()
+  } catch (err) {
+    console.warn('Settings load failed during app init:', err)
+  } finally {
+    connectAlerts()
+    connectRadar()
+    connectDeviceMonitoring()
+  }
+})
+
 function onMenuClick(e: any) {
   const key = e?.key as Tab
   if (key) tab.value = key
@@ -83,11 +96,6 @@ const activeComponent = computed<Component | null>(() => {
   if (tab.value === 'multicam') return null
   return tabComponents[tab.value as NonMultiCamTab] ?? null
 })
-
-// 全局建立告警订阅（推送/拉取），保持在所有页面可用
-connectAlerts()
-connectRadar()
-connectDeviceMonitoring()
 </script>
 
 <template>

@@ -1,7 +1,7 @@
 package com.example.nvr.persistence;
 
-import com.example.nvr.ImsiController;
 import com.example.nvr.RadarController;
+import com.example.nvr.imsi.ImsiRecordPayload;
 import com.example.nvr.risk.RiskAssessmentService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,7 +42,7 @@ public class EventStorageService {
     }
 
     @Transactional
-    public void recordImsiRecords(List<ImsiController.ImsiRecord> records,
+    public void recordImsiRecords(List<ImsiRecordPayload> records,
                                   Instant fetchedAt,
                                   long elapsedMs,
                                   String host,
@@ -75,7 +75,7 @@ public class EventStorageService {
         }
         try {
             List<ImsiRecordEntity> entities = new ArrayList<>(records.size());
-            for (ImsiController.ImsiRecord record : records) {
+            for (ImsiRecordPayload record : records) {
                 ImsiRecordEntity entity = new ImsiRecordEntity(
                         safeTrim(record.getDeviceId()),
                         safeTrim(record.getImsi()),

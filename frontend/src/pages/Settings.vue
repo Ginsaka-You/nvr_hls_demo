@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub, streamMode, hlsOrigin, webrtcServer, webrtcOptions, webrtcPreferCodec, channelOverrides, audioPass, audioId, audioHttpPort, radarHost, radarCtrlPort, radarDataPort, radarUseTcp, imsiFtpHost, imsiFtpPort, imsiFtpUser, imsiFtpPass, imsiSyncInterval, imsiSyncBatchSize, imsiFilenameTemplate, imsiLineTemplate, dbType, dbHost, dbPort, dbName, dbUser, dbPass } from '@/store/config'
+import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub, streamMode, hlsOrigin, webrtcServer, webrtcOptions, webrtcPreferCodec, channelOverrides, audioPass, audioId, audioHttpPort, radarHost, radarCtrlPort, radarDataPort, radarUseTcp, imsiFtpHost, imsiFtpPort, imsiFtpUser, imsiFtpPass, imsiSyncInterval, imsiSyncBatchSize, imsiFilenameTemplate, imsiLineTemplate, dbType, dbHost, dbPort, dbName, dbUser, dbPass, saveSettings } from '@/store/config'
 import { message, Modal } from 'ant-design-vue'
 
 const sec = ref<'multicam'|'alarm'|'imsi'|'radar'|'seismic'|'drone'|'database'>('multicam')
+const saving = ref(false)
 
 async function testAudio() {
   try {
@@ -34,8 +35,18 @@ async function testAudio() {
   }
 }
 
-function saveAndNotify() {
-  message.success('设置已保存，相关页面将自动生效')
+async function saveAndNotify() {
+  if (saving.value) return
+  saving.value = true
+  try {
+    await saveSettings()
+    message.success('设置已保存，相关页面将自动生效')
+  } catch (e: any) {
+    const msg = e?.message || String(e)
+    message.error('保存失败：' + msg)
+  } finally {
+    saving.value = false
+  }
 }
 
 type RadarTestAttempt = {
@@ -342,7 +353,7 @@ async function clearHls() {
                 <a-input v-model:value="webrtcPreferCodec" style="width:320px" placeholder="video/H264" />
               </a-form-item>
               <a-form-item :wrapper-col="{ offset: 5 }">
-                <a-button type="primary" @click="saveAndNotify">保存</a-button>
+                <a-button type="primary" @click="saveAndNotify" :loading="saving" :disabled="saving">保存</a-button>
               </a-form-item>
             </a-form>
             <a-alert type="info" show-icon message="说明：保存后，多摄像头页面会按新参数自动检测并播放。" />
@@ -362,7 +373,7 @@ async function clearHls() {
               </a-form-item>
               <a-form-item :wrapper-col="{ offset: 5 }">
                 <a-space>
-                  <a-button type="primary" @click="saveAndNotify">保存</a-button>
+                  <a-button type="primary" @click="saveAndNotify" :loading="saving" :disabled="saving">保存</a-button>
                   <a-button @click="testAudio">测试声音</a-button>
                 </a-space>
               </a-form-item>
@@ -399,7 +410,7 @@ async function clearHls() {
               </a-form-item>
               <a-form-item :wrapper-col="{ offset: 6 }">
                 <a-space>
-                  <a-button type="primary" @click="saveAndNotify">保存</a-button>
+                  <a-button type="primary" @click="saveAndNotify" :loading="saving" :disabled="saving">保存</a-button>
                   <a-button @click="testImsiFtp" :loading="imsiTesting" :disabled="imsiTesting">测试连接</a-button>
                 </a-space>
               </a-form-item>
@@ -470,7 +481,7 @@ async function clearHls() {
               </a-form-item>
               <a-form-item :wrapper-col="{ offset: 5 }">
                 <a-space>
-                  <a-button type="primary" @click="saveAndNotify">保存</a-button>
+                  <a-button type="primary" @click="saveAndNotify" :loading="saving" :disabled="saving">保存</a-button>
                   <a-button @click="testRadar" :loading="radarTesting" :disabled="radarTesting">测试连接</a-button>
                   <span style="color: rgba(0,0,0,0.45);">当前协议：{{ radarProtocolDisplay }}</span>
                 </a-space>
@@ -532,7 +543,7 @@ async function clearHls() {
                 <a-input-password v-model:value="dbPass" style="width:220px" placeholder="留空则按数据库默认" />
               </a-form-item>
               <a-form-item :wrapper-col="{ offset: 5 }">
-                <a-button type="primary" @click="saveAndNotify">保存</a-button>
+                <a-button type="primary" @click="saveAndNotify" :loading="saving" :disabled="saving">保存</a-button>
               </a-form-item>
             </a-form>
             <a-alert type="info" show-icon message="说明：此处仅保存连接信息，服务端可使用这些参数初始化或更新数据库连接池。" />

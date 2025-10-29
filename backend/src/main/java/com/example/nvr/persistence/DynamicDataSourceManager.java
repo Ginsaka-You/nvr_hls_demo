@@ -103,7 +103,7 @@ public class DynamicDataSourceManager {
             st.execute("CREATE INDEX IF NOT EXISTS idx_alert_events_event_time ON alert_events(event_time DESC)");
             st.execute("ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS cam_channel VARCHAR(32)");
             st.execute("ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT '未处理'");
-            st.execute("UPDATE alert_events SET cam_channel = COALESCE(cam_channel, channel_id::text, port::text) WHERE cam_channel IS NULL");
+            executeSilently(st, "UPDATE alert_events SET cam_channel = COALESCE(cam_channel, channel_id::text, port::text) WHERE cam_channel IS NULL");
             st.execute("UPDATE alert_events SET status = COALESCE(NULLIF(status, ''), '未处理')");
             st.execute("ALTER TABLE alert_events DROP COLUMN IF EXISTS raw_payload");
             st.execute("ALTER TABLE alert_events DROP COLUMN IF EXISTS channel_id");
@@ -121,7 +121,7 @@ public class DynamicDataSourceManager {
                     ")");
             st.execute("CREATE INDEX IF NOT EXISTS idx_camera_alarms_created_at ON camera_alarms(created_at DESC)");
             st.execute("ALTER TABLE camera_alarms ADD COLUMN IF NOT EXISTS cam_channel VARCHAR(32)");
-            st.execute("UPDATE camera_alarms SET cam_channel = COALESCE(cam_channel, channel_id::text, port::text) WHERE cam_channel IS NULL");
+            executeSilently(st, "UPDATE camera_alarms SET cam_channel = COALESCE(cam_channel, channel_id::text, port::text) WHERE cam_channel IS NULL");
             st.execute("ALTER TABLE camera_alarms DROP COLUMN IF EXISTS channel_id");
             st.execute("ALTER TABLE camera_alarms DROP COLUMN IF EXISTS port");
             st.execute("ALTER TABLE camera_alarms DROP COLUMN IF EXISTS raw_payload");
@@ -154,6 +154,14 @@ public class DynamicDataSourceManager {
                     "captured_at TIMESTAMPTZ DEFAULT NOW()" +
                     ")");
             st.execute("CREATE INDEX IF NOT EXISTS idx_radar_targets_captured_at ON radar_targets(captured_at DESC)");
+        }
+    }
+
+    private void executeSilently(Statement st, String sql) {
+        try {
+            st.execute(sql);
+        } catch (SQLException ex) {
+            log.debug("Skipping optional schema statement '{}': {}", sql, ex.getMessage());
         }
     }
 
