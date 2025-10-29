@@ -32,7 +32,7 @@ public class RadarController {
 
     private static final int DEFAULT_CTRL_PORT = 20000;
     private static final int DEFAULT_TIMEOUT_MS = 1200;
-    private static final int DEFAULT_TARGET_TIMEOUT_MS = 12000;
+    private static final int DEFAULT_TARGET_TIMEOUT_MS = 2000;
     private static final int MAX_FRAME_BYTES = 2048;
 
     private final EventStorageService eventStorageService;
@@ -140,7 +140,7 @@ public class RadarController {
         int timeoutMs = request != null && request.getTimeoutMs() != null && request.getTimeoutMs() > 0
                 ? request.getTimeoutMs() : DEFAULT_TARGET_TIMEOUT_MS;
         int maxFrames = request != null && request.getMaxFrames() != null && request.getMaxFrames() > 0
-                ? Math.min(request.getMaxFrames(), 10) : 3;
+                ? Math.min(request.getMaxFrames(), 20) : 5;
 
         try {
             InetAddress address = InetAddress.getByName(host);

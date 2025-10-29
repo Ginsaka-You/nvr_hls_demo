@@ -43,9 +43,9 @@ export type { TargetWithMeta }
 type TrailPoint = { longitudinal: number; lateral: number; range: number; ts: number }
 export type { TrailPoint }
 
-const POLL_INTERVAL_MS = 3000
-const TARGET_DISPLAY_TTL = POLL_INTERVAL_MS * 4
-const MAX_TRAIL_LENGTH = 80
+const POLL_INTERVAL_MS = 1000
+const TARGET_DISPLAY_TTL = POLL_INTERVAL_MS * 6
+const MAX_TRAIL_LENGTH = 120
 
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -164,7 +164,7 @@ async function loadTargets(forceImmediate = false) {
     const resp = await fetch('/api/radar/targets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host, port: ctrlPort, dataPort, useTcp })
+      body: JSON.stringify({ host, port: ctrlPort, dataPort, useTcp, timeoutMs: 1200, maxFrames: 6 })
     })
     if (!resp.ok) throw new Error(`请求失败 (${resp.status})`)
 
