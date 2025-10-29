@@ -14,12 +14,13 @@ import BigDataView61 from './pages/BigDataView61.vue'
 import BigDataView67 from './pages/BigDataView67.vue'
 import AxureDemo from './pages/AxureDemo.vue'
 import EventCenter from './pages/EventCenter.vue'
+import RiskModel from './pages/RiskModel.vue'
 import AlertPanel from './components/AlertPanel.vue'
 import { connectAlerts } from './store/alerts'
 import { connectRadar } from './store/radar'
 import { connectDeviceMonitoring } from './store/devices'
 
-type Tab = 'main'|'multicam'|'events'|'imsi'|'radar'|'seismic'|'drone'|'big8'|'big61'|'big67'|'axure'|'settings'
+type Tab = 'main'|'multicam'|'events'|'risk'|'imsi'|'radar'|'seismic'|'drone'|'big8'|'big61'|'big67'|'axure'|'settings'
 const tab = ref<Tab>('main')
 
 // 顶部导航项（原左侧栏）：仅核心功能页，外链与大屏放到头像右侧下拉
@@ -27,6 +28,7 @@ const navItems = [
   { key: 'main', label: '主屏幕' },
   { key: 'multicam', label: '多摄像头' },
   { key: 'events', label: '事件中心' },
+  { key: 'risk', label: '风控模型' },
   { key: 'imsi', label: 'IMSI 趋势' },
   { key: 'radar', label: '相控阵雷达' },
   { key: 'seismic', label: '震动波形' },
@@ -65,6 +67,7 @@ type NonMultiCamTab = Exclude<Tab, 'multicam'>
 const tabComponents: Record<NonMultiCamTab, Component> = {
   main: Overview,
   events: EventCenter,
+  risk: RiskModel,
   imsi: ImsiTrend,
   radar: RadarPlot,
   seismic: SeismicWave,

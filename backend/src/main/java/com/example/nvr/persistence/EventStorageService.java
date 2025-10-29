@@ -2,6 +2,7 @@ package com.example.nvr.persistence;
 
 import com.example.nvr.ImsiController;
 import com.example.nvr.RadarController;
+import com.example.nvr.risk.RiskAssessmentService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
@@ -26,15 +27,18 @@ public class EventStorageService {
     private final CameraAlarmRepository cameraAlarmRepository;
     private final RadarTargetRepository radarTargetRepository;
     private final ImsiRecordRepository imsiRecordRepository;
+    private final RiskAssessmentService riskAssessmentService;
 
     public EventStorageService(AlertEventRepository alertEventRepository,
                                CameraAlarmRepository cameraAlarmRepository,
                                RadarTargetRepository radarTargetRepository,
-                               ImsiRecordRepository imsiRecordRepository) {
+                               ImsiRecordRepository imsiRecordRepository,
+                               RiskAssessmentService riskAssessmentService) {
         this.alertEventRepository = alertEventRepository;
         this.cameraAlarmRepository = cameraAlarmRepository;
         this.radarTargetRepository = radarTargetRepository;
         this.imsiRecordRepository = imsiRecordRepository;
+        this.riskAssessmentService = riskAssessmentService;
     }
 
     @Transactional
@@ -90,7 +94,8 @@ public class EventStorageService {
                 );
                 entities.add(entity);
             }
-            imsiRecordRepository.saveAll(entities);
+            List<ImsiRecordEntity> saved = imsiRecordRepository.saveAll(entities);
+            riskAssessmentService.processImsiRecordsSaved(saved);
         } catch (Exception ex) {
             log.warn("Failed to persist IMSI records", ex);
         }
@@ -148,7 +153,8 @@ public class EventStorageService {
 
             String camChannel = deriveCamChannel(channelId, port);
             CameraAlarmEntity entity = new CameraAlarmEntity(eventId, eventType, camChannel, level, eventTime);
-            cameraAlarmRepository.save(entity);
+            CameraAlarmEntity saved = cameraAlarmRepository.save(entity);
+            riskAssessmentService.processCameraAlarmSaved(saved);
         } catch (Exception ex) {
             log.warn("Failed to persist camera alarm", ex);
         }
@@ -195,7 +201,8 @@ public class EventStorageService {
                 );
                 entities.add(entity);
             }
-            radarTargetRepository.saveAll(entities);
+            List<RadarTargetEntity> saved = radarTargetRepository.saveAll(entities);
+            riskAssessmentService.processRadarTargetsSaved(saved);
         } catch (Exception ex) {
             log.warn("Failed to persist radar targets", ex);
         }
