@@ -9,11 +9,13 @@ import org.springframework.web.bind.annotation.RestController;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.BindException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -178,7 +180,7 @@ public class RadarController {
             } else {
                 long start = System.currentTimeMillis();
                 int listenPort = dataPort > 0 ? dataPort : 0;
-                try (DatagramSocket socket = new DatagramSocket(listenPort)) {
+                try (DatagramSocket socket = openUdpSocket(listenPort)) {
                     socket.setSoTimeout(timeoutMs);
                     sendCommand(socket, address, ctrlPort, CMD_RESUME_OUTPUT);
                     sendCommand(socket, address, ctrlPort, CMD_TARGET_MODE);
@@ -441,7 +443,7 @@ public class RadarController {
         }
         try {
             InetAddress address = InetAddress.getByName(host);
-            try (DatagramSocket socket = new DatagramSocket()) {
+            try (DatagramSocket socket = openUdpSocket(0)) {
                 socket.setSoTimeout(timeoutMs);
                 sendCommand(socket, address, ctrlPort, CMD_RESUME_OUTPUT);
                 sendCommand(socket, address, ctrlPort, CMD_TARGET_MODE);
@@ -464,7 +466,7 @@ public class RadarController {
         try {
             InetAddress address = InetAddress.getByName(host);
             int listenPort = isValidPort(targetPort) ? targetPort : 0;
-            try (DatagramSocket socket = new DatagramSocket(listenPort)) {
+            try (DatagramSocket socket = openUdpSocket(listenPort)) {
                 socket.setSoTimeout(timeoutMs);
                 sendCommand(socket, address, ctrlPort, CMD_RESUME_OUTPUT);
                 sendCommand(socket, address, ctrlPort, CMD_TARGET_MODE);
@@ -482,6 +484,9 @@ public class RadarController {
                     details.put("localPort", socket.getLocalPort());
                     details.put("remotePort", packet.getPort());
                     details.put("bytesReceived", packet.getLength());
+                    if (listenPort != 0 && socket.getLocalPort() != listenPort) {
+                        details.put("portNote", "端口被占用，使用临时端口");
+                    }
 
                     ParsedFrame frame = parseTargetFrame(packet.getData(), packet.getOffset(), packet.getLength(), packet.getPort());
                     String message;
@@ -514,6 +519,25 @@ public class RadarController {
 
     private boolean isValidPort(int port) {
         return port > 0 && port <= 65535;
+    }
+
+    private DatagramSocket openUdpSocket(int preferredPort) throws SocketException {
+        if (!isValidPort(preferredPort)) {
+            DatagramSocket socket = new DatagramSocket();
+            socket.setReuseAddress(true);
+            return socket;
+        }
+        DatagramSocket socket = new DatagramSocket(null);
+        socket.setReuseAddress(true);
+        try {
+            socket.bind(new InetSocketAddress(preferredPort));
+            return socket;
+        } catch (BindException ex) {
+            socket.close();
+            DatagramSocket fallback = new DatagramSocket();
+            fallback.setReuseAddress(true);
+            return fallback;
+        }
     }
 
     private static class ParsedFrame {
