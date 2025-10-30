@@ -121,17 +121,16 @@ function subjectLabel(type: string): string {
   return subjectLabels[type] || type || '未知'
 }
 
-function extractTopRule(item: RiskAssessment): string | null {
+function extractScoreBreakdown(item: RiskAssessment): Array<{ id: string; score: number; description: string }> {
   const details: any = item.details
   const scoreHits = Array.isArray(details?.scoreHits) ? details.scoreHits : []
-  if (scoreHits.length > 0) {
-    const first = scoreHits[0] ?? {}
-    const desc = typeof first.description === 'string' ? first.description : ''
-    const pts = Number(first.score ?? 0)
-    if (desc && pts > 0) return `${desc} (+${pts})`
-    if (desc) return desc
-  }
-  return null
+  return scoreHits
+    .map((hit: any, index: number) => ({
+      id: typeof hit?.id === 'string' && hit.id ? hit.id : `rule-${index}`,
+      score: Number(hit?.score ?? 0),
+      description: typeof hit?.description === 'string' ? hit.description : '',
+    }))
+    .filter((hit) => Number.isFinite(hit.score) && hit.score !== 0)
 }
 
 function extractFlags(item: RiskAssessment): Array<{ label: string; color: string }> {
@@ -697,7 +696,6 @@ const engineeringGuidelines = [
                         <span class="risk-item-score">{{ formatScore(item.score) }}</span>
                       </div>
                       <div v-if="item.summary" class="risk-item-summary">{{ item.summary }}</div>
-                      <div v-if="extractTopRule(item)" class="risk-item-rule">{{ extractTopRule(item) }}</div>
                       <div v-if="extractFlags(item).length" class="risk-item-flags">
                         <a-tag
                           v-for="flag in extractFlags(item)"
@@ -706,6 +704,14 @@ const engineeringGuidelines = [
                         >
                           {{ flag.label }}
                         </a-tag>
+                      </div>
+                      <div v-if="extractScoreBreakdown(item).length" class="risk-item-breakdown">
+                        <ul>
+                          <li v-for="hit in extractScoreBreakdown(item)" :key="hit.id">
+                            <span class="rule-desc">{{ hit.description || hit.id }}</span>
+                            <span class="rule-score">{{ hit.score }} 分</span>
+                          </li>
+                        </ul>
                       </div>
                       <div class="risk-item-footer">
                         <span>更新时间：{{ formatTime(item.updatedAt) }}</span>
@@ -987,11 +993,7 @@ const engineeringGuidelines = [
 </template>
 
 
-.util-section-note {
-  margin-top: 12px;
-  color: rgba(255, 255, 255, 0.75);
-}
-
+<style scoped>
 .fusion-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -1001,7 +1003,7 @@ const engineeringGuidelines = [
 .repeated-block {
   margin-top: 16px;
 }
-<style scoped>
+
 .risk-model {
   padding: 24px;
   color: var(--text-color);
@@ -1133,11 +1135,6 @@ section {
   color: rgba(255, 255, 255, 0.8);
 }
 
-.risk-item-rule {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.65);
-}
-
 .risk-item-flags {
   display: flex;
   flex-wrap: wrap;
@@ -1196,6 +1193,40 @@ h2 {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 16px;
+}
+
+
+.risk-item-breakdown {
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.28);
+  border-radius: 6px;
+  display: grid;
+  gap: 6px;
+}
+
+.risk-item-breakdown ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.risk-item-breakdown li {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.risk-item-breakdown .rule-desc {
+  flex: 1;
+  padding-right: 8px;
+}
+
+.risk-item-breakdown .rule-score {
+  font-weight: 600;
+  color: #ffd666;
 }
 
 .card-stack {
