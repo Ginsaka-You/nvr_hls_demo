@@ -26,9 +26,9 @@ const pollingTimer = ref<number | null>(null)
 
 const classificationOrder: Classification[] = ['BLACK', 'STRONG_ALERT', 'GRAY', 'WHITE']
 const classificationMeta: Record<Classification, { label: string; tag: string; empty: string; description: string }> = {
-  BLACK: { label: '黑名单', tag: 'error', empty: '暂无黑名单事件', description: '评分 ≥70 或命中黑触发' },
-  STRONG_ALERT: { label: '强警戒', tag: 'warning', empty: '暂无强警戒目标', description: '评分 55–69，或夜间桶数 ≥3 / 停留 ≥15min' },
-  GRAY: { label: '灰观察', tag: 'processing', empty: '暂无灰名单目标', description: '评分 30–54，或被灰规则标记' },
+  BLACK: { label: '黑名单', tag: 'error', empty: '暂无黑名单事件', description: '评分 ≥70 或命中 F4/F3 夜间成伙等黑名单触发' },
+  STRONG_ALERT: { label: '强警戒', tag: 'warning', empty: '暂无强警戒目标', description: '评分 55–69，或命中 F5 夜外圈强警等强警戒条件' },
+  GRAY: { label: '灰观察', tag: 'processing', empty: '暂无灰名单目标', description: '评分 30–54，或夜间 AOI 短停 + 无手机等灰名单条件' },
   WHITE: { label: '白名单', tag: 'success', empty: '暂无自动识别白名单', description: '满足农事白模式等条件' },
   LOG_ONLY: { label: '仅记录', tag: 'default', empty: '暂无', description: '低风险，仅留存日志' },
 }
@@ -139,6 +139,9 @@ function extractFlags(item: RiskAssessment): Array<{ label: string; color: strin
   const flags: Array<{ label: string; color: string }> = []
   if (Array.isArray(details?.directBlack) && details.directBlack.length) {
     flags.push({ label: '黑触发', color: 'error' })
+  }
+  if (Array.isArray(details?.strongAlertRules) && details.strongAlertRules.length) {
+    flags.push({ label: '强警触发', color: 'orange' })
   }
   if (Array.isArray(details?.forcedGray) && details.forcedGray.length) {
     flags.push({ label: '灰触发', color: 'warning' })
@@ -474,326 +477,176 @@ const directBlackConditions = [
   '夜间进入 AOI 且 10 min 内再次进入（往返）。',
 ]
 
-const riskModelSpec = {
-  version: '0.1',
-  description:
-    'Perimeter anti-looting logic for burial site. IMSI scanner (300m outer ring, sparse 5-15min hits) + fixed bullet camera on mound AOI (30-50m). Night activity is primary risk window.',
-  time_windows: {
-    session_break_minutes: 15,
-    short_window_minutes: 30,
-    long_window_minutes: 90,
-    revisit_max_gap_hours: 2,
-    dawn_day_dusk_night: {
-      day: { start: '06:00', end: '18:59' },
-      dusk: { start: '19:00', end: '20:59' },
-      night: { start: '21:00', end: '05:59' },
-    },
-  },
-  thresholds: {
-    score_strong_black: 70,
-    score_strong_alert: 55,
-    score_gray: 30,
-    gray_observation_days: 90,
-    strong_alert_escalation_days: 14,
-    farmer_white_observation_days: 14,
-    farmer_white_min_day_presence: 6,
-  },
-  lists: {
-    strong_whitelist: {
-      description: 'Permanent staff / guards / archaeology team / law enforcement',
-      binding: [
-        'person_identity',
-        'device_id_or_imsi_or_esim_profile',
-        'allowed_time_window',
-        'allowed_zone',
-      ],
-      auto_expire_months: 6,
-    },
-    temporary_whitelist: {
-      description: 'Contractors / temporary workers / survey crew',
-      binding: [
-        'person_identity',
-        'device_id_or_imsi_or_esim_profile',
-        'allowed_time_window',
-        'allowed_zone',
-      ],
-      auto_expire_on_end_date: true,
-    },
-    farmer_white: {
-      description:
-        'Locals doing repeated daytime farm work near perimeter but never entering AOI and never appearing at night',
-      entry_rule: {
-        window_days: 14,
-        min_daytime_days_present: 6,
-        conditions: ['no_night_presence', 'no_AOI_entry'],
-      },
-      auto_revoke_if: ['night_presence_detected', 'AOI_entry_detected_any_time'],
-    },
-  },
-  scoring: {
-    time_of_day: [
-      { id: 'TOD_DAY', condition: 'event_in_day_window', score: 0, description: '06:00-18:59' },
-      { id: 'TOD_DUSK', condition: 'event_in_dusk_window', score: 10, description: '19:00-20:59' },
-      {
-        id: 'TOD_NIGHT',
-        condition: 'event_in_night_window',
-        score: 25,
-        description: '21:00-05:59 high risk',
-      },
-    ],
-    imsi_activity_strength: [
-      {
-        id: 'IMSI_HITS_1',
-        condition: 'same_device_seen_1_time_in_30min_window',
-        score: 2,
-        description: 'likely just passing through',
-      },
-      {
-        id: 'IMSI_HITS_2',
-        condition: 'same_device_seen_2_times_in_30min_window',
-        score: 8,
-        description: '≈10-16min linger given 5-8min sampling gap',
-      },
-      {
-        id: 'IMSI_HITS_3',
-        condition: 'same_device_seen_3_times_in_30min_window',
-        score: 14,
-        description: '≈15-24min linger',
-      },
-      {
-        id: 'IMSI_HITS_4PLUS',
-        condition: 'same_device_seen_4_or_more_times_in_30min_window',
-        score: 20,
-        description: '≈20-30+min linger',
-      },
-    ],
-    imsi_session_structure: [
-      {
-        id: 'IMSI_LONG_GAP_IN_SESSION',
-        condition: 'within_one_session_any_gap_over_12min',
-        score: 4,
-        description: 'possible circling/coverage edge/power-cycle',
-      },
-      {
-        id: 'IMSI_REVISIT_SOON',
-        condition: 'session_break_over_15min_and_same_device_returns_within_2h_same_day',
-        score: 6,
-        description: 'come-back-within-2h suggests probing',
-      },
-    ],
-    camera_AOI_behavior: [
-      {
-        id: 'AOI_ENTRY_DAY',
-        condition: 'target_enters_AOI_daytime',
-        score: 10,
-        description: 'entered mound AOI during day',
-      },
-      {
-        id: 'AOI_ENTRY_NIGHT',
-        condition: 'target_enters_AOI_nighttime',
-        score: 25,
-        description: 'entered mound AOI during night (critical)',
-      },
-      {
-        id: 'AOI_STAY_DAY',
-        condition: 'target_stays_in_AOI_over_60s_daytime',
-        score: 8,
-        description: 'lingering >60s daytime',
-      },
-      {
-        id: 'AOI_STAY_NIGHT_SHORT',
-        condition: 'target_stays_in_AOI_over_60s_nighttime',
-        score: 15,
-        description: 'lingering >60s nighttime',
-      },
-      {
-        id: 'AOI_STAY_NIGHT_LONG',
-        condition: 'target_stays_in_AOI_over_180s_nighttime',
-        score: 10,
-        description: 'extra add if >180s at night, stacks on AOI_STAY_NIGHT_SHORT',
-      },
-      {
-        id: 'AOI_REENTER_WITHIN_10MIN_DAY',
-        condition: 'same_target_reenters_AOI_within_10min_daytime',
-        score: 6,
-        description: 'daytime quick in/out scouting',
-      },
-      {
-        id: 'AOI_REENTER_WITHIN_10MIN_NIGHT',
-        condition: 'same_target_reenters_AOI_within_10min_nighttime',
-        score: 12,
-        description: 'nighttime in/out checking surroundings',
-      },
-    ],
-    camera_perimeter_behavior: [
-      {
-        id: 'AOI_PERIM_LOOP_DAY',
-        condition: 'target_circles_AOI_perimeter_2plus_times_in_30min_daytime_without_entry',
-        score: 6,
-        description: 'circling mound but not yet entering (day)',
-      },
-      {
-        id: 'AOI_PERIM_LOOP_NIGHT',
-        condition: 'target_circles_AOI_perimeter_2plus_times_in_30min_nighttime_without_entry',
-        score: 10,
-        description: 'circling mound perimeter at night',
-      },
-    ],
-    group_behavior: [
-      {
-        id: 'GROUP_NIGHT',
-        condition:
-          '>=2_distinct_devices_detected_same_2min_window AND >=2_humans_seen_by_camera_same_2min_window AND time_is_night',
-        score: 15,
-        description: 'multiple people together at night',
-      },
-      {
-        id: 'REPEATED_PAIRING',
-        condition: 'two_devices_seen_together_same_direction_entry_exit_at_least_2_times_in_7days',
-        score: 6,
-        description: 'recurrent pairing / working as a team',
-      },
-    ],
-    casing_activity: [
-      {
-        id: 'DAYTIME_SCOUTING',
-        condition:
-          'within_7days_target_detected_daytime_or_dusk_near_perimeter_on_2_or_more_days_with_imsi_hits_>=2_per_30min_or_camera_perimeter_stay_over_90s AND never_enters_AOI',
-        score: 10,
-        description: 'repeated daylight scouting / casing',
-      },
-    ],
-    origin_hint_optional: [
-      {
-        id: 'NON_LOCAL_AT_NIGHT',
-        condition: 'imsi_mcc_mnc_indicates_non_local AND time_is_night',
-        score: 6,
-        description: 'only if MCC/MNC is known; most of the time unknown so score 0',
-      },
-      {
-        id: 'NON_LOCAL_DAY',
-        condition: 'imsi_mcc_mnc_indicates_non_local AND time_is_day',
-        score: 2,
-        description: 'weak daylight signal',
-      },
-    ],
-  },
-  gray_entry_conditions: {
-    description:
-      'Conditions that force an entity into GRAY watchlist (observation) even if total score is below 55.',
-    rules: [
-      {
-        id: 'GRAY_NIGHT_IMSI_LINGER',
-        condition: 'time_is_night AND same_device_seen_2plus_times_in_30min_window AND NOT_entered_AOI',
-        action: 'ADD_TO_GRAY',
-        notes: 'Night linger outside AOI is suspicious even without video confirmation.',
-      },
-      {
-        id: 'GRAY_NIGHT_AOI_BRIEF',
-        condition: 'time_is_night AND target_enters_AOI AND AOI_stay_over_60s AND single_person_only AND NOT_reenter_within_10min',
-        action: 'ADD_TO_GRAY',
-        notes: 'Single intruder at mound at night, short stay.',
-      },
-      {
-        id: 'GRAY_SCOUTING',
-        condition: 'DAYTIME_SCOUTING rule triggered',
-        action: 'ADD_TO_GRAY',
-        notes: 'Daytime/dusk perimeter scouting over multiple days.',
-      },
-      {
-        id: 'GRAY_DUSK_LOOP',
-        condition: 'time_is_dusk AND (AOI_PERIM_LOOP_DAY OR IMSI_HITS_3)',
-        action: 'ADD_TO_GRAY',
-        notes: 'Hanging around mound boundary at 19:00-20:59.',
-      },
-      {
-        id: 'GRAY_RETURN_MATCH',
-        condition: 'IMSI_REVISIT_SOON AND camera_perimeter_stay_over_90s_same_period',
-        action: 'ADD_TO_GRAY',
-        notes: 'Device leaves >15min then comes back within 2h and is visually lingering.',
-      },
-    ],
-  },
-  direct_black_conditions: {
-    description: 'Any of these means immediate BLACK (alarm), regardless of score.',
-    rules: [
-      {
-        id: 'BLACK_SCOUT_THEN_NIGHT_ENTRY',
-        condition: 'entity_triggered_DAYTIME_SCOUTING_within_past_14_days AND now_time_is_night AND target_enters_AOI_any_duration',
-        action: 'RAISE_BLACK_ALERT',
-        notes: "Classic 'casing by day, dig by night' pattern.",
-      },
-      {
-        id: 'BLACK_NIGHT_GROUP_IN_AOI',
-        condition: 'time_is_night AND target_enters_AOI AND group_size_>=2 (IMSI or camera confirms >=2 persons)',
-        action: 'RAISE_BLACK_ALERT',
-        notes: 'Multiple intruders at the mound at night.',
-      },
-      {
-        id: 'BLACK_NIGHT_REENTER',
-        condition: 'time_is_night AND target_enters_AOI AND reenters_AOI_within_10min',
-        action: 'RAISE_BLACK_ALERT',
-        notes: 'Nighttime in/out/in suggests active probing of burial point.',
-      },
-    ],
-  },
-  classification_logic: {
-    description: 'How final state (WHITE / GRAY / STRONG_ALERT / BLACK) is chosen per entity per incident.',
-    steps: [
-      'STEP 1: If entity in strong_whitelist or temporary_whitelist and current time is within allowed_time_window and inside allowed_zone -> CLASSIFY = WHITE_OVERRIDE (no alarm, just log).',
-      'STEP 2: If entity qualifies as farmer_white (pattern: >=6 daytime appearances in last 14 days, only daytime/dusk, never night, never AOI) -> CLASSIFY = WHITE_FARM. BUT if any night presence or any AOI entry happens now, immediately revoke farmer_white and continue.',
-      'STEP 3: Compute total_score = sum of all matching scoring rules for this 30min incident window (time_of_day + imsi_activity_strength + imsi_session_structure + camera_AOI_behavior + camera_perimeter_behavior + group_behavior + casing_activity + origin_hint_optional).',
-      'STEP 4: Check direct_black_conditions. If any TRUE -> CLASSIFY = BLACK (alarm).',
-      'STEP 5: Else if total_score >= score_strong_black (>=70) -> CLASSIFY = BLACK (alarm).',
-      'STEP 6: Else if total_score >= score_strong_alert (>=55) -> CLASSIFY = STRONG_ALERT (treat operationally close to BLACK: immediate voice warning / call-out / push to human).',
-      'STEP 7: Else if total_score >= score_gray (>=30) -> CLASSIFY = GRAY (watchlist).',
-      'STEP 8: Else apply gray_entry_conditions: if any TRUE -> CLASSIFY = GRAY.',
-      'STEP 9: Else -> CLASSIFY = LOG_ONLY (no alert).',
-    ],
-  },
-  escalation_and_decay: {
-    gray_watchlist: {
-      default_retention_days: 90,
-      escalate_to_strong_alert_if: {
-        condition: 'same_entity_triggers_GRAY_again_within_14_days OR total_score >= 55',
-        action: 'UPGRADE_TO_STRONG_ALERT',
-      },
-      decay_rule: 'If no new gray/strong_alert/black triggers for 90 days, remove entity from gray_watchlist.',
-    },
-    strong_alert: {
-      escalate_to_black_if: {
-        condition: 'entity_hits_strong_alert_twice_within_14_days OR any_direct_black_condition_true',
-        action: 'UPGRADE_TO_BLACK',
-      },
-      decay_rule: 'If 14 days pass with no new incidents, downgrade to gray_watchlist for remainder of 90-day window.',
-    },
-    farmer_white: {
-      entry_condition: 'see lists.farmer_white.entry_rule',
-      auto_revoke_conditions: ['any_nighttime_presence_detected', 'any_AOI_entry_detected'],
-      post_revoke_state: 'Upon revoke, entity is evaluated normally (can become GRAY/ALERT/BLACK).',
-    },
-  },
-  helper_calculations: {
-    imsi_session_definition: {
-      description: "How we group sparse IMSI hits into a 'session'.",
-      same_session_if_gap_minutes_lte: 15,
-    },
-    imsi_presence_estimation: {
-      description: 'Lower bound, mid estimate, and upper bound for how long device stayed, given sparse (5-15min) hits.',
-      T_min: 'last_seen_timestamp - first_seen_timestamp',
-      T_hat: 'max(T_min, (num_hits-1)*7min)',
-      T_max: 'T_min + 15min',
-      night_risk_rule: 'If time_is_night AND (T_hat >= 15min OR T_max >= 20min) -> force STRONG_ALERT even without AOI entry',
-    },
-    multi_device_grouping: {
-      description: 'We try not to double-count one person with two SIMs/eSIMs.',
-      merge_keys: ['first_seen_time_bucket_5min', 'approx_entry_point_sector', 'camera_track_id_if_available'],
-      result: "treat merged cluster as one 'entity' for scoring/group_behavior",
-    },
-  },
-}
+const eventAlignmentColumns = [
+  { title: '名称', dataIndex: 'name', key: 'name', width: 180 },
+  { title: '定义', dataIndex: 'definition', key: 'definition' },
+  { title: '默认值/建议', dataIndex: 'defaultValue', key: 'defaultValue', width: 200 },
+  { title: '作用', dataIndex: 'purpose', key: 'purpose' },
+]
 
-const specJson = JSON.stringify(riskModelSpec, null, 2)
+const eventAlignmentRows = [
+  {
+    name: '事件窗口（incident_window）',
+    definition: '一次判定所覆盖的时间片',
+    defaultValue: '30 分钟滑窗（每 1 分钟平移）',
+    purpose: '对齐两传感器的“这段时间到底发生了什么”',
+  },
+  {
+    name: '围栏去重',
+    definition: 'Burst 合并（90s）、5 分钟分桶、15 分钟会话断点',
+    defaultValue: '90s / 5min / 15min',
+    purpose: '去除重复条，沿用既有口径',
+  },
+  {
+    name: '紧邻同窗（tight）',
+    definition: '摄像头事件时间点 ±5 分钟内的围栏统计',
+    defaultValue: '±5 分钟',
+    purpose: '快速确认同窗是否有设备到达/聚集',
+  },
+  {
+    name: '宽松同窗（loose）',
+    definition: '摄像头事件时间点 ±10 分钟内的围栏统计',
+    defaultValue: '±10 分钟',
+    purpose: '纳入稍滞后/提前的到达峰值',
+  },
+  {
+    name: '到达数（arrivals_10m）',
+    definition: '近 10 分钟首次出现的唯一设备数',
+    defaultValue: '10 分钟窗口',
+    purpose: '关注“新进来的人”而非总量',
+  },
+  {
+    name: '到达异常（arrival_z）',
+    definition: '近 10 分钟到达数的 z 分数（对比历史同时段夜/昼基线）',
+    defaultValue: '阈值 z≥2',
+    purpose: '发现“今天不对劲，比平时多很多”',
+  },
+  {
+    name: '唯一桶数（bucket_count）',
+    definition: '30 分钟内有命中的 5 分钟桶数量',
+    defaultValue: '0–6',
+    purpose: '更稳健地代替“次数”，避免重复统计',
+  },
+]
+
+const fusionColumns = [
+  { title: '编码', dataIndex: 'code', key: 'code', width: 120 },
+  { title: '条件（摄像头事件与围栏时序对齐）', dataIndex: 'condition', key: 'condition' },
+  { title: '白天 +分', dataIndex: 'dayScore', key: 'dayScore', width: 120 },
+  { title: '夜间 +分', dataIndex: 'nightScore', key: 'nightScore', width: 140 },
+  { title: '说明', dataIndex: 'note', key: 'note' },
+]
+
+const fusionRows = [
+  {
+    code: 'F1 同窗协同',
+    condition: '摄像头进入 AOI，且 loose(±10m) 内 arrivals_10m ≥ 2 或 arrival_z ≥ 2',
+    dayScore: '+8',
+    nightScore: '+15',
+    note: '夜里“进点”同时有新设备涌入/明显异常 = 协同作案迹象',
+  },
+  {
+    code: 'F2 无手机嫌疑',
+    condition: '摄像头进入 AOI，且 tight(±5m) 内 arrivals_10m = 0 且站点检出率高',
+    dayScore: '+2',
+    nightScore: '+12',
+    note: '夜里进点没有任何新设备迹象 → 可能关机/留机/无手机',
+  },
+  {
+    code: 'F3 成伙协同',
+    condition: '摄像头画面 ≥2 人，且 tight(±5m) 内 arrivals_10m ≥ 2',
+    dayScore: '+6',
+    nightScore: '+15',
+    note: '两边都显示“多人同窗”',
+  },
+  {
+    code: 'F4 踩点→返场',
+    condition: '7 天内出现白天/傍晚外围踩线，且 14 天内夜间任意一次进入 AOI',
+    dayScore: '—',
+    nightScore: '直接黑（触发黑名单）',
+    note: '踩点→夜返，无需再看分数',
+  },
+  {
+    code: 'F5 夜外圈强警',
+    condition: '夜间未见摄像头事件，但围栏 30 分钟内 bucket_count ≥ 3 或 T_hat ≥ 15min 或 T_max ≥ 20min',
+    dayScore: '—',
+    nightScore: '强警（升级强警戒）',
+    note: '外圈蹲守，先行喝止/布控',
+  },
+  {
+    code: 'F6 夜异常汇聚',
+    condition: '夜间，loose 内 arrival_z ≥ 3，且任意摄像头外围徘徊/靠近',
+    dayScore: '+4',
+    nightScore: '+10',
+    note: '极端“车人涌入”背景下的靠近更可疑',
+  },
+]
+
+const decisionColumns = [
+  { title: '等级', dataIndex: 'level', key: 'level', width: 120 },
+  { title: '触发（任意满足）', dataIndex: 'triggers', key: 'triggers' },
+  { title: '处置', dataIndex: 'actions', key: 'actions' },
+]
+
+const decisionRows = [
+  {
+    level: '黑名单',
+    triggers: '① 总分 ≥ 70；② F4（踩点→夜返）；③ 夜间成伙进入 AOI（摄像头≥2 人且 F3 达标）；④ 夜间往返进入 AOI（沿用原规则）',
+    actions: '立刻报警、语音驱离、通知值守、取证包',
+  },
+  {
+    level: '强警戒',
+    triggers: '① 总分 55–69；② F5（夜外圈强警）；③ F1 协同 + AOI 停留 >60s 且人数单一',
+    actions: '立即关注、喊话、近距离巡查',
+  },
+  {
+    level: '灰名单',
+    triggers: '① 总分 30–54；② 夜间单次 AOI 短停 + F2 无手机嫌疑；③ 多日晚间外围绕行 + arrival_z ≥ 2',
+    actions: '90 天观察、复触发上调',
+  },
+]
+
+const scenarioColumns = [
+  { title: '场景', dataIndex: 'scenario', key: 'scenario' },
+  { title: '摄像头', dataIndex: 'camera', key: 'camera' },
+  { title: '围栏', dataIndex: 'perimeter', key: 'perimeter' },
+  { title: '结论', dataIndex: 'conclusion', key: 'conclusion' },
+]
+
+const scenarioRows = [
+  {
+    scenario: 'A 夜间单人进 AOI 停留 2 分钟，同窗无新设备',
+    camera: '进 AOI + 停留 >60s',
+    perimeter: 'arrivals_10m = 0（tight）',
+    conclusion: 'AOI(+25)+停留(+15)+F2(+12)+夜间基分(+25)=77 → 黑名单',
+  },
+  {
+    scenario: 'B 夜间两人进 AOI，同窗有 3 台新设备',
+    camera: '进 AOI + ≥2 人',
+    perimeter: 'arrivals_10m = 3（tight）',
+    conclusion: 'AOI(+25)+F3(+15)+F1(+15)+夜间(+25)=80 → 黑名单',
+  },
+  {
+    scenario: 'C 夜间未进 AOI，外圈同一设备 30 分钟≥3 桶',
+    camera: '无',
+    perimeter: 'bucket_count ≥ 3（30 分钟）',
+    conclusion: 'F5 触发 → 强警戒（喊退 + 布控）',
+  },
+  {
+    scenario: 'D 白天两次外围绕行 + 7 天内多次“到达”',
+    camera: '外围绕行 ≥2 次',
+    perimeter: 'arrival_z ≥ 2',
+    conclusion: '灰名单；若 14 天内夜进 AOI → F4 直接黑',
+  },
+]
+
+const engineeringGuidelines = [
+  '只在时间同窗做加权，不做身份绑定：摄像头看到的人未必携机，允许“无手机”成为可疑信号（F2）。',
+  '分别建设摄像头与围栏基线：AOI 进入/停留/人数 vs arrivals_10m、arrival_z、bucket_count、会话重返，融合时仅用 tight/loose 同窗加权。',
+  'site_detectability_baseline 持续自校正，只有高可检出站点才启用 F2 的强加分，避免弱覆盖点误判。',
+  '多站点可选项：若围栏有扇区/多点接收，可进一步加上方向同窗的小权重；没有就跳过。',
+]
+
 </script>
 
 <template>
@@ -899,11 +752,82 @@ const specJson = JSON.stringify(riskModelSpec, null, 2)
     </section>
 
     <section>
+      <h2>事件级融合思路</h2>
+      <div class="intro-block">
+        <p>好问题：<strong>两套传感器彼此独立、无法做“同一人”的硬绑定</strong> 时，就不要做“身份级融合”，而是做 <strong>事件级融合</strong>。</p>
+        <p>把某一段时间内、某一地点周边发生的 <strong>摄像头事件</strong> 与 <strong>围栏强度/到达峰值</strong> 做 <strong>时序对齐</strong>，用“是否同窗发生”“是否出现反常到达”“是否出现‘无手机’迹象”等 <strong>场景证据</strong> 加权。</p>
+        <p>下面给出的表格与 JSON 增量用于在原有评分/名单框架上叠加事件级融合逻辑，可按需组合到现行规则中。</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>表 1｜时空对齐与统计口径（事件级）</h2>
+      <a-table
+        class="compact-table"
+        size="small"
+        :columns="eventAlignmentColumns"
+        :data-source="eventAlignmentRows"
+        :pagination="false"
+        row-key="name"
+      />
+    </section>
+
+    <section>
+      <h2>表 2｜融合加分项（事件级，无需身份绑定）</h2>
+      <p class="section-note">这些是新增 / 调整的“融合项”，在原来的 IMSI 强度 + 摄像头行为评分基础上叠加使用。</p>
+      <a-table
+        class="compact-table"
+        size="small"
+        :columns="fusionColumns"
+        :data-source="fusionRows"
+        :pagination="false"
+        row-key="code"
+      />
+    </section>
+
+    <section>
+      <h2>表 3｜最终判定（结合既有阈值）</h2>
+      <a-table
+        class="compact-table"
+        size="small"
+        :columns="decisionColumns"
+        :data-source="decisionRows"
+        :pagination="false"
+        row-key="level"
+      />
+    </section>
+
+    <section>
+      <h2>表 4｜典型场景矩阵</h2>
+      <a-table
+        class="compact-table"
+        size="small"
+        :columns="scenarioColumns"
+        :data-source="scenarioRows"
+        :pagination="false"
+        row-key="scenario"
+      />
+    </section>
+
+    <section>
+      <h2>工程要点（避免强行绑定“同一人”）</h2>
+      <ul class="bullet-list">
+        <li v-for="note in engineeringGuidelines" :key="note">{{ note }}</li>
+      </ul>
+    </section>
+
+    <section>
+      <p class="section-note">
+        以下保留 0.1 版的规则骨架与处置说明，可与上方事件级融合指标结合使用：在同一 30 分钟事件窗口内，先按原有分层模型打底，再叠加紧邻/宽松同窗、到达峰值与无手机等融合证据。
+      </p>
+    </section>
+
+    <section>
       <h2>0）现场约束 → 规则设计要点</h2>
-      <div class="card-grid">
-        <a-card v-for="item in constraints" :key="item.title" :title="item.title">
+      <div class="card-grid repeated-block">
+        <a-card v-for="item in constraints" :key="`constraint-${item.title}`" :title="item.title">
           <ul class="bullet-list">
-            <li v-for="point in item.points" :key="point">{{ point }}</li>
+            <li v-for="point in item.points" :key="`constraint-${item.title}-${point}`">{{ point }}</li>
           </ul>
         </a-card>
       </div>
@@ -911,8 +835,8 @@ const specJson = JSON.stringify(riskModelSpec, null, 2)
 
     <section>
       <h2>1）事件模型与时间窗</h2>
-      <div class="card-grid">
-        <a-card v-for="item in timeWindowNotes" :key="item.title" :title="item.title">
+      <div class="card-grid repeated-block">
+        <a-card v-for="item in timeWindowNotes" :key="`tw-${item.title}`" :title="item.title">
           <p>{{ item.detail }}</p>
         </a-card>
       </div>
@@ -947,8 +871,8 @@ const specJson = JSON.stringify(riskModelSpec, null, 2)
       <ul class="bullet-list section-note">
         <li v-for="note in scoringNotes" :key="note">{{ note }}</li>
       </ul>
-      <div class="card-stack">
-        <a-card v-for="cat in scoringCategories" :key="cat.key" :title="cat.title">
+      <div class="card-stack repeated-block">
+        <a-card v-for="cat in scoringCategories" :key="`cat-${cat.key}`" :title="cat.title">
           <p v-if="cat.note" class="card-note">{{ cat.note }}</p>
           <a-table
             size="small"
@@ -968,8 +892,8 @@ const specJson = JSON.stringify(riskModelSpec, null, 2)
 
     <section>
       <h2>3）名单规则（结合评分阈值）</h2>
-      <div class="card-grid">
-        <a-card v-for="item in whiteListRules" :key="item.title" :title="item.title">
+      <div class="card-grid repeated-block">
+        <a-card v-for="item in whiteListRules" :key="`wh-${item.title}`" :title="item.title">
           <p>{{ item.detail }}</p>
         </a-card>
       </div>
@@ -1020,8 +944,8 @@ const specJson = JSON.stringify(riskModelSpec, null, 2)
 
     <section>
       <h2>8）典型场景判定示例</h2>
-      <div class="card-stack">
-        <a-card v-for="scene in scenarioExamples" :key="scene.title" :title="scene.title">
+      <div class="card-stack repeated-block">
+        <a-card v-for="scene in scenarioExamples" :key="`scene-${scene.title}`" :title="scene.title">
           <p>{{ scene.evaluation }}</p>
         </a-card>
       </div>
@@ -1029,10 +953,10 @@ const specJson = JSON.stringify(riskModelSpec, null, 2)
 
     <section>
       <h2>9）实施要点（工程配置）</h2>
-      <div class="card-stack">
-        <a-card v-for="block in implementationNotes" :key="block.title" :title="block.title">
+      <div class="card-stack repeated-block">
+        <a-card v-for="block in implementationNotes" :key="`impl-${block.title}`" :title="block.title">
           <ul class="bullet-list">
-            <li v-for="point in block.points" :key="point">{{ point }}</li>
+            <li v-for="point in block.points" :key="`impl-${block.title}-${point}`">{{ point }}</li>
           </ul>
         </a-card>
       </div>
@@ -1059,18 +983,24 @@ const specJson = JSON.stringify(riskModelSpec, null, 2)
       </div>
     </section>
 
-    <section>
-      <h2>机器可读配置（参考）</h2>
-      <p class="section-note">下方 JSON 便于后端或策略引擎直接引用，可作为版本 0.1 的风控模型基线。</p>
-      <a-collapse>
-        <a-collapse-panel key="spec" header="展开查看 JSON 配置">
-          <pre class="json-view">{{ specJson }}</pre>
-        </a-collapse-panel>
-      </a-collapse>
-    </section>
   </div>
 </template>
 
+
+.util-section-note {
+  margin-top: 12px;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.fusion-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.repeated-block {
+  margin-top: 16px;
+}
 <style scoped>
 .risk-model {
   padding: 24px;
@@ -1273,6 +1203,20 @@ h2 {
   gap: 16px;
 }
 
+.intro-block {
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  display: grid;
+  gap: 12px;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.intro-block p {
+  margin: 0;
+}
+
 .bullet-list {
   padding-left: 18px;
   margin: 0;
@@ -1307,18 +1251,6 @@ h2 {
   color: rgba(255, 255, 255, 0.75);
 }
 
-.json-view {
-  margin: 0;
-  padding: 16px;
-  max-height: 480px;
-  overflow: auto;
-  background: rgba(0, 0, 0, 0.75);
-  color: var(--text-color);
-  border-radius: 4px;
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.5;
-}
 
 @media (max-width: 768px) {
   .risk-model {

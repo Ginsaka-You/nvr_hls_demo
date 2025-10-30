@@ -46,6 +46,9 @@ public class RiskAssessmentService {
     private static final Duration FARM_WHITE_WINDOW = Duration.ofDays(14);
     private static final Duration BURST_MERGE = Duration.ofSeconds(90);
     private static final Duration TIME_BUCKET = Duration.ofMinutes(5);
+    private static final Duration ARRIVAL_WINDOW = Duration.ofMinutes(10);
+    private static final Duration TIGHT_WINDOW = Duration.ofMinutes(5);
+    private static final int ARRIVAL_HISTORY_WINDOWS = 6;
     private static final long BUCKET_SECONDS = TIME_BUCKET.getSeconds();
 
     private static final ZoneId DEFAULT_ZONE = ZoneId.systemDefault();
@@ -230,6 +233,9 @@ public class RiskAssessmentService {
                 : imsiRecordRepository.findByDeviceIdAndFetchedAtGreaterThanEqualOrderByFetchedAtAsc(deviceId, historyStart);
         historyRecords = filterValidImsi(historyRecords);
 
+        List<ImsiRecordEntity> imsiSafe = recentImsi != null ? recentImsi : Collections.emptyList();
+        List<RadarTargetEntity> radarSafe = recentRadar != null ? recentRadar : Collections.emptyList();
+
         ScoreAccumulator score = new ScoreAccumulator();
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("imsi", imsi);
@@ -257,10 +263,11 @@ public class RiskAssessmentService {
                 .map(Instant::toString)
                 .collect(Collectors.toList()));
 
-        TimeBand dominantBand = determineDominantBand(burstRecords.stream()
+        List<Instant> burstInstants = burstRecords.stream()
                 .map(ImsiRecordEntity::getFetchedAt)
                 .filter(Objects::nonNull)
-                .collect(Collectors.toList()));
+                .collect(Collectors.toList());
+        TimeBand dominantBand = determineDominantBand(burstInstants);
         if (dominantBand == TimeBand.NIGHT) {
             score.addScore("T1", 25, "夜间活动");
         } else if (dominantBand == TimeBand.DUSK) {
@@ -298,6 +305,13 @@ public class RiskAssessmentService {
         }
 
         // 最新会话停留估计 & 夜间强警戒
+        List<Instant> cameraInstants = recentCamera.stream()
+                .map(CameraAlarmEntity::getCreatedAt)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        boolean cameraOverlap = hasSensorMatch(burstInstants, cameraInstants);
+        metadata.put("cameraOverlapWithin30Minutes", cameraOverlap);
+
         if (!sessions.isEmpty()) {
             ImsiSession latest = sessions.get(sessions.size() - 1);
             if (latest.getStart() != null && latest.getEnd() != null) {
@@ -313,11 +327,12 @@ public class RiskAssessmentService {
                         "tMaxMinutes", tMax.toMinutes()
                 ));
                 TimeBand latestBand = determineDominantBand(Collections.singletonList(latest.getEnd()));
-                boolean nightStrong = latestBand == TimeBand.NIGHT && (bucketCount >= 3
+                boolean nightOuterDwell = latestBand == TimeBand.NIGHT && (bucketCount >= 3
                         || tHat.toMinutes() >= 15
                         || tMax.toMinutes() >= 20);
-                if (nightStrong) {
-                    score.forceStrongAlert("IMSI_NIGHT_STAY", "夜间停留 ≥15 分钟 / 频繁桶命中");
+                metadata.put("nightOuterDwellCandidate", nightOuterDwell);
+                if (nightOuterDwell && !cameraOverlap) {
+                    score.forceStrongAlert("F5", "F5 夜外圈强警（围栏停留异常）");
                 }
             }
         }
@@ -335,7 +350,7 @@ public class RiskAssessmentService {
         boolean hasNightPresence = historyRecords.stream()
                 .anyMatch(it -> it.getFetchedAt() != null && determineBand(it.getFetchedAt()) == TimeBand.NIGHT);
         if (daytimeDays >= 2 && !hasNightPresence) {
-            score.addScore("F1", 10, "7 天内多日白天外围徘徊（踩点）");
+            score.addScore("CASE_DAY_PATTERN", 10, "7 天内多日白天外围徘徊（踩点）");
         }
 
         // 农事白名单模式
@@ -401,6 +416,10 @@ public class RiskAssessmentService {
         List<Instant> timestamps = events.stream()
                 .map(CameraAlarmEntity::getCreatedAt)
                 .collect(Collectors.toList());
+        CameraAlarmEntity latest = events.get(events.size() - 1);
+        Instant anchor = latest.getCreatedAt();
+        metadata.put("latestEventTime", anchor);
+
         TimeBand dominant = determineDominantBand(timestamps);
         if (dominant == TimeBand.NIGHT) {
             score.addScore("T1", 25, "夜间摄像头告警");
@@ -408,21 +427,23 @@ public class RiskAssessmentService {
             score.addScore("T2", 10, "黄昏摄像头告警");
         }
 
-        CameraAlarmEntity latest = events.get(events.size() - 1);
-        TimeBand latestBand = determineBand(latest.getCreatedAt());
-        if (latestBand == TimeBand.NIGHT) {
+        TimeBand latestBand = determineBand(anchor);
+        boolean isNight = latestBand == TimeBand.NIGHT;
+        if (isNight) {
             score.addScore("D1", 25, "夜间进入 AOI");
         } else {
             score.addScore("D1_DAY", 10, "白天进入 AOI");
         }
 
-        // 停留判定：连续两次触发间隔 <=2 分钟视为停留 >60s
         boolean stayDetected = false;
         boolean longStayDetected = false;
         boolean reentryDetected = false;
         for (int i = 1; i < events.size(); i++) {
             Instant prev = events.get(i - 1).getCreatedAt();
             Instant curr = events.get(i).getCreatedAt();
+            if (prev == null || curr == null) {
+                continue;
+            }
             long minutes = Duration.between(prev, curr).toMinutes();
             if (minutes <= 2) {
                 stayDetected = true;
@@ -434,18 +455,21 @@ public class RiskAssessmentService {
                 reentryDetected = true;
             }
         }
+        metadata.put("stayDetected", stayDetected);
+        metadata.put("reentryDetected10Minutes", reentryDetected);
+
         if (stayDetected) {
-            if (latestBand == TimeBand.NIGHT) {
+            if (isNight) {
                 score.addScore("D2", 15, "夜间 AOI 停留 >60s");
             } else {
                 score.addScore("D2_DAY", 8, "白天 AOI 停留 >60s");
             }
         }
-        if (longStayDetected && latestBand == TimeBand.NIGHT) {
+        if (longStayDetected && isNight) {
             score.addScore("D3", 10, "夜间 AOI 停留 >180s");
         }
         if (reentryDetected) {
-            if (latestBand == TimeBand.NIGHT) {
+            if (isNight) {
                 score.addScore("D4", 12, "夜间 10 分钟内往返 AOI");
                 score.markDirectBlack("BLACK_NIGHT_REENTER", "夜间 AOI 往返");
             } else {
@@ -453,54 +477,85 @@ public class RiskAssessmentService {
             }
         }
 
-        // 周界绕行：30 分钟内 >=2 次
         Instant thirtyMinutesAgo = now.minus(SHORT_WINDOW);
         long perimeterCount = events.stream()
                 .map(CameraAlarmEntity::getCreatedAt)
+                .filter(Objects::nonNull)
                 .filter(ts -> !ts.isBefore(thirtyMinutesAgo))
                 .count();
-        if (perimeterCount >= 2 && !stayDetected) {
-            if (latestBand == TimeBand.NIGHT) {
-                score.addScore("D5", 10, "夜间周界绕行");
+        boolean cameraPerimeterWander = perimeterCount >= 2 && !stayDetected;
+        metadata.put("perimeterCount30Minutes", perimeterCount);
+        metadata.put("cameraPerimeterWander", cameraPerimeterWander);
+        if (cameraPerimeterWander) {
+            if (isNight) {
+                score.addScore("D5", 10, "夜间外围徘徊");
             } else {
-                score.addScore("D5_DAY", 6, "白天周界绕行");
+                score.addScore("D5_DAY", 6, "白天外围徘徊");
             }
         }
 
-        // IMSI 同窗（2 min） -> 结伴
-        boolean imsiGroup = hasSensorMatch(timestamps, recentImsi.stream()
-                .map(ImsiRecordEntity::getFetchedAt)
-                .filter(Objects::nonNull)
-                .collect(Collectors.toList()));
-        if (imsiGroup) {
-            if (latestBand == TimeBand.NIGHT) {
-                score.addScore("E1", 15, "夜间摄像头 + IMSI 同窗多人");
-                score.markDirectBlack("BLACK_NIGHT_GROUP_IN_AOI", "夜间结伴进入 AOI");
-            } else {
-                score.addScore("E1_DAY", 8, "白天摄像头 + IMSI 同窗多人");
+        FusionMetrics fusion = computeFusionMetrics(anchor, imsiSafe);
+        metadata.put("fusionMetrics", fusion.toMetadata());
+
+        if (fusion.getArrivals10() >= 2 || fusion.getArrivalZ() >= 2.0) {
+            score.addScore("F1", isNight ? 15 : 8, "F1 同窗协同（围栏到达异常）");
+        }
+        if (fusion.getArrivals5() == 0 && fusion.isDetectabilityHigh()) {
+            score.addScore("F2", isNight ? 12 : 2, "F2 无手机嫌疑（站点检出率高）");
+            if (isNight) {
+                score.markForcedGray("GRAY_NIGHT_NO_PHONE", "夜间 AOI 同窗未检出新设备");
             }
         }
+        boolean multiPersonHint = hasMultiPersonHint(events);
+        metadata.put("multiPersonHint", multiPersonHint);
+        boolean f3Triggered = false;
+        if (multiPersonHint && fusion.getArrivals5() >= 2) {
+            score.addScore("F3", isNight ? 15 : 6, "F3 成伙协同（多人 + 新设备）");
+            f3Triggered = true;
+            if (isNight) {
+                score.markDirectBlack("BLACK_NIGHT_GROUP_IN_AOI", "夜间成伙进入 AOI");
+            }
+        }
+        metadata.put("f3Triggered", f3Triggered);
 
-        // 雷达同窗
-        boolean radarMatch = hasSensorMatch(timestamps, recentRadar.stream()
+        if (fusion.getArrivalZ() >= 3.0 && cameraPerimeterWander) {
+            score.addScore("F6", isNight ? 10 : 4, "F6 异常汇聚（围栏 z ≥3 + 外围徘徊）");
+        }
+
+        boolean casingHistory = false;
+        if (isNight) {
+            casingHistory = hasRecentDaytimeCasing(camChannel, anchor);
+            if (casingHistory) {
+                score.markDirectBlack("BLACK_SCOUT_THEN_NIGHT_ENTRY", "F4 踩点→夜返");
+            }
+        }
+        metadata.put("hasDaytimeCasingHistory", casingHistory);
+
+        List<Instant> radarInstants = radarSafe.stream()
                 .map(RadarTargetEntity::getCapturedAt)
                 .filter(Objects::nonNull)
-                .collect(Collectors.toList()));
-        if (radarMatch) {
+                .collect(Collectors.toList());
+        if (hasSensorMatch(timestamps, radarInstants)) {
             score.addScore("R1", 12, "摄像头与雷达同窗检测");
         }
 
-        // 灰名单强制：夜间停留但单人
-        if (latestBand == TimeBand.NIGHT && stayDetected && !reentryDetected) {
+        List<Instant> imsiInstants = imsiSafe.stream()
+                .map(ImsiRecordEntity::getFetchedAt)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        if (fusion.getArrivals10() == 0 && hasSensorMatch(timestamps, imsiInstants)) {
+            score.addScore("E_TIMING_MATCH", isNight ? 10 : 6, "摄像头事件与 IMSI 时间窗匹配");
+        }
+
+        if (isNight && stayDetected && !reentryDetected) {
             score.markForcedGray("GRAY_NIGHT_AOI_BRIEF", "夜间单人 AOI 停留 >60s");
         }
-        if (latestBand == TimeBand.NIGHT && perimeterCount >= 2 && hitsWithin(events, thirtyMinutesAgo) < 2) {
-            score.markForcedGray("GRAY_NIGHT_IMSI_LINGER", "夜间外围徘徊");
+        if (isNight && cameraPerimeterWander && fusion.getArrivals10() == 0) {
+            score.markForcedGray("GRAY_NIGHT_PERIMETER", "夜间外围徘徊且无新设备");
         }
 
         String classification = classify(score);
         String summary = buildSummary(classification, score.getTotalScore(), events.size(), score.getTopRuleDescription());
-        metadata.put("latestEventTime", latest.getCreatedAt());
 
         persistAssessment("CAMERA", camChannel, now, windowStart, score, metadata, classification, summary);
     }
@@ -654,6 +709,7 @@ public class RiskAssessmentService {
         payload.put("forcedGray", score.getForcedGrayRules());
         payload.put("directBlack", score.getDirectBlackRules());
         payload.put("whiteRules", score.getWhiteRules());
+        payload.put("strongAlertRules", score.getStrongAlertRules());
         payload.put("metadata", metadata);
         try {
             return objectMapper.writeValueAsString(payload);
@@ -785,6 +841,154 @@ public class RiskAssessmentService {
         return sessions;
     }
 
+    private FusionMetrics computeFusionMetrics(Instant anchor, List<ImsiRecordEntity> imsiRecords) {
+        if (anchor == null || imsiRecords == null || imsiRecords.isEmpty()) {
+            return FusionMetrics.empty();
+        }
+        Map<String, Instant> firstSeen = new HashMap<>();
+        Set<Instant> buckets = new LinkedHashSet<>();
+        Instant shortWindowStart = anchor.minus(SHORT_WINDOW);
+        for (ImsiRecordEntity record : imsiRecords) {
+            Instant ts = record.getFetchedAt();
+            if (ts == null || ts.isAfter(anchor)) {
+                continue;
+            }
+            String key = imsiKey(record);
+            if (key != null) {
+                firstSeen.merge(key, ts, (prev, curr) -> curr.isBefore(prev) ? curr : prev);
+            }
+            if (!ts.isBefore(shortWindowStart)) {
+                Instant bucket = truncateToBucket(ts);
+                if (bucket != null) {
+                    buckets.add(bucket);
+                }
+            }
+        }
+        if (firstSeen.isEmpty()) {
+            return new FusionMetrics(0, 0, 0.0, buckets.size(), false, Collections.emptyList());
+        }
+        int arrivals10 = countFirstSeenBetween(firstSeen, anchor.minus(ARRIVAL_WINDOW), anchor);
+        int arrivals5 = countFirstSeenBetween(firstSeen, anchor.minus(TIGHT_WINDOW), anchor);
+        List<Integer> history = computeArrivalHistory(firstSeen, anchor);
+        double arrivalZ = computeZScore(arrivals10, history);
+        double mean = history.isEmpty() ? 0 : history.stream().mapToInt(Integer::intValue).average().orElse(0);
+        boolean detectabilityHigh = history.size() >= 3 && mean >= 1.0;
+        return new FusionMetrics(arrivals10, arrivals5, arrivalZ, buckets.size(), detectabilityHigh, history);
+    }
+
+    private int countFirstSeenBetween(Map<String, Instant> firstSeen, Instant start, Instant end) {
+        if (firstSeen.isEmpty() || end == null || start == null) {
+            return 0;
+        }
+        return (int) firstSeen.values().stream()
+                .filter(Objects::nonNull)
+                .filter(ts -> !ts.isBefore(start) && !ts.isAfter(end))
+                .count();
+    }
+
+    private List<Integer> computeArrivalHistory(Map<String, Instant> firstSeen, Instant anchor) {
+        if (firstSeen.isEmpty() || anchor == null) {
+            return Collections.emptyList();
+        }
+        List<Integer> samples = new ArrayList<>();
+        Instant windowEnd = anchor.minusMillis(1);
+        for (int i = 0; i < ARRIVAL_HISTORY_WINDOWS; i++) {
+            Instant windowStart = windowEnd.minus(ARRIVAL_WINDOW);
+            samples.add(countFirstSeenBetween(firstSeen, windowStart, windowEnd));
+            windowEnd = windowStart.minusMillis(1);
+        }
+        Collections.reverse(samples);
+        return samples;
+    }
+
+    private double computeZScore(int current, List<Integer> history) {
+        if (history == null || history.size() < 3) {
+            return 0.0;
+        }
+        double mean = history.stream().mapToInt(Integer::intValue).average().orElse(0);
+        double variance = history.stream()
+                .mapToDouble(value -> Math.pow(value - mean, 2))
+                .average()
+                .orElse(0);
+        double std = Math.sqrt(variance);
+        if (std < 1e-6) {
+            return 0.0;
+        }
+        return (current - mean) / std;
+    }
+
+    private String imsiKey(ImsiRecordEntity record) {
+        if (record == null) {
+            return null;
+        }
+        if (hasText(record.getImsi())) {
+            return record.getImsi();
+        }
+        if (hasText(record.getDeviceId())) {
+            return "DEV#" + record.getDeviceId();
+        }
+        return null;
+    }
+
+    private boolean hasMultiPersonHint(List<CameraAlarmEntity> events) {
+        if (events == null || events.isEmpty()) {
+            return false;
+        }
+        for (CameraAlarmEntity event : events) {
+            String type = event.getEventType();
+            if (hasText(type)) {
+                String normalized = type.toLowerCase(Locale.ROOT);
+                if (normalized.contains("multi") || normalized.contains("多人") || normalized.contains("群体") || normalized.contains("group")) {
+                    return true;
+                }
+            }
+            String level = event.getLevel();
+            if (hasText(level)) {
+                String normalizedLevel = level.toLowerCase(Locale.ROOT);
+                if (normalizedLevel.contains("multi") || normalizedLevel.contains("多人") || normalizedLevel.contains("group")) {
+                    return true;
+                }
+            }
+        }
+        Instant anchor = events.get(events.size() - 1).getCreatedAt();
+        if (anchor == null) {
+            return false;
+        }
+        long closeEvents = events.stream()
+                .map(CameraAlarmEntity::getCreatedAt)
+                .filter(Objects::nonNull)
+                .filter(ts -> Math.abs(ts.toEpochMilli() - anchor.toEpochMilli()) <= Duration.ofMinutes(1).toMillis())
+                .count();
+        return closeEvents >= 2;
+    }
+
+    private boolean hasRecentDaytimeCasing(String camChannel, Instant now) {
+        if (!hasText(camChannel) || now == null) {
+            return false;
+        }
+        Instant lookbackStart = now.minus(DAYTIME_CASING_WINDOW);
+        Instant historyEnd = now.minus(Duration.ofHours(1));
+        if (!historyEnd.isAfter(lookbackStart)) {
+            historyEnd = now.minus(Duration.ofMinutes(10));
+        }
+        List<CameraAlarmEntity> history = cameraAlarmRepository
+                .findByCamChannelAndCreatedAtBetweenOrderByCreatedAtAsc(camChannel, lookbackStart, historyEnd);
+        if (history == null || history.isEmpty()) {
+            return false;
+        }
+        Map<LocalDate, Long> dayCounts = history.stream()
+                .map(CameraAlarmEntity::getCreatedAt)
+                .filter(Objects::nonNull)
+                .filter(ts -> {
+                    TimeBand band = determineBand(ts);
+                    return band == TimeBand.DAY || band == TimeBand.DUSK;
+                })
+                .collect(Collectors.groupingBy(ts -> LocalDateTime.ofInstant(ts, DEFAULT_ZONE).toLocalDate(), Collectors.counting()));
+        long strongDays = dayCounts.values().stream().filter(count -> count >= 3).count();
+        long moderateDays = dayCounts.values().stream().filter(count -> count >= 2).count();
+        return strongDays >= 1 || moderateDays >= 2;
+    }
+
     private boolean hasCameraGroupMatch(List<ImsiSession> sessions, List<CameraAlarmEntity> cameraEvents) {
         if (sessions.isEmpty() || cameraEvents == null || cameraEvents.isEmpty()) {
             return false;
@@ -866,14 +1070,6 @@ public class RiskAssessmentService {
         return false;
     }
 
-    private long hitsWithin(List<CameraAlarmEntity> events, Instant from) {
-        return events.stream()
-                .map(CameraAlarmEntity::getCreatedAt)
-                .filter(Objects::nonNull)
-                .filter(ts -> !ts.isBefore(from))
-                .count();
-    }
-
     private TimeBand determineBand(Instant instant) {
         if (instant == null) {
             return TimeBand.DAY;
@@ -921,6 +1117,68 @@ public class RiskAssessmentService {
         NIGHT
     }
 
+    private static class FusionMetrics {
+        private final int arrivals10;
+        private final int arrivals5;
+        private final double arrivalZ;
+        private final int bucketCount;
+        private final boolean detectabilityHigh;
+        private final List<Integer> historySamples;
+
+        FusionMetrics(int arrivals10,
+                      int arrivals5,
+                      double arrivalZ,
+                      int bucketCount,
+                      boolean detectabilityHigh,
+                      List<Integer> historySamples) {
+            this.arrivals10 = arrivals10;
+            this.arrivals5 = arrivals5;
+            this.arrivalZ = arrivalZ;
+            this.bucketCount = bucketCount;
+            this.detectabilityHigh = detectabilityHigh;
+            this.historySamples = historySamples;
+        }
+
+        static FusionMetrics empty() {
+            return new FusionMetrics(0, 0, 0.0, 0, false, Collections.emptyList());
+        }
+
+        int getArrivals10() {
+            return arrivals10;
+        }
+
+        int getArrivals5() {
+            return arrivals5;
+        }
+
+        double getArrivalZ() {
+            return arrivalZ;
+        }
+
+        int getBucketCount() {
+            return bucketCount;
+        }
+
+        boolean isDetectabilityHigh() {
+            return detectabilityHigh;
+        }
+
+        List<Integer> getHistorySamples() {
+            return historySamples;
+        }
+
+        Map<String, Object> toMetadata() {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("arrivals10Minutes", arrivals10);
+            map.put("arrivals5Minutes", arrivals5);
+            map.put("arrivalZScore", arrivalZ);
+            map.put("bucketCount30Minutes", bucketCount);
+            map.put("arrivalHistorySamples", historySamples);
+            map.put("detectabilityHigh", detectabilityHigh);
+            return map;
+        }
+    }
+
     private static class ImsiSession {
         private final List<ImsiRecordEntity> records = new ArrayList<>();
         private boolean hasLongGapWithinSession;
@@ -955,6 +1213,7 @@ public class RiskAssessmentService {
         private final List<RuleHit> forcedGrayRules = new ArrayList<>();
         private final List<RuleHit> directBlackRules = new ArrayList<>();
         private final List<RuleHit> whiteRules = new ArrayList<>();
+        private final List<RuleHit> strongAlertRules = new ArrayList<>();
         private int totalScore = 0;
         private boolean forceStrongAlert = false;
 
@@ -980,7 +1239,7 @@ public class RiskAssessmentService {
 
         void forceStrongAlert(String id, String description) {
             forceStrongAlert = true;
-            forcedGrayRules.add(new RuleHit(id, 0, description));
+            strongAlertRules.add(new RuleHit(id, 0, description));
         }
 
         int getTotalScore() {
@@ -1005,6 +1264,10 @@ public class RiskAssessmentService {
 
         List<RuleHit> getWhiteRules() {
             return whiteRules;
+        }
+
+        List<RuleHit> getStrongAlertRules() {
+            return strongAlertRules;
         }
 
         String getTopRuleDescription() {
