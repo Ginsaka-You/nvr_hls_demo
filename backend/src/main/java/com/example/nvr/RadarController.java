@@ -16,6 +16,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -159,14 +160,17 @@ public class RadarController {
                 }
 
                 List<String> errors = new ArrayList<>();
+                RadarTargetsResponse heartbeat = null;
                 for (Integer candidate : candidatePorts) {
                     try {
                         RadarTargetsResponse resp = readTargetsViaTcp(host, address, ctrlPort, candidate, timeoutMs, maxFrames);
                         if (resp != null && resp.isOk()) {
                             if (resp.getTargetCount() != null && resp.getTargetCount() > 0) {
                                 eventStorageService.recordRadarTargets(resp);
+                                return resp;
                             }
-                            return resp;
+                            heartbeat = resp;
+                            continue;
                         }
                         if (resp != null && resp.getError() != null) {
                             errors.add("端口 " + candidate + ": " + resp.getError());
@@ -177,8 +181,12 @@ public class RadarController {
                         errors.add("端口 " + candidate + ": " + tcpEx.getMessage());
                     }
                 }
-                String message = errors.isEmpty() ? "未收到雷达目标数据" : String.join("; ", errors);
-                return RadarTargetsResponse.error(host, ctrlPort, dataPort, message, true);
+                if (heartbeat != null) {
+                    return heartbeat;
+                }
+                return heartbeat != null
+                        ? heartbeat
+                        : RadarTargetsResponse.heartbeat(host, ctrlPort, dataPort, timeoutMs, timeoutMs, 0, dataPort, true);
             } else {
                 long start = System.currentTimeMillis();
                 int listenPort = dataPort > 0 ? dataPort : 0;
@@ -190,7 +198,17 @@ public class RadarController {
                     RadarTargetsResponse heartbeat = null;
                     for (int i = 0; i < maxFrames; i++) {
                         DatagramPacket packet = new DatagramPacket(new byte[MAX_FRAME_BYTES], MAX_FRAME_BYTES);
-                        socket.receive(packet);
+                        try {
+                            socket.receive(packet);
+                        } catch (SocketTimeoutException timeout) {
+                            int localPort = socket.getLocalPort();
+                            int selectedDataPort = localPort > 0 ? localPort : dataPort;
+                            if (heartbeat != null) {
+                                return heartbeat;
+                            }
+                            long elapsed = System.currentTimeMillis() - start;
+                            return RadarTargetsResponse.heartbeat(host, ctrlPort, selectedDataPort, timeoutMs, elapsed, 0, selectedDataPort, false);
+                        }
                         if (!packet.getAddress().equals(address)) {
                             continue;
                         }
@@ -213,10 +231,12 @@ public class RadarController {
                     }
                 }
             }
+        } catch (SocketTimeoutException timeout) {
+            return RadarTargetsResponse.heartbeat(host, ctrlPort, dataPort, timeoutMs, timeoutMs, 0, dataPort, useTcp);
         } catch (Exception e) {
             return RadarTargetsResponse.error(host, ctrlPort, dataPort, "雷达连接失败: " + e.getMessage(), useTcp);
         }
-        return RadarTargetsResponse.error(host, ctrlPort, dataPort, "未收到雷达目标数据", useTcp);
+        return RadarTargetsResponse.heartbeat(host, ctrlPort, dataPort, timeoutMs, timeoutMs, 0, dataPort, useTcp);
     }
 
     private void sendControlCommands(InetAddress address, int ctrlPort, int timeoutMs) {
