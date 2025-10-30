@@ -17,6 +17,10 @@ import javax.annotation.PostConstruct;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -28,6 +32,8 @@ public class ImsiSyncService {
 
     private static final Logger log = LoggerFactory.getLogger(ImsiSyncService.class);
     private static final int DEFAULT_TIMEOUT_MS = 8000;
+    private static final Path IMPORT_HISTORY_FILE = Paths.get("config", "imsi-imported.txt");
+    private static final int MAX_IMPORTED_FINGERPRINTS = 400;
 
     private final ImsiSyncConfigService configService;
     private final EventStorageService eventStorageService;
@@ -117,6 +123,9 @@ public class ImsiSyncService {
         Map<String, Object> details = new LinkedHashMap<>();
         List<ImsiRecordView> records = new ArrayList<>();
         List<String> sourceFiles = new ArrayList<>();
+        Set<String> previouslyImported = loadImportedFileFingerprints(config, host);
+        List<String> processedFingerprints = new ArrayList<>();
+        int skippedFiles = 0;
         String message = "未执行同步";
 
         try {
@@ -153,12 +162,12 @@ public class ImsiSyncService {
                 return finalizeAndRecord(config, true, message, records, sourceFiles, details, start);
             }
 
-            List<FTPFile> sorted = Arrays.stream(ftpFiles)
-                    .filter(file -> file.isFile() && file.getName().toLowerCase(Locale.ROOT).endsWith(".txt"))
-                    .sorted((a, b) -> {
-                        long ta = a.getTimestamp() == null ? 0 : a.getTimestamp().getTimeInMillis();
-                        long tb = b.getTimestamp() == null ? 0 : b.getTimestamp().getTimeInMillis();
-                        return Long.compare(tb, ta);
+        List<FTPFile> sorted = Arrays.stream(ftpFiles)
+                .filter(file -> file.isFile() && file.getName().toLowerCase(Locale.ROOT).endsWith(".txt"))
+                .sorted((a, b) -> {
+                    long ta = a.getTimestamp() == null ? 0 : a.getTimestamp().getTimeInMillis();
+                    long tb = b.getTimestamp() == null ? 0 : b.getTimestamp().getTimeInMillis();
+                    return Long.compare(tb, ta);
                     })
                     .collect(Collectors.toList());
 
@@ -167,9 +176,13 @@ public class ImsiSyncService {
                 if (processedFiles >= maxFiles || records.size() >= limit) {
                     break;
                 }
-                processedFiles++;
-                sourceFiles.add(file.getName());
+                String fingerprint = fingerprint(file);
+                if (fingerprint != null && previouslyImported.contains(fingerprint)) {
+                    skippedFiles++;
+                    continue;
+                }
 
+                int beforeCount = records.size();
                 try (ByteArrayOutputStream buffer = new ByteArrayOutputStream()) {
                     if (!client.retrieveFile(file.getName(), buffer)) {
                         details.put("lastRetrieveReplyCode", client.getReplyCode());
@@ -205,6 +218,19 @@ public class ImsiSyncService {
                 } catch (IOException ioEx) {
                     details.put("lastRetrieveError", ioEx.getClass().getSimpleName() + ": " + ioEx.getMessage());
                 }
+
+                int added = records.size() - beforeCount;
+                if (added > 0) {
+                    processedFiles++;
+                    sourceFiles.add(file.getName());
+                    if (fingerprint != null) {
+                        processedFingerprints.add(fingerprint);
+                    }
+                }
+
+                if (records.size() >= limit) {
+                    break;
+                }
             }
 
             details.put("filesProcessed", processedFiles);
@@ -217,6 +243,7 @@ public class ImsiSyncService {
             if (filterActive) {
                 details.put("deviceFilter", deviceFilterRaw);
             }
+            details.put("skippedFiles", skippedFiles);
 
             if (records.isEmpty()) {
                 message = filterActive ? "未匹配到配置的设备数据" : "未解析到 IMSI 数据";
@@ -239,6 +266,7 @@ public class ImsiSyncService {
             long elapsed = System.currentTimeMillis() - start;
             try {
                 eventStorageService.recordImsiRecords(storageRecords, fetchedAt, elapsed, host, port, workingDirectory, "成功获取 IMSI 数据");
+                persistImportedFingerprint(config, host, processedFingerprints);
             } catch (Exception storageEx) {
                 log.warn("Failed to record IMSI records", storageEx);
             }
@@ -295,6 +323,110 @@ public class ImsiSyncService {
                 .filter(part -> !part.isEmpty())
                 .map(part -> part.toLowerCase(Locale.ROOT))
                 .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    private Set<String> loadImportedFileFingerprints(ImsiSyncConfigEntity config, String host) {
+        LinkedHashSet<String> all = readAllFingerprints();
+        String prefix = hostScopePrefix(config, host);
+        LinkedHashSet<String> result = new LinkedHashSet<>();
+        for (String entry : all) {
+            if (entry.startsWith(prefix)) {
+                result.add(entry.substring(prefix.length()));
+            }
+        }
+        return result;
+    }
+
+    private void persistImportedFingerprint(ImsiSyncConfigEntity config, String host, List<String> fingerprints) {
+        if (fingerprints == null || fingerprints.isEmpty()) {
+            return;
+        }
+        LinkedHashSet<String> all = readAllFingerprints();
+        String prefix = hostScopePrefix(config, host);
+        for (String fp : fingerprints) {
+            String entry = prefix + fp;
+            if (all.contains(entry)) {
+                all.remove(entry);
+            }
+            all.add(entry);
+        }
+        while (all.size() > MAX_IMPORTED_FINGERPRINTS) {
+            Iterator<String> iterator = all.iterator();
+            if (iterator.hasNext()) {
+                iterator.next();
+                iterator.remove();
+            } else {
+                break;
+            }
+        }
+        try {
+            Path parent = IMPORT_HISTORY_FILE.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            Files.write(IMPORT_HISTORY_FILE, all, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        } catch (IOException ex) {
+            log.warn("Failed to persist IMSI fingerprint cache: {}", ex.getMessage());
+        }
+    }
+
+    private LinkedHashSet<String> readAllFingerprints() {
+        LinkedHashSet<String> all = new LinkedHashSet<>();
+        if (!Files.exists(IMPORT_HISTORY_FILE)) {
+            return all;
+        }
+        try {
+            for (String line : Files.readAllLines(IMPORT_HISTORY_FILE, StandardCharsets.UTF_8)) {
+                if (line != null) {
+                    String trimmed = line.trim();
+                    if (!trimmed.isEmpty()) {
+                        all.add(trimmed);
+                    }
+                }
+            }
+        } catch (IOException ex) {
+            log.warn("Failed to read IMSI fingerprint cache: {}", ex.getMessage());
+        }
+        return all;
+    }
+
+    private String hostScopePrefix(ImsiSyncConfigEntity config, String host) {
+        String scope = trimToNull(host);
+        if (scope == null) {
+            scope = "default";
+        } else {
+            scope = scope.toLowerCase(Locale.ROOT);
+        }
+        String user = trimToNull(config.getFtpUser());
+        if (user != null) {
+            scope += ":" + user.toLowerCase(Locale.ROOT);
+        }
+        Integer ftpPort = config.getFtpPort();
+        if (ftpPort != null && ftpPort > 0) {
+            scope += ":" + ftpPort;
+        }
+        String directory = trimToNull(config.getFtpDirectory());
+        if (directory != null) {
+            scope += ":" + directory.toLowerCase(Locale.ROOT);
+        }
+        return scope + "|";
+    }
+
+    private String fingerprint(FTPFile file) {
+        if (file == null) {
+            return null;
+        }
+        String name = trimToNull(file.getName());
+        long size = file.getSize();
+        long ts = file.getTimestamp() != null ? file.getTimestamp().getTimeInMillis() : -1;
+        if (name == null && size <= 0 && ts <= 0) {
+            return null;
+        }
+        if (name == null) {
+            name = "";
+        }
+        return name + "|" + size + "|" + ts;
     }
 
     private String trimToNull(String value) {
