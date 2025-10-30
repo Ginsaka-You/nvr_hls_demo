@@ -108,7 +108,9 @@ public class DynamicDataSourceManager {
             st.execute("ALTER TABLE alert_events DROP COLUMN IF EXISTS raw_payload");
             st.execute("ALTER TABLE alert_events DROP COLUMN IF EXISTS channel_id");
             st.execute("ALTER TABLE alert_events DROP COLUMN IF EXISTS port");
-            st.execute("ALTER TABLE alert_events DROP COLUMN IF EXISTS created_at");
+            st.execute("ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()");
+            st.execute("UPDATE alert_events SET created_at = COALESCE(created_at, NOW())");
+            st.execute("CREATE INDEX IF NOT EXISTS idx_alert_events_created_at ON alert_events(created_at DESC)");
 
             st.execute("CREATE TABLE IF NOT EXISTS camera_alarms (" +
                     "id SERIAL PRIMARY KEY, " +
