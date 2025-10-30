@@ -14,6 +14,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.PostConstruct;
+import java.util.concurrent.CompletableFuture;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -49,11 +50,13 @@ public class ImsiSyncService {
 
     @PostConstruct
     public void runOnStartup() {
-        try {
-            syncNow(true);
-        } catch (Exception ex) {
-            log.warn("Initial IMSI sync failed: {}", ex.getMessage());
-        }
+        CompletableFuture.runAsync(() -> {
+            try {
+                syncNow(true);
+            } catch (Exception ex) {
+                log.warn("Initial IMSI sync failed: {}", ex.getMessage());
+            }
+        });
     }
 
     @Scheduled(fixedDelay = 15000)

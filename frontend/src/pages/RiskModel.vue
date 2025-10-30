@@ -27,8 +27,8 @@ const pollingTimer = ref<number | null>(null)
 const classificationOrder: Classification[] = ['BLACK', 'STRONG_ALERT', 'GRAY', 'WHITE']
 const classificationMeta: Record<Classification, { label: string; tag: string; empty: string; description: string }> = {
   BLACK: { label: '黑名单', tag: 'error', empty: '暂无黑名单事件', description: '评分 ≥70 或命中黑触发' },
-  STRONG_ALERT: { label: '强警戒', tag: 'warning', empty: '暂无强警戒目标', description: '评分 55–69 或夜间停留 ≥15 分钟' },
-  GRAY: { label: '灰观察', tag: 'processing', empty: '暂无灰名单目标', description: '评分 30–54 或触发灰名单规则' },
+  STRONG_ALERT: { label: '强警戒', tag: 'warning', empty: '暂无强警戒目标', description: '评分 55–69，或夜间桶数 ≥3 / 停留 ≥15min' },
+  GRAY: { label: '灰观察', tag: 'processing', empty: '暂无灰名单目标', description: '评分 30–54，或被灰规则标记' },
   WHITE: { label: '白名单', tag: 'success', empty: '暂无自动识别白名单', description: '满足农事白模式等条件' },
   LOG_ONLY: { label: '仅记录', tag: 'default', empty: '暂无', description: '低风险，仅留存日志' },
 }
@@ -50,6 +50,29 @@ const groupedAssessments = computed(() => {
   }
   return base
 })
+
+const groupedPages = computed(() => {
+  const output: Record<string, RiskAssessment[][]> = {}
+  Object.entries(groupedAssessments.value).forEach(([key, list]) => {
+    const pages: RiskAssessment[][] = []
+    for (let i = 0; i < list.length; i += 10) {
+      pages.push(list.slice(i, i + 10))
+    }
+    output[key] = pages.length ? pages : [[]]
+  })
+  return output
+})
+
+const paginationState = ref<Record<string, number>>({})
+const currentPage = (key: string) => paginationState.value[key] ?? 0
+const currentPageData = (key: string) => {
+  const pages = groupedPages.value[key] ?? [[]]
+  const index = Math.min(currentPage(key), pages.length - 1)
+  return pages[index] ?? []
+}
+const setPage = (key: string, page: number) => {
+  paginationState.value = { ...paginationState.value, [key]: page }
+}
 
 const logAssessments = computed(() => groupedAssessments.value.LOG_ONLY ?? [])
 const boardHasData = computed(() =>
@@ -237,11 +260,10 @@ const scoringCategories = [
     key: 'B',
     title: 'B. IMSI 稀疏命中强度（同一设备、同一 30 min 窗口）',
     items: [
-      { condition: '0 次（未命中）', score: '+0', detail: '改由摄像头主导判断' },
-      { condition: '1 次', score: '+2', detail: '可能过路' },
-      { condition: '2 次', score: '+8', detail: '约 10–16 min 停留的弱证据' },
-      { condition: '3 次', score: '+14', detail: '约 15–24 min 停留' },
-      { condition: '≥4 次', score: '+20', detail: '≥20–30 min 强停留' },
+      { condition: '命中 1 个 5 分钟桶', score: '+2', detail: '可能过路' },
+      { condition: '命中 2 个 5 分钟桶', score: '+8', detail: '约 10–16 min 停留' },
+      { condition: '命中 3 个 5 分钟桶', score: '+14', detail: '约 15–24 min 停留' },
+      { condition: '命中 ≥4 个 5 分钟桶', score: '+20', detail: '≥20–30 min 强停留 / 明显蹲守' },
     ],
   },
   {
@@ -810,7 +832,7 @@ const specJson = JSON.stringify(riskModelSpec, null, 2)
               />
               <a-list
                 v-else
-                :data-source="groupedAssessments[key]"
+                :data-source="currentPageData(key)"
                 :pagination="false"
                 :split="false"
               >
@@ -840,6 +862,15 @@ const specJson = JSON.stringify(riskModelSpec, null, 2)
                   </a-list-item>
                 </template>
               </a-list>
+              <a-pagination
+                v-if="groupedPages[key] && groupedPages[key].length > 1"
+                size="small"
+                :page-size="10"
+                :current="currentPage(key) + 1"
+                :total="groupedAssessments[key].length"
+                @change="(page) => setPage(key, page - 1)"
+                style="margin-top:8px; text-align:right;"
+              />
             </div>
           </div>
         </div>
@@ -1057,6 +1088,7 @@ const specJson = JSON.stringify(riskModelSpec, null, 2)
   margin: 0;
   font-size: 26px;
   font-weight: 600;
+  color: #fff;
 }
 
 .page-header p {
@@ -1207,15 +1239,16 @@ section {
   flex-wrap: wrap;
   gap: 8px;
   align-items: baseline;
+  color: #000;
 }
 
 .risk-log-summary {
-  color: rgba(255, 255, 255, 0.65);
+  color: #000;
 }
 
 .risk-log-time {
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.5);
+  color: #000;
 }
 
 .mb12 {
@@ -1226,6 +1259,7 @@ h2 {
   margin: 0 0 16px;
   font-size: 20px;
   font-weight: 600;
+  color: #fff;
 }
 
 .card-grid {

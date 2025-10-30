@@ -2,7 +2,7 @@
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import AlertPanel from '@/components/AlertPanel.vue'
 import { loadAmap } from '@/lib/loadAmap'
-import { radarDeviceState, cameraDeviceState } from '@/store/devices'
+import { radarDeviceState, cameraDeviceState, imsiDeviceState } from '@/store/devices'
 
 type Cam = { id: string, name: string, lat?: number, lng?: number }
 type Alarm = { id: string, level: 'info'|'minor'|'major'|'critical', source: string, place: string, time: string, summary: string, deviceId?: string }
@@ -29,11 +29,14 @@ function onPickAlarm(a: Alarm) {
 
 const radarState = radarDeviceState
 const camState = cameraDeviceState
+const imsiState = imsiDeviceState
 
 const radarStatusClass = computed(() => ({ ok: radarState.value.status === 'ok', error: radarState.value.status === 'error' }))
 const radarStatusMessage = computed(() => radarState.value.message)
 const camStatusClass = computed(() => ({ ok: camState.value.status === 'ok', error: camState.value.status === 'error' }))
 const camStatusMessage = computed(() => camState.value.message)
+const imsiStatusClass = computed(() => ({ ok: imsiState.value.status === 'ok', error: imsiState.value.status === 'error' }))
+const imsiStatusMessage = computed(() => imsiState.value.message)
 
 async function initMap() {
   try {
@@ -112,17 +115,21 @@ onBeforeUnmount(() => {
           </div>
           <div class="panel-card">
             <div class="panel-header">设备状态</div>
-            <div class="panel-body device-status">
-              <div class="status-item" :class="camStatusClass">
-                <span class="label">摄像头</span>
-                <span class="value">{{ camStatusMessage }}</span>
-              </div>
-              <div class="status-item" :class="radarStatusClass">
-                <span class="label">雷达</span>
-                <span class="value">{{ radarStatusMessage }}</span>
+              <div class="panel-body device-status">
+                <div class="status-item" :class="camStatusClass">
+                  <span class="label">摄像头</span>
+                  <span class="value">{{ camStatusMessage }}</span>
+                </div>
+                <div class="status-item" :class="radarStatusClass">
+                  <span class="label">雷达</span>
+                  <span class="value">{{ radarStatusMessage }}</span>
+                </div>
+                <div class="status-item" :class="imsiStatusClass">
+                  <span class="label">手机围栏</span>
+                  <span class="value">{{ imsiStatusMessage }}</span>
+                </div>
               </div>
             </div>
-          </div>
         </div>
         <!-- 右侧悬浮面板（告警队列 + 预警事件统计） -->
         <div class="right-panels">
