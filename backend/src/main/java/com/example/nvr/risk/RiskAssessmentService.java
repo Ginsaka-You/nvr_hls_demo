@@ -44,6 +44,9 @@ public class RiskAssessmentService {
     private static final Duration STAY_GAP_THRESHOLD = Duration.ofMinutes(12);
     private static final Duration DAYTIME_CASING_WINDOW = Duration.ofDays(7);
     private static final Duration FARM_WHITE_WINDOW = Duration.ofDays(14);
+    private static final Duration BURST_MERGE = Duration.ofSeconds(90);
+    private static final Duration TIME_BUCKET = Duration.ofMinutes(5);
+    private static final long BUCKET_SECONDS = TIME_BUCKET.getSeconds();
 
     private static final ZoneId DEFAULT_ZONE = ZoneId.systemDefault();
 
@@ -239,8 +242,22 @@ public class RiskAssessmentService {
             return;
         }
 
+        windowRecords.sort(Comparator.comparing(ImsiRecordEntity::getFetchedAt));
+
         // 时间段权重
-        TimeBand dominantBand = determineDominantBand(windowRecords.stream()
+        Instant shortWindowStart = now.minus(SHORT_WINDOW);
+        ImsiPresenceMetrics presence = computeImsiPresenceMetrics(windowRecords, shortWindowStart);
+        List<ImsiRecordEntity> burstRecords = presence.getBurstRecords();
+        int bucketCount = presence.getBucketCount();
+        int burstCountShort = presence.getBurstCount();
+        metadata.put("burstCountWindow", burstRecords.size());
+        metadata.put("bucketCount30Minutes", bucketCount);
+        metadata.put("burstCount30Minutes", burstCountShort);
+        metadata.put("bucketStarts30Minutes", presence.getBucketStarts().stream()
+                .map(Instant::toString)
+                .collect(Collectors.toList()));
+
+        TimeBand dominantBand = determineDominantBand(burstRecords.stream()
                 .map(ImsiRecordEntity::getFetchedAt)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList()));
@@ -250,26 +267,18 @@ public class RiskAssessmentService {
             score.addScore("T2", 10, "黄昏活动");
         }
 
-        Instant shortWindowStart = now.minus(SHORT_WINDOW);
-        long hitsShort = windowRecords.stream()
-                .map(ImsiRecordEntity::getFetchedAt)
-                .filter(Objects::nonNull)
-                .filter(ts -> !ts.isBefore(shortWindowStart))
-                .count();
-        metadata.put("hitsLast30Minutes", hitsShort);
-
-        if (hitsShort == 1) {
-            score.addScore("B1", 2, "30 分钟窗口命中 1 次");
-        } else if (hitsShort == 2) {
-            score.addScore("B2", 8, "30 分钟窗口命中 2 次");
-        } else if (hitsShort == 3) {
-            score.addScore("B3", 14, "30 分钟窗口命中 3 次");
-        } else if (hitsShort >= 4) {
-            score.addScore("B4", 20, "30 分钟窗口命中 ≥4 次");
+        if (bucketCount == 1) {
+            score.addScore("B1", 2, "30 分钟窗口命中 1 个时间桶");
+        } else if (bucketCount == 2) {
+            score.addScore("B2", 8, "30 分钟窗口命中 2 个时间桶");
+        } else if (bucketCount == 3) {
+            score.addScore("B3", 14, "30 分钟窗口命中 3 个时间桶");
+        } else if (bucketCount >= 4) {
+            score.addScore("B4", 20, "30 分钟窗口命中 ≥4 个时间桶");
         }
 
         // 会话划分与结构
-        List<ImsiSession> sessions = buildImsiSessions(windowRecords);
+        List<ImsiSession> sessions = presence.getSessions();
         metadata.put("sessionCount", sessions.size());
 
         boolean hasLongGap = sessions.stream().anyMatch(ImsiSession::hasLongGapWithinSession);
@@ -304,8 +313,11 @@ public class RiskAssessmentService {
                         "tMaxMinutes", tMax.toMinutes()
                 ));
                 TimeBand latestBand = determineDominantBand(Collections.singletonList(latest.getEnd()));
-                if (latestBand == TimeBand.NIGHT && (tHat.toMinutes() >= 15 || tMax.toMinutes() >= 20)) {
-                    score.forceStrongAlert("IMSI_NIGHT_STAY", "夜间停留 ≥15 分钟");
+                boolean nightStrong = latestBand == TimeBand.NIGHT && (bucketCount >= 3
+                        || tHat.toMinutes() >= 15
+                        || tMax.toMinutes() >= 20);
+                if (nightStrong) {
+                    score.forceStrongAlert("IMSI_NIGHT_STAY", "夜间停留 ≥15 分钟 / 频繁桶命中");
                 }
             }
         }
@@ -342,7 +354,7 @@ public class RiskAssessmentService {
         // 结伴特征：与摄像头同窗多人
         boolean groupWithCamera = hasCameraGroupMatch(sessions, recentCamera);
         if (groupWithCamera) {
-            TimeBand band = determineDominantBand(windowRecords.stream()
+            TimeBand band = determineDominantBand(burstRecords.stream()
                     .map(ImsiRecordEntity::getFetchedAt)
                     .filter(Objects::nonNull)
                     .collect(Collectors.toList()));
@@ -651,6 +663,47 @@ public class RiskAssessmentService {
         }
     }
 
+    private ImsiPresenceMetrics computeImsiPresenceMetrics(List<ImsiRecordEntity> records, Instant shortWindowStart) {
+        if (records == null || records.isEmpty()) {
+            return ImsiPresenceMetrics.empty();
+        }
+        List<ImsiRecordEntity> sorted = records.stream()
+                .filter(Objects::nonNull)
+                .filter(it -> it.getFetchedAt() != null)
+                .sorted(Comparator.comparing(ImsiRecordEntity::getFetchedAt))
+                .collect(Collectors.toList());
+        if (sorted.isEmpty()) {
+            return ImsiPresenceMetrics.empty();
+        }
+        List<ImsiRecordEntity> bursts = new ArrayList<>();
+        ImsiRecordEntity last = null;
+        for (ImsiRecordEntity record : sorted) {
+            Instant ts = record.getFetchedAt();
+            if (last == null || Duration.between(last.getFetchedAt(), ts).compareTo(BURST_MERGE) > 0) {
+                bursts.add(record);
+                last = record;
+            }
+        }
+        List<ImsiSession> sessions = buildImsiSessions(bursts);
+        List<ImsiRecordEntity> shortBursts = bursts.stream()
+                .filter(rec -> !rec.getFetchedAt().isBefore(shortWindowStart))
+                .collect(Collectors.toList());
+        Set<Instant> bucketStarts = shortBursts.stream()
+                .map(rec -> truncateToBucket(rec.getFetchedAt()))
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        return new ImsiPresenceMetrics(bursts, sessions, shortBursts, bucketStarts);
+    }
+
+    private Instant truncateToBucket(Instant instant) {
+        if (instant == null) {
+            return null;
+        }
+        long epoch = instant.getEpochSecond();
+        long bucket = Math.floorDiv(epoch, BUCKET_SECONDS) * BUCKET_SECONDS;
+        return Instant.ofEpochSecond(bucket);
+    }
+
     private List<ImsiRecordEntity> filterValidImsi(List<ImsiRecordEntity> records) {
         if (records == null) {
             return Collections.emptyList();
@@ -658,6 +711,47 @@ public class RiskAssessmentService {
         return records.stream()
                 .filter(it -> it != null && it.getFetchedAt() != null)
                 .collect(Collectors.toList());
+    }
+
+    private static class ImsiPresenceMetrics {
+        private final List<ImsiRecordEntity> burstRecords;
+        private final List<ImsiSession> sessions;
+        private final List<ImsiRecordEntity> shortWindowBursts;
+        private final Set<Instant> bucketStarts;
+
+        ImsiPresenceMetrics(List<ImsiRecordEntity> burstRecords,
+                            List<ImsiSession> sessions,
+                            List<ImsiRecordEntity> shortWindowBursts,
+                            Set<Instant> bucketStarts) {
+            this.burstRecords = burstRecords;
+            this.sessions = sessions;
+            this.shortWindowBursts = shortWindowBursts;
+            this.bucketStarts = bucketStarts;
+        }
+
+        static ImsiPresenceMetrics empty() {
+            return new ImsiPresenceMetrics(Collections.emptyList(), Collections.emptyList(), Collections.emptyList(), Collections.emptySet());
+        }
+
+        List<ImsiRecordEntity> getBurstRecords() {
+            return burstRecords;
+        }
+
+        List<ImsiSession> getSessions() {
+            return sessions;
+        }
+
+        int getBurstCount() {
+            return shortWindowBursts.size();
+        }
+
+        int getBucketCount() {
+            return bucketStarts.size();
+        }
+
+        Set<Instant> getBucketStarts() {
+            return bucketStarts;
+        }
     }
 
     private List<ImsiSession> buildImsiSessions(List<ImsiRecordEntity> records) {
