@@ -1,5 +1,7 @@
 package com.example.nvr.persistence;
 
+import com.example.nvr.AlertHub;
+import com.example.nvr.ImsiHub;
 import com.example.nvr.RadarController;
 import com.example.nvr.imsi.ImsiRecordPayload;
 import com.example.nvr.risk.RiskAssessmentService;
@@ -13,10 +15,14 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Service
 public class EventStorageService {
@@ -95,6 +101,9 @@ public class EventStorageService {
                 entities.add(entity);
             }
             List<ImsiRecordEntity> saved = imsiRecordRepository.saveAll(entities);
+            if (!saved.isEmpty()) {
+                broadcastImsiUpdate(saved);
+            }
             riskAssessmentService.processImsiRecordsSaved(saved);
         } catch (Exception ex) {
             log.warn("Failed to persist IMSI records", ex);
@@ -154,6 +163,9 @@ public class EventStorageService {
             String camChannel = deriveCamChannel(channelId, port);
             CameraAlarmEntity entity = new CameraAlarmEntity(eventId, eventType, camChannel, level, eventTime);
             CameraAlarmEntity saved = cameraAlarmRepository.save(entity);
+            if (event == null || !Boolean.TRUE.equals(event.get("__broadcasted"))) {
+                broadcastCameraAlert(saved, event);
+            }
             riskAssessmentService.processCameraAlarmSaved(saved);
         } catch (Exception ex) {
             log.warn("Failed to persist camera alarm", ex);
@@ -279,5 +291,83 @@ public class EventStorageService {
             return "检测到区域入侵";
         }
         return trimmed;
+    }
+
+    private void broadcastCameraAlert(CameraAlarmEntity entity, Map<String, Object> rawEvent) {
+        try {
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("type", "alert");
+            Object rawId = rawEvent != null ? rawEvent.get("id") : null;
+            payload.put("id", rawId != null ? rawId : entity.getEventId());
+
+            Object rawEventType = rawEvent != null ? rawEvent.get("eventType") : null;
+            payload.put("eventType", rawEventType != null ? rawEventType : entity.getEventType());
+
+            Object rawLevel = rawEvent != null ? rawEvent.get("level") : null;
+            String level = rawLevel != null ? rawLevel.toString() : (entity.getLevel() != null ? entity.getLevel() : "major");
+            payload.put("level", level);
+
+            Integer channelId = rawEvent != null ? intValue(rawEvent.get("channelID")) : null;
+            Integer port = rawEvent != null ? intValue(rawEvent.get("port")) : null;
+            if (channelId != null) {
+                payload.put("channelID", channelId);
+            }
+            if (port != null) {
+                payload.put("port", port);
+            }
+
+            String camChannel = null;
+            if (rawEvent != null && rawEvent.get("camChannel") instanceof String) {
+                String cc = ((String) rawEvent.get("camChannel")).trim();
+                if (!cc.isEmpty()) {
+                    camChannel = cc;
+                }
+            }
+            if (camChannel == null || camChannel.isEmpty()) {
+                camChannel = entity.getCamChannel();
+            }
+            if (camChannel == null || camChannel.isEmpty()) {
+                camChannel = deriveCamChannel(channelId, port);
+            }
+            if (camChannel != null) {
+                payload.put("camChannel", camChannel);
+            }
+
+            String eventTime = entity.getEventTime();
+            if ((eventTime == null || eventTime.isBlank()) && rawEvent != null) {
+                Object rawTime = rawEvent.get("time");
+                if (rawTime != null) {
+                    eventTime = rawTime.toString();
+                }
+            }
+            if (eventTime != null) {
+                payload.put("time", eventTime);
+            }
+
+            AlertHub.broadcast(payload);
+        } catch (Exception ex) {
+            log.debug("Failed to broadcast camera alert over SSE", ex);
+        }
+    }
+
+    private void broadcastImsiUpdate(List<ImsiRecordEntity> saved) {
+        try {
+            Set<String> sourceFiles = new HashSet<>();
+            for (ImsiRecordEntity entity : saved) {
+                if (entity.getSourceFile() != null && !entity.getSourceFile().isBlank()) {
+                    sourceFiles.add(entity.getSourceFile());
+                }
+            }
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("type", "imsi");
+            payload.put("count", saved.size());
+            payload.put("timestamp", Instant.now().toString());
+            if (!sourceFiles.isEmpty()) {
+                payload.put("sourceFiles", sourceFiles);
+            }
+            ImsiHub.broadcast(payload);
+        } catch (Exception ex) {
+            log.debug("Failed to broadcast IMSI update over SSE", ex);
+        }
     }
 }

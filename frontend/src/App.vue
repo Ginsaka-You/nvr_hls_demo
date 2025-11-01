@@ -20,6 +20,7 @@ import { ensureSettingsLoaded } from './store/config'
 import { connectAlerts } from './store/alerts'
 import { connectRadar } from './store/radar'
 import { connectDeviceMonitoring } from './store/devices'
+import { connectImsiUpdates } from './store/imsiUpdates'
 
 type Tab = 'main'|'multicam'|'events'|'risk'|'imsi'|'radar'|'seismic'|'drone'|'big8'|'big61'|'big67'|'axure'|'settings'
 const tab = ref<Tab>('main')
@@ -65,6 +66,7 @@ onMounted(async () => {
     connectAlerts()
     connectRadar()
     connectDeviceMonitoring()
+    connectImsiUpdates()
   }
 })
 

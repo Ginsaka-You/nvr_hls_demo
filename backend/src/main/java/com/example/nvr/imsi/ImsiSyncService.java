@@ -14,6 +14,8 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.PostConstruct;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.concurrent.CompletableFuture;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -40,7 +42,7 @@ public class ImsiSyncService {
     private final EventStorageService eventStorageService;
     private final ReentrantLock syncLock = new ReentrantLock();
 
-    private Instant lastAttemptAt;
+    private Instant lastSuccessAt;
 
     public ImsiSyncService(ImsiSyncConfigService configService,
                            EventStorageService eventStorageService) {
@@ -79,13 +81,13 @@ public class ImsiSyncService {
         }
 
         Instant now = Instant.now();
-        if (!forced && lastAttemptAt != null) {
+        if (!forced && lastSuccessAt != null) {
             int interval = Math.max(10, Optional.ofNullable(config.getIntervalSeconds()).orElse(300));
-            long secondsSince = Duration.between(lastAttemptAt, now).getSeconds();
+            long secondsSince = Duration.between(lastSuccessAt, now).getSeconds();
             if (secondsSince < interval) {
                 return FtpRecordsResponse.success(
-                        "距离上次同步仅 " + secondsSince + " 秒，暂不重复执行。",
-                        Map.of("skipped", true, "secondsSinceLast", secondsSince),
+                        "距离上次成功同步仅 " + secondsSince + " 秒，暂不重复执行。",
+                        Map.of("skipped", true, "secondsSinceLastSuccess", secondsSince),
                         List.of(),
                         List.of(),
                         System.currentTimeMillis()
@@ -98,8 +100,11 @@ public class ImsiSyncService {
                     Map.of("skipped", true, "reason", "lock"), List.of(), List.of(), System.currentTimeMillis());
         }
         try {
-            lastAttemptAt = Instant.now();
-            return executeFtpSync(config);
+            FtpRecordsResponse response = executeFtpSync(config);
+            if (response != null && response.isOk() && response.getRecords() != null && !response.getRecords().isEmpty()) {
+                lastSuccessAt = Instant.now();
+            }
+            return response;
         } finally {
             syncLock.unlock();
         }
@@ -180,18 +185,18 @@ public class ImsiSyncService {
                     break;
                 }
                 String fingerprint = fingerprint(file);
-                if (fingerprint != null && previouslyImported.contains(fingerprint)) {
-                    skippedFiles++;
-                    continue;
-                }
-
                 int beforeCount = records.size();
+                String contentHash = null;
+                boolean retrieved = false;
                 try (ByteArrayOutputStream buffer = new ByteArrayOutputStream()) {
                     if (!client.retrieveFile(file.getName(), buffer)) {
                         details.put("lastRetrieveReplyCode", client.getReplyCode());
                         continue;
                     }
-                    String content = buffer.toString(StandardCharsets.UTF_8.name());
+                    retrieved = true;
+                    byte[] payload = buffer.toByteArray();
+                    contentHash = hashBytes(payload);
+                    String content = new String(payload, StandardCharsets.UTF_8);
                     String[] lines = content.split("\\r?\\n");
                     int lineNumber = 0;
                     for (String rawLine : lines) {
@@ -206,8 +211,31 @@ public class ImsiSyncService {
 
                         String deviceId = parts.length > 0 ? parts[0].trim() : "";
                         if (filterActive) {
-                            String normalizedDeviceId = deviceId.toLowerCase(Locale.ROOT);
-                            if (normalizedDeviceId.isEmpty() || !allowedDevices.contains(normalizedDeviceId)) {
+                            String normalizedDeviceId = deviceId == null ? "" : deviceId.trim().toLowerCase(Locale.ROOT);
+                            if (normalizedDeviceId.isEmpty()) {
+                                continue;
+                            }
+                            boolean matches = false;
+                            for (String allowed : allowedDevices) {
+                                if (allowed.equals(normalizedDeviceId)) {
+                                    matches = true;
+                                    break;
+                                }
+                                if (normalizedDeviceId.startsWith("ctc_") && normalizedDeviceId.length() > 4
+                                        && allowed.equals(normalizedDeviceId.substring(4))) {
+                                    matches = true;
+                                    break;
+                                }
+                                if (!normalizedDeviceId.startsWith("ctc_") && allowed.equals("ctc_" + normalizedDeviceId)) {
+                                    matches = true;
+                                    break;
+                                }
+                                if (normalizedDeviceId.contains(allowed) || allowed.contains(normalizedDeviceId)) {
+                                    matches = true;
+                                    break;
+                                }
+                            }
+                            if (!matches) {
                                 continue;
                             }
                         }
@@ -222,12 +250,22 @@ public class ImsiSyncService {
                     details.put("lastRetrieveError", ioEx.getClass().getSimpleName() + ": " + ioEx.getMessage());
                 }
 
-                int added = records.size() - beforeCount;
+                int afterCount = records.size();
+                int added = afterCount - beforeCount;
+                String finalFingerprint = combineFingerprint(fingerprint, contentHash);
+                boolean duplicateByHash = retrieved && finalFingerprint != null && previouslyImported.contains(finalFingerprint);
+                if (duplicateByHash && added > 0) {
+                    records.subList(beforeCount, afterCount).clear();
+                    added = 0;
+                }
+                if (duplicateByHash) {
+                    skippedFiles++;
+                }
                 if (added > 0) {
                     processedFiles++;
                     sourceFiles.add(file.getName());
-                    if (fingerprint != null) {
-                        processedFingerprints.add(fingerprint);
+                    if (retrieved && finalFingerprint != null) {
+                        processedFingerprints.add(finalFingerprint);
                     }
                 }
 
@@ -318,14 +356,34 @@ public class ImsiSyncService {
     }
 
     private Set<String> parseDeviceFilter(String filter) {
-        if (filter == null || filter.isEmpty()) {
+        if (filter == null) {
             return Collections.emptySet();
         }
-        return Arrays.stream(filter.split("/"))
-                .map(part -> part == null ? "" : part.trim())
-                .filter(part -> !part.isEmpty())
-                .map(part -> part.toLowerCase(Locale.ROOT))
-                .collect(Collectors.toCollection(LinkedHashSet::new));
+        String normalized = filter.trim();
+        if (normalized.isEmpty() || "*".equals(normalized)) {
+            return Collections.emptySet();
+        }
+        String[] tokens = normalized.split("[,;\\s/]+");
+        LinkedHashSet<String> values = new LinkedHashSet<>();
+        for (String token : tokens) {
+            if (token == null) {
+                continue;
+            }
+            String trimmed = token.trim();
+            if (trimmed.isEmpty() || "*".equals(trimmed)) {
+                continue;
+            }
+            String lower = trimmed.toLowerCase(Locale.ROOT);
+            values.add(lower);
+            if (lower.startsWith("ctc_") && lower.length() > 4) {
+                values.add(lower.substring(4));
+            } else if (!lower.startsWith("ctc_")) {
+                values.add("ctc_" + lower);
+            }
+            values.add(lower.replace('_', '-'));
+            values.add(lower.replace('_', ' '));
+        }
+        return values;
     }
 
     private Set<String> loadImportedFileFingerprints(ImsiSyncConfigEntity config, String host) {
@@ -347,10 +405,18 @@ public class ImsiSyncService {
         LinkedHashSet<String> all = readAllFingerprints();
         String prefix = hostScopePrefix(config, host);
         for (String fp : fingerprints) {
-            String entry = prefix + fp;
-            if (all.contains(entry)) {
-                all.remove(entry);
+            if (fp == null || fp.isBlank()) {
+                continue;
             }
+            String metadata = extractMetadataFingerprint(fp);
+            if (metadata != null) {
+                String metadataEntry = prefix + metadata;
+                all.remove(metadataEntry);
+                String metadataPrefix = metadataEntry + "|";
+                all.removeIf(existing -> existing.startsWith(metadataPrefix));
+            }
+            String entry = prefix + fp;
+            all.remove(entry);
             all.add(entry);
         }
         while (all.size() > MAX_IMPORTED_FINGERPRINTS) {
@@ -430,6 +496,48 @@ public class ImsiSyncService {
             name = "";
         }
         return name + "|" + size + "|" + ts;
+    }
+
+    private String combineFingerprint(String metadata, String hash) {
+        if (metadata == null && hash == null) {
+            return null;
+        }
+        if (metadata == null) {
+            return hash;
+        }
+        if (hash == null || hash.isEmpty()) {
+            return metadata;
+        }
+        return metadata + "|" + hash;
+    }
+
+    private String extractMetadataFingerprint(String fingerprint) {
+        if (fingerprint == null || fingerprint.isEmpty()) {
+            return null;
+        }
+        String[] parts = fingerprint.split("\\|");
+        if (parts.length < 3) {
+            return null;
+        }
+        return parts[0] + "|" + parts[1] + "|" + parts[2];
+    }
+
+    private String hashBytes(byte[] data) {
+        if (data == null || data.length == 0) {
+            return null;
+        }
+        try {
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            byte[] digest = md.digest(data);
+            StringBuilder sb = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            log.debug("MD5 algorithm not available for IMSI sync fingerprinting: {}", e.getMessage());
+            return null;
+        }
     }
 
     private String trimToNull(String value) {

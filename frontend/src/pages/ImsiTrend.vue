@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { imsiFtpHost, imsiFtpUser, imsiFtpPass, imsiSyncInterval, imsiDeviceFilter } from '@/store/config'
+import { imsiUpdateToken } from '@/store/imsiUpdates'
 
 type ImsiRecord = {
   deviceId: string
@@ -32,6 +33,8 @@ const imsiFilter = ref<string>('')
 const syncing = ref(false)
 
 let autoSyncTimer: number | null = null
+let updateTimer: number | null = null
+const lastTokenSeen = ref<number | null>(null)
 
 const fetchLimit = 500
 
@@ -137,7 +140,7 @@ async function fetchImsiRecords(silent = false) {
   loading.value = true
   error.value = null
   try {
-    const resp = await fetch(`/api/imsi/records?limit=${fetchLimit}`)
+    const resp = await fetch(`/api/imsi/records?limit=${fetchLimit}&_=${Date.now()}`, { cache: 'no-store' })
     if (!resp.ok) {
       throw new Error(`请求失败 (${resp.status})`)
     }
@@ -229,14 +232,36 @@ watch(imsiSyncInterval, () => {
   scheduleAutoSync()
 })
 
+watch(imsiUpdateToken, (token) => {
+  if (!token) {
+    return
+  }
+  if (lastTokenSeen.value === token) {
+    return
+  }
+  lastTokenSeen.value = token
+  if (updateTimer) {
+    window.clearTimeout(updateTimer)
+  }
+  updateTimer = window.setTimeout(() => {
+    updateTimer = null
+    void fetchImsiRecords(true)
+  }, 400)
+})
+
 onMounted(() => {
   void fetchImsiRecords(true)
   scheduleAutoSync()
+  lastTokenSeen.value = imsiUpdateToken.value || null
 })
 
 onUnmounted(() => {
   if (configTimer) window.clearTimeout(configTimer)
   clearAutoSync()
+  if (updateTimer) {
+    window.clearTimeout(updateTimer)
+    updateTimer = null
+  }
 })
 
 const hasData = computed(() => !loading.value && !error.value && filteredRecords.value.length > 0)

@@ -30,6 +30,7 @@ public class AlertPushController {
         String s = new String(body, StandardCharsets.UTF_8);
         Map<String, Object> ev = parseEvent(s);
         AlertHub.broadcast(ev);
+        ev.put("__broadcasted", Boolean.TRUE);
         try {
             eventStorageService.recordAlertEvent(ev, s);
             eventStorageService.recordCameraAlarm(ev, s);

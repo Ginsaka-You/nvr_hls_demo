@@ -10,6 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -44,6 +45,11 @@ public class ImsiController {
                           ImsiSyncService imsiSyncService) {
         this.eventStorageService = eventStorageService;
         this.imsiSyncService = imsiSyncService;
+    }
+
+    @GetMapping(path = "/subscribe", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Object subscribe() {
+        return ImsiHub.subscribe();
     }
 
 

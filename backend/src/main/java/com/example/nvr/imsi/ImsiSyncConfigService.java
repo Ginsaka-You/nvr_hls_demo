@@ -13,7 +13,7 @@ import java.util.Optional;
 public class ImsiSyncConfigService {
 
     private static final long CONFIG_ID = 1L;
-    private static final int DEFAULT_INTERVAL_SECONDS = 300;
+    private static final int DEFAULT_INTERVAL_SECONDS = 60;
     private static final int DEFAULT_BATCH_SIZE = 500;
     private static final int DEFAULT_MAX_FILES = 6;
     private static final String DEFAULT_DEVICE_FILTER = "njtest001";
