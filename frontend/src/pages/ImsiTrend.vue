@@ -31,6 +31,7 @@ const elapsedMs = ref<number | null>(null)
 const deviceFilter = ref<string>('')
 const imsiFilter = ref<string>('')
 const syncing = ref(false)
+const firstFetchDone = ref(false)
 
 let autoSyncTimer: number | null = null
 let updateTimer: number | null = null
@@ -115,6 +116,10 @@ const lastUpdatedDisplay = computed(() => {
   return Number.isNaN(date.getTime()) ? lastUpdated.value : date.toLocaleString()
 })
 
+const tableLoading = computed(() => loading.value || syncing.value)
+const hasData = computed(() => filteredRecords.value.length > 0)
+const showNoDataTip = computed(() => firstFetchDone.value && !tableLoading.value && !error.value && !hasData.value)
+
 
 const isConfigReady = computed(() => {
   return !!(imsiFtpHost.value && imsiFtpUser.value && imsiFtpPass.value)
@@ -180,6 +185,7 @@ async function fetchImsiRecords(silent = false) {
     if (!silent) message.error('读取 IMSI 数据失败：' + msg)
   } finally {
     loading.value = false
+    firstFetchDone.value = true
   }
 }
 async function refreshImsiRecords(silent = false) {
@@ -217,6 +223,9 @@ async function refreshImsiRecords(silent = false) {
   scheduleAutoSync()
 }
 
+function applyFilters() {
+  void fetchImsiRecords(true)
+}
 
 let configTimer: number | null = null
 
@@ -264,7 +273,6 @@ onUnmounted(() => {
   }
 })
 
-const hasData = computed(() => !loading.value && !error.value && filteredRecords.value.length > 0)
 const hasRawData = computed(() => records.value.length > 0)
 </script>
 
@@ -302,42 +310,41 @@ const hasRawData = computed(() => records.value.length > 0)
           </a-space>
         </template>
 
-        <a-spin :spinning="loading || syncing">
-          <div v-if="!isConfigReady" style="margin-top:12px;">
-            <a-alert type="info" show-icon message="请先在系统设置 → IMSI 中配置 FTP 连接信息。" />
-          </div>
-          <div v-else-if="error" style="margin-top:12px;">
-            <a-alert type="error" show-icon :message="error" />
-          </div>
-          <div v-else>
-            <div style="margin-bottom:12px;">
-              <a-alert
-                v-if="metaMessage"
-                :type="hasData ? 'success' : 'info'"
-                show-icon
-                :message="metaMessage"
-                :description="elapsedMs ? `耗时 ${elapsedMs} ms` : undefined"
-              />
-            </div>
-
+        <div v-if="!isConfigReady" style="margin-top:12px;">
+          <a-alert type="info" show-icon message="请先在系统设置 → IMSI 中配置 FTP 连接信息。" />
+        </div>
+        <div v-else-if="error" style="margin-top:12px;">
+          <a-alert type="error" show-icon :message="error" />
+        </div>
+        <div v-else>
+          <div style="margin-bottom:12px;">
             <a-alert
-              v-if="!hasData"
-              type="info"
+              v-if="metaMessage"
+              :type="hasData ? 'success' : 'info'"
               show-icon
-              :message="hasRawData ? '筛选条件下没有数据，请调整设备ID。' : '尚未拉取到 IMSI 数据，请确认 FTP 已产生数据文件。'"
-            />
-
-            <a-table
-              v-else
-              :columns="tableColumns"
-              :data-source="tableData"
-              size="middle"
-              :pagination="{ pageSize: 20, showTotal: total => `共 ${total} 条` }"
-              bordered
-              :scroll="{ x: 900 }"
+              :message="metaMessage"
+              :description="elapsedMs ? `耗时 ${elapsedMs} ms` : undefined"
             />
           </div>
-        </a-spin>
+
+          <a-alert
+            v-if="showNoDataTip"
+            type="info"
+            show-icon
+            :message="hasRawData ? '筛选条件下没有数据，请调整设备ID。' : '尚未拉取到 IMSI 数据，请确认 FTP 已产生数据文件。'"
+          />
+
+          <a-table
+            v-else
+            :columns="tableColumns"
+            :data-source="tableData"
+            size="middle"
+            :loading="tableLoading"
+            :pagination="{ pageSize: 20, showTotal: total => `共 ${total} 条` }"
+            bordered
+            :scroll="{ x: 900 }"
+          />
+        </div>
       </a-card>
     </a-layout-content>
   </a-layout>
