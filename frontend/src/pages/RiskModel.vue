@@ -3,12 +3,8 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { message } from 'ant-design-vue'
 
 type Classification = 'P1' | 'P2' | 'P3' | 'P4' | 'INFO'
-type SubjectType = 'IMSI' | 'CAMERA' | 'RADAR' | string
-
 type RiskAssessment = {
   id: number
-  subjectType: SubjectType
-  subjectKey: string
   classification: Classification
   score: number | null
   summary: string | null
@@ -16,7 +12,10 @@ type RiskAssessment = {
   windowEnd: string | null
   updatedAt: string | null
   details: Record<string, unknown> | null
+  state: RiskState | null
 }
+
+type RiskState = 'IDLE' | 'MONITORING' | 'CHALLENGE' | 'DISPATCHED' | 'RESOLVED' | string
 
 const REFRESH_INTERVAL = 15000
 const loading = ref(false)
@@ -58,10 +57,32 @@ const classificationMeta: Record<Classification, { label: string; tag: string; e
   },
 }
 
-const subjectLabels: Record<string, string> = {
-  IMSI: 'IMSI 设备',
-  CAMERA: '摄像头',
-  RADAR: '雷达目标',
+const stateMeta: Record<string, { label: string; color: string; description: string }> = {
+  IDLE: {
+    label: '空闲',
+    color: 'default',
+    description: '站点未检测到威胁，维持空闲状态。',
+  },
+  MONITORING: {
+    label: '警戒激活',
+    color: 'processing',
+    description: '存在可疑信号，正在记录并观察。',
+  },
+  CHALLENGE: {
+    label: '远程挑战',
+    color: 'warning',
+    description: '已执行远程喊话，等待挑战窗口反馈。',
+  },
+  DISPATCHED: {
+    label: '出警处理中',
+    color: 'error',
+    description: '满足 G 规则条件，已派警处理。',
+  },
+  RESOLVED: {
+    label: '已恢复',
+    color: 'success',
+    description: '事件处理完毕，进入冷却阶段。',
+  },
 }
 
 const groupedAssessments = computed(() => {
@@ -104,6 +125,18 @@ const boardHasData = computed(() =>
   classificationOrder.some((key) => (groupedAssessments.value[key]?.length ?? 0) > 0)
 )
 
+const latestAssessment = computed(() => {
+  if (!assessments.value.length) return null
+  const sorted = [...assessments.value].sort((a, b) => {
+    const left = a.updatedAt ?? a.windowEnd ?? ''
+    const right = b.updatedAt ?? b.windowEnd ?? ''
+    return right.localeCompare(left)
+  })
+  return sorted[0] ?? null
+})
+
+const currentState = computed<RiskState | null>(() => latestAssessment.value?.state ?? null)
+
 function toClassification(value: any): Classification {
   const text = typeof value === 'string' ? value.toUpperCase() : ''
   if (classificationMeta[text as Classification]) {
@@ -114,18 +147,28 @@ function toClassification(value: any): Classification {
 
 function normalizeAssessment(raw: any): RiskAssessment {
   const classification = toClassification(raw?.classification)
+  const details =
+    raw?.details && typeof raw.details === 'object'
+      ? (raw.details as Record<string, unknown>)
+      : null
   return {
     id: Number(raw?.id ?? 0),
-    subjectType: typeof raw?.subjectType === 'string' ? raw.subjectType : 'UNKNOWN',
-    subjectKey: raw?.subjectKey != null ? String(raw.subjectKey) : '-',
     classification,
     score: raw?.score != null ? Number(raw.score) : null,
     summary: raw?.summary != null ? String(raw.summary) : null,
     windowStart: raw?.windowStart ?? null,
     windowEnd: raw?.windowEnd ?? null,
     updatedAt: raw?.updatedAt ?? raw?.windowEnd ?? null,
-    details: raw?.details && typeof raw.details === 'object' ? (raw.details as Record<string, unknown>) : null,
+    details,
+    state: extractState(details),
   }
+}
+
+function extractState(details: Record<string, unknown> | null): RiskState | null {
+  if (!details) return null
+  const stateMachine = details.stateMachine as Record<string, unknown> | undefined
+  const current = typeof stateMachine?.current === 'string' ? stateMachine.current.trim() : ''
+  return current ? (current as RiskState) : null
 }
 
 function formatTime(value: string | null | undefined): string {
@@ -135,13 +178,30 @@ function formatTime(value: string | null | undefined): string {
   return date.toLocaleString()
 }
 
-function subjectLabel(type: string): string {
-  return subjectLabels[type] || type || '未知'
-}
-
 function formatPriority(item: RiskAssessment): string {
   const meta = classificationMeta[item.classification]
   return meta ? meta.label : item.classification
+}
+
+function formatStateLabel(state: RiskState | null): string {
+  if (!state) return '状态未知'
+  const meta = stateMeta[state]
+  return meta ? meta.label : state
+}
+
+function stateTagColor(state: RiskState | null): string {
+  return state && stateMeta[state] ? stateMeta[state].color : 'default'
+}
+
+function stateDescription(state: RiskState | null): string {
+  if (!state) return '—'
+  const meta = stateMeta[state]
+  return meta ? meta.description : `当前状态：${state}`
+}
+
+function formatUpdatedLabel(item: RiskAssessment): string {
+  if (!item.updatedAt) return '更新时间：—'
+  return `更新时间：${formatTime(item.updatedAt)}`
 }
 
 function formatIsoDuration(value: any): string {
@@ -160,10 +220,10 @@ function formatIsoDuration(value: any): string {
 function summarizeMetrics(metrics: any): string | null {
   if (!metrics || typeof metrics !== 'object') return null
   if (Array.isArray(metrics.newDevices) && metrics.newDevices.length) {
-    return `新设备：${metrics.newDevices.slice(0, 3).join(', ')}${metrics.newDevices.length > 3 ? '…' : ''}`
+    return `新设备：${metrics.newDevices.join(', ')}`
   }
   if (Array.isArray(metrics.devices) && metrics.devices.length) {
-    return `涉事设备：${metrics.devices.slice(0, 3).join(', ')}${metrics.devices.length > 3 ? '…' : ''}`
+    return `涉事设备：${metrics.devices.join(', ')}`
   }
   if (typeof metrics.events === 'number') {
     return `事件数：${metrics.events}`
@@ -468,6 +528,11 @@ const fusionHighlights = [
     <section class="live-section">
       <h2>实时风险态势</h2>
       <p class="section-note">基于最近 90 分钟内的 IMSI / 摄像头 / 雷达数据实时评分与名单判定。</p>
+      <div v-if="currentState" class="state-banner">
+        <span class="state-label">当前站点状态机</span>
+        <a-tag :color="stateTagColor(currentState)">{{ formatStateLabel(currentState) }}</a-tag>
+        <span class="state-description">{{ stateDescription(currentState) }}</span>
+      </div>
       <a-spin :spinning="loading">
         <a-alert
           v-if="errorMessage"
@@ -502,7 +567,12 @@ const fusionHighlights = [
                   <a-list-item class="risk-list-item">
                     <div class="risk-item">
                       <div class="risk-item-header">
-                        <span class="risk-item-subject">{{ subjectLabel(item.subjectType) }} · {{ item.subjectKey }}</span>
+                        <div class="risk-item-context">
+                          <span class="risk-item-state" :class="`state-${(item.state || 'unknown').toLowerCase()}`">
+                            {{ formatStateLabel(item.state) }}
+                          </span>
+                          <span class="risk-item-updated">{{ formatUpdatedLabel(item) }}</span>
+                        </div>
                         <a-tag :color="classificationMeta[item.classification]?.tag" class="risk-item-priority">
                           {{ formatPriority(item) }}
                         </a-tag>
@@ -564,7 +634,7 @@ const fusionHighlights = [
             <template #renderItem="{ item }">
               <a-list-item class="risk-log-item">
                 <div class="risk-log-main">
-                  <strong>{{ subjectLabel(item.subjectType) }} · {{ item.subjectKey }}</strong>
+                  <strong>{{ formatStateLabel(item.state) }}</strong>
                   <span v-if="item.summary" class="risk-log-summary">{{ item.summary }}</span>
                 </div>
                 <div class="risk-log-time">{{ formatTime(item.updatedAt) }}</div>
@@ -702,6 +772,26 @@ section {
   color: rgba(255, 255, 255, 0.65);
 }
 
+.state-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 12px 16px;
+  background: rgba(19, 47, 76, 0.45);
+  border: 1px solid rgba(64, 169, 255, 0.2);
+  border-radius: 8px;
+}
+
+.state-label {
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.state-description {
+  color: rgba(255, 255, 255, 0.7);
+}
+
 .risk-board {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -772,10 +862,39 @@ section {
   gap: 12px;
 }
 
-.risk-item-subject {
+.risk-item-context {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.risk-item-state {
   font-weight: 600;
   color: var(--text-color);
-  word-break: break-word;
+  text-transform: none;
+}
+
+.risk-item-state.state-monitoring {
+  color: #13c2c2;
+}
+
+.risk-item-state.state-challenge {
+  color: #faad14;
+}
+
+.risk-item-state.state-dispatched {
+  color: #ff4d4f;
+}
+
+.risk-item-state.state-resolved {
+  color: #52c41a;
+}
+
+.risk-item-updated {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.65);
 }
 
 .risk-item-priority {
@@ -871,6 +990,7 @@ h2 {
 .risk-item-breakdown .rule-desc,
 .risk-item-actions .rule-desc {
   display: block;
+  word-break: break-all;
 }
 
 .risk-item-actions {

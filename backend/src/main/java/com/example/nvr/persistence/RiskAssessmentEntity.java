@@ -6,7 +6,6 @@ import java.time.Instant;
 @Entity
 @Table(name = "risk_assessments",
         indexes = {
-                @Index(name = "idx_risk_subject", columnList = "subject_type, subject_key"),
                 @Index(name = "idx_risk_updated_at", columnList = "updated_at")
         })
 public class RiskAssessmentEntity {
@@ -14,12 +13,6 @@ public class RiskAssessmentEntity {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-
-    @Column(name = "subject_type", nullable = false, length = 32)
-    private String subjectType;
-
-    @Column(name = "subject_key", nullable = false, length = 128)
-    private String subjectKey;
 
     @Column(name = "classification", nullable = false, length = 32)
     private String classification;
@@ -46,29 +39,8 @@ public class RiskAssessmentEntity {
     public RiskAssessmentEntity() {
     }
 
-    public RiskAssessmentEntity(String subjectType, String subjectKey) {
-        this.subjectType = subjectType;
-        this.subjectKey = subjectKey;
-    }
-
     public Long getId() {
         return id;
-    }
-
-    public String getSubjectType() {
-        return subjectType;
-    }
-
-    public void setSubjectType(String subjectType) {
-        this.subjectType = subjectType;
-    }
-
-    public String getSubjectKey() {
-        return subjectKey;
-    }
-
-    public void setSubjectKey(String subjectKey) {
-        this.subjectKey = subjectKey;
     }
 
     public String getClassification() {

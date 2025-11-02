@@ -55,8 +55,6 @@ public class RiskAssessmentController {
         Map<String, Object> details = parseDetails(entity.getDetailsJson());
         return new AssessmentResponse(
                 entity.getId(),
-                entity.getSubjectType(),
-                entity.getSubjectKey(),
                 entity.getClassification(),
                 entity.getScore(),
                 entity.getSummary(),
@@ -82,8 +80,6 @@ public class RiskAssessmentController {
 
     public static class AssessmentResponse {
         private final Long id;
-        private final String subjectType;
-        private final String subjectKey;
         private final String classification;
         private final Integer score;
         private final String summary;
@@ -93,8 +89,6 @@ public class RiskAssessmentController {
         private final Map<String, Object> details;
 
         public AssessmentResponse(Long id,
-                                  String subjectType,
-                                  String subjectKey,
                                   String classification,
                                   Integer score,
                                   String summary,
@@ -103,8 +97,6 @@ public class RiskAssessmentController {
                                   Instant updatedAt,
                                   Map<String, Object> details) {
             this.id = id;
-            this.subjectType = subjectType;
-            this.subjectKey = subjectKey;
             this.classification = classification;
             this.score = score;
             this.summary = summary;
@@ -116,14 +108,6 @@ public class RiskAssessmentController {
 
         public Long getId() {
             return id;
-        }
-
-        public String getSubjectType() {
-            return subjectType;
-        }
-
-        public String getSubjectKey() {
-            return subjectKey;
         }
 
         public String getClassification() {

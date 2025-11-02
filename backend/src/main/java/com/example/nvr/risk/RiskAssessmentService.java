@@ -42,9 +42,6 @@ public class RiskAssessmentService {
 
     private static final Logger log = LoggerFactory.getLogger(RiskAssessmentService.class);
 
-    private static final String SUBJECT_TYPE = "SITE";
-    private static final String SUBJECT_KEY = "DEFAULT";
-
     private final RiskAssessmentRepository riskAssessmentRepository;
     private final ImsiRecordRepository imsiRecordRepository;
     private final CameraAlarmRepository cameraAlarmRepository;
@@ -199,8 +196,8 @@ public class RiskAssessmentService {
                                    String summary) {
         String classification = priority != null ? priority.getId() : "P4";
         RiskAssessmentEntity entity = riskAssessmentRepository
-                .findFirstBySubjectTypeAndSubjectKey(SUBJECT_TYPE, SUBJECT_KEY)
-                .orElseGet(() -> new RiskAssessmentEntity(SUBJECT_TYPE, SUBJECT_KEY));
+                .findTopByOrderByUpdatedAtDesc()
+                .orElseGet(RiskAssessmentEntity::new);
         entity.setClassification(classification);
         entity.setScore(null);
         entity.setSummary(summary);

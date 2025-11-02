@@ -7,7 +7,7 @@ import java.util.Optional;
 
 public interface RiskAssessmentRepository extends JpaRepository<RiskAssessmentEntity, Long> {
 
-    Optional<RiskAssessmentEntity> findFirstBySubjectTypeAndSubjectKey(String subjectType, String subjectKey);
+    Optional<RiskAssessmentEntity> findTopByOrderByUpdatedAtDesc();
 
     List<RiskAssessmentEntity> findTop200ByOrderByUpdatedAtDesc();
 }
