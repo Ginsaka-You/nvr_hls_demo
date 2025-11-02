@@ -44,3 +44,5 @@
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/RiskAssessmentRepository.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/risk/RiskAssessmentController.java
 /home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/risk/RiskAssessmentService.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/risk/config/RiskModelConfig.java
+/home/william/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/risk/config/RiskModelConfigLoader.java

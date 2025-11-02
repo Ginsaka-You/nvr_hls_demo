@@ -1,0 +1,126 @@
+version: "2024Q3-RC"
+parameters:
+  analysisWindow: PT30M
+  historyWindow: PT336H   # 14 days
+  challengeWindow: PT5M
+  imsiReentryWindow: PT30M
+  imsiCooldown: PT5M
+  imsiDwellThreshold: PT10M
+  cameraCooldown: PT30S
+  repeatWindow: PT24H
+  repeatThreshold: 2
+priorities:
+  - id: P1
+    name: "最高优先级"
+    description: "确认的重大入侵威胁事件，例如闯入核心保护区或多传感器同时报警。"
+    guidance: "立即执行A2远程警示与A3人力出警，并保持实时跟踪。"
+  - id: P2
+    name: "高优先级"
+    description: "严重怀疑的入侵威胁，存在持续徘徊或多次重返的迹象。"
+    guidance: "执行A2远程交互，观察挑战窗口，如无效则按G2派警。"
+  - id: P3
+    name: "中等优先级"
+    description: "一般可疑事件，需要持续监视并准备升级。"
+    guidance: "执行A1监控记录，人工评估是否需要远程警告。"
+  - id: P4
+    name: "低优先级"
+    description: "轻微异常或系统试探，仅记录并继续观察。"
+    guidance: "保持监控，等待更多证据。"
+actions:
+  - id: A1
+    name: "监控记录"
+    description: "静默关注，自动录像与事件标记，未主动干预。"
+  - id: A2
+    name: "远程交互"
+    description: "语音警告、闪灯或警号等远程劝离手段。"
+  - id: A3
+    name: "人力响应"
+    description: "派遣安保或通知警方现场处置。"
+fRules:
+  - id: F1
+    name: "一般保护区闯入"
+    trigger: "摄像头AI检测人形进入一般保护区域"
+    dataSource: "视频监控"
+    window: "即时触发，单目标30秒跟踪窗口"
+    frequencyLimit: "同一摄像头每30秒1次"
+    cooldown: "PT30S"
+    actionImpact: "触发A1，优先级至少提升至P3"
+  - id: F2
+    name: "未知IMSI出现"
+    trigger: "IMSI探针捕获非白名单设备首次出现"
+    dataSource: "IMSI探针"
+    window: "即时触发，同一IMSI5分钟去重"
+    frequencyLimit: "同一IMSI首次出现触发1次"
+    cooldown: "PT5M"
+    actionImpact: "触发A1，优先级提升至P3/P4"
+  - id: F3
+    name: "IMSI持续或重返"
+    trigger: "同一IMSI持续停留超过10分钟或30分钟内再次出现"
+    dataSource: "IMSI探针+历史记录"
+    window: "30分钟分析窗"
+    frequencyLimit: "同一事件周期触发1次"
+    cooldown: "PT30M"
+    actionImpact: "提升至P2，并建议执行A2"
+  - id: F4
+    name: "核心区域越界"
+    trigger: "人员跨越虚拟警戒线或周界传感器进入核心区"
+    dataSource: "视频警戒线/周界传感器"
+    window: "即时触发"
+    frequencyLimit: "每次越界触发1次"
+    cooldown: "PT1M"
+    actionImpact: "立即升至P1，执行A2并触发G1"
+gRules:
+  - id: G1
+    name: "P1直接派警"
+    trigger: "事件优先级达到P1"
+    action: "A3"
+    notes: "重大入侵立即通知值守与警方。"
+  - id: G2
+    name: "警告无效升级"
+    trigger: "执行A2后经过挑战窗口仍未解除威胁"
+    action: "A3"
+    notes: "挑战窗口与IMSI再识别周期保持一致（5分钟）。"
+  - id: G3
+    name: "重复侵扰巡查"
+    trigger: "24小时内同站点多次触发P2以上事件"
+    action: "A3"
+    notes: "用于应对持续试探或踩点。"
+stateMachine:
+  states:
+    - id: IDLE
+      name: "空闲"
+      description: "站点无事件。"
+    - id: MONITORING
+      name: "警戒激活"
+      description: "存在可疑事件，执行A1监控。"
+    - id: CHALLENGE
+      name: "远程挑战"
+      description: "已执行A2，等待挑战窗口结果。"
+    - id: DISPATCHED
+      name: "出警处理中"
+      description: "已触发A3，人力介入。"
+    - id: RESOLVED
+      name: "事件结束"
+      description: "威胁解除，进入冷却。"
+  transitions:
+    - from: IDLE
+      to: MONITORING
+      trigger: "任一F规则触发"
+    - from: MONITORING
+      to: CHALLENGE
+      trigger: "执行A2远程交互"
+    - from: CHALLENGE
+      to: DISPATCHED
+      trigger: "G2或G1触发派警"
+    - from: MONITORING
+      to: DISPATCHED
+      trigger: "G1触发"
+    - from: MONITORING
+      to: RESOLVED
+      trigger: "事件自然消退"
+    - from: CHALLENGE
+      to: RESOLVED
+      trigger: "挑战窗口内目标消失"
+    - from: DISPATCHED
+      to: RESOLVED
+      trigger: "出警完成"
