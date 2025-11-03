@@ -25,6 +25,12 @@ public class RiskScenarioController {
         return ResponseEntity.ok(result);
     }
 
+    @PostMapping("/cleanup")
+    public ResponseEntity<RiskScenarioService.ScenarioResult> resetModel() {
+        RiskScenarioService.ScenarioResult result = riskScenarioService.resetModelState();
+        return ResponseEntity.ok(result);
+    }
+
     @DeleteMapping
     public ResponseEntity<Map<String, Object>> resetScenarios() {
         riskScenarioService.cleanupScenarioArtifacts();

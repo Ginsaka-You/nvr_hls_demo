@@ -29,6 +29,7 @@ const assessments = ref<RiskAssessment[]>([])
 const errorMessage = ref<string | null>(null)
 const pollingTimer = ref<number | null>(null)
 const scenarioLoading = ref<string | null>(null)
+const resetLoading = ref(false)
 
 const scenarioButtons: ScenarioButton[] = [
   {
@@ -410,6 +411,41 @@ async function triggerScenario(button: ScenarioButton) {
   }
 }
 
+async function resetModelData() {
+  if (resetLoading.value) {
+    return
+  }
+  resetLoading.value = true
+  try {
+    const resp = await fetch('/api/risk/scenarios/cleanup', {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+    })
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`)
+    }
+    let data: any = null
+    try {
+      data = await resp.json()
+    } catch (err) {
+      console.debug('Failed to parse cleanup response', err)
+    }
+    const tip =
+      typeof data?.message === 'string' && data.message
+        ? data.message
+        : '已清空风控模型数据'
+    message.success(tip)
+    assessments.value = []
+    await fetchAssessments(true)
+  } catch (err: any) {
+    const msg = err?.message ?? String(err)
+    message.error(`清除数据失败：${msg}`)
+  } finally {
+    resetLoading.value = false
+  }
+}
+
 onMounted(() => {
   void fetchAssessments(true)
   pollingTimer.value = window.setInterval(() => {
@@ -608,6 +644,17 @@ const fusionHighlights = [
     <section class="scenario-actions">
       <h2>虚拟场景注入</h2>
       <p class="section-note">点击下方按钮向数据库写入模拟数据，快速验证各类 F/P/A/G 流程。</p>
+      <div class="scenario-toolbar">
+        <a-popconfirm
+          title="确认清空最近风控数据？"
+          ok-text="确认"
+          cancel-text="取消"
+          :disabled="resetLoading"
+          @confirm="resetModelData"
+        >
+          <a-button danger :loading="resetLoading">清空模型数据</a-button>
+        </a-popconfirm>
+      </div>
       <div class="scenario-grid">
         <a-card v-for="button in scenarioButtons" :key="button.id" class="scenario-card" :title="button.name">
           <p class="scenario-desc">{{ button.description }}</p>
@@ -859,6 +906,12 @@ const fusionHighlights = [
 .scenario-actions .section-note {
   margin-top: 4px;
   color: rgba(255, 255, 255, 0.65);
+}
+
+.scenario-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 
 .scenario-grid {

@@ -6,6 +6,7 @@ import com.example.nvr.persistence.ImsiRecordEntity;
 import com.example.nvr.persistence.ImsiRecordRepository;
 import com.example.nvr.persistence.RadarTargetEntity;
 import com.example.nvr.persistence.RadarTargetRepository;
+import com.example.nvr.persistence.RiskAssessmentRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,15 +35,18 @@ public class RiskScenarioService {
     private final CameraAlarmRepository cameraAlarmRepository;
     private final ImsiRecordRepository imsiRecordRepository;
     private final RadarTargetRepository radarTargetRepository;
+    private final RiskAssessmentRepository riskAssessmentRepository;
     private final RiskAssessmentService riskAssessmentService;
 
     public RiskScenarioService(CameraAlarmRepository cameraAlarmRepository,
                                ImsiRecordRepository imsiRecordRepository,
                                RadarTargetRepository radarTargetRepository,
+                               RiskAssessmentRepository riskAssessmentRepository,
                                RiskAssessmentService riskAssessmentService) {
         this.cameraAlarmRepository = cameraAlarmRepository;
         this.imsiRecordRepository = imsiRecordRepository;
         this.radarTargetRepository = radarTargetRepository;
+        this.riskAssessmentRepository = riskAssessmentRepository;
         this.riskAssessmentService = riskAssessmentService;
     }
 
@@ -101,6 +105,40 @@ public class RiskScenarioService {
         cameraAlarmRepository.deleteByEventIdStartingWith(SCENARIO_PREFIX);
         imsiRecordRepository.deleteBySourceFileStartingWith(SCENARIO_PREFIX);
         radarTargetRepository.deleteByRadarHostStartingWith(SCENARIO_PREFIX);
+    }
+
+    @Transactional
+    public ScenarioResult resetModelState() {
+        cleanupScenarioArtifacts();
+        long cameraCount = cameraAlarmRepository.count();
+        long imsiCount = imsiRecordRepository.count();
+        long radarCount = radarTargetRepository.count();
+        long assessmentCount = riskAssessmentRepository.count();
+
+        cameraAlarmRepository.deleteAllInBatch();
+        imsiRecordRepository.deleteAllInBatch();
+        radarTargetRepository.deleteAllInBatch();
+        riskAssessmentRepository.deleteAllInBatch();
+
+        riskAssessmentService.recomputeAll();
+
+        Map<String, Integer> removed = new LinkedHashMap<>();
+        removed.put("camera", safeCount(cameraCount));
+        removed.put("imsi", safeCount(imsiCount));
+        removed.put("radar", safeCount(radarCount));
+        removed.put("assessments", safeCount(assessmentCount));
+        String message = "已清空风控模型相关数据，可以重新执行场景测试";
+        return new ScenarioResult(true, "reset-model", removed, message);
+    }
+
+    private int safeCount(long value) {
+        if (value > Integer.MAX_VALUE) {
+            return Integer.MAX_VALUE;
+        }
+        if (value < Integer.MIN_VALUE) {
+            return Integer.MIN_VALUE;
+        }
+        return (int) value;
     }
 
     private int simulateLightAlert(Instant now) {
