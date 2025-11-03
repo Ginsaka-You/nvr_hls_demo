@@ -308,8 +308,12 @@ public class ImsiSyncService {
             try {
                 eventStorageService.recordImsiRecords(storageRecords, fetchedAt, elapsed, host, port, workingDirectory, "成功获取 IMSI 数据");
                 persistImportedFingerprint(config, host, processedFingerprints);
+                details.put("recordsStored", storageRecords.size());
             } catch (Exception storageEx) {
                 log.warn("Failed to record IMSI records", storageEx);
+                details.put("storageError", storageEx.getClass().getSimpleName());
+                String errorMessage = "IMSI 数据入库失败: " + Optional.ofNullable(storageEx.getMessage()).orElse("未知错误");
+                return finalizeAndRecord(config, false, errorMessage, records, sourceFiles, details, start);
             }
             message = "成功获取 IMSI 数据";
             return finalizeAndRecord(config, true, message, records, sourceFiles, details, start);

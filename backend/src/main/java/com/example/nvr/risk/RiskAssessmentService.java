@@ -17,6 +17,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
@@ -63,7 +64,7 @@ public class RiskAssessmentService {
         this.configLoader = configLoader;
     }
 
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void processImsiRecordsSaved(List<ImsiRecordEntity> records) {
         if (records == null || records.isEmpty()) {
             return;
@@ -71,7 +72,7 @@ public class RiskAssessmentService {
         evaluateSiteWindow(Instant.now());
     }
 
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void processCameraAlarmSaved(CameraAlarmEntity alarm) {
         if (alarm == null || alarm.getCreatedAt() == null) {
             return;
@@ -79,7 +80,7 @@ public class RiskAssessmentService {
         evaluateSiteWindow(Instant.now());
     }
 
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void processRadarTargetsSaved(List<RadarTargetEntity> targets) {
         if (targets == null || targets.isEmpty()) {
             return;

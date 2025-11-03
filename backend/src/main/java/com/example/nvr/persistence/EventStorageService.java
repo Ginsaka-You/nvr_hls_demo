@@ -74,39 +74,45 @@ public class EventStorageService {
                         fetchedAt
                 );
                 imsiRecordRepository.save(summary);
-            } catch (Exception ex) {
+            } catch (RuntimeException ex) {
                 log.warn("Failed to persist IMSI sync summary", ex);
+                throw ex;
             }
             return;
         }
+        List<ImsiRecordEntity> entities = new ArrayList<>(records.size());
+        for (ImsiRecordPayload record : records) {
+            ImsiRecordEntity entity = new ImsiRecordEntity(
+                    safeTrim(record.getDeviceId()),
+                    safeTrim(record.getImsi()),
+                    safeTrim(record.getOperator()),
+                    safeTrim(record.getArea()),
+                    safeTrim(record.getRptDate()),
+                    safeTrim(record.getRptTime()),
+                    safeTrim(record.getSourceFile()),
+                    record.getLineNumber(),
+                    safeTrim(host),
+                    port,
+                    safeTrim(directory),
+                    safeTrim(message),
+                    elapsedMs,
+                    fetchedAt
+            );
+            entities.add(entity);
+        }
         try {
-            List<ImsiRecordEntity> entities = new ArrayList<>(records.size());
-            for (ImsiRecordPayload record : records) {
-                ImsiRecordEntity entity = new ImsiRecordEntity(
-                        safeTrim(record.getDeviceId()),
-                        safeTrim(record.getImsi()),
-                        safeTrim(record.getOperator()),
-                        safeTrim(record.getArea()),
-                        safeTrim(record.getRptDate()),
-                        safeTrim(record.getRptTime()),
-                        safeTrim(record.getSourceFile()),
-                        record.getLineNumber(),
-                        safeTrim(host),
-                        port,
-                        safeTrim(directory),
-                        safeTrim(message),
-                        elapsedMs,
-                        fetchedAt
-                );
-                entities.add(entity);
-            }
             List<ImsiRecordEntity> saved = imsiRecordRepository.saveAll(entities);
             if (!saved.isEmpty()) {
                 broadcastImsiUpdate(saved);
             }
-            riskAssessmentService.processImsiRecordsSaved(saved);
-        } catch (Exception ex) {
+            try {
+                riskAssessmentService.processImsiRecordsSaved(saved);
+            } catch (Exception ex) {
+                log.warn("Failed to trigger risk assessment after IMSI sync", ex);
+            }
+        } catch (RuntimeException ex) {
             log.warn("Failed to persist IMSI records", ex);
+            throw ex;
         }
     }
 
