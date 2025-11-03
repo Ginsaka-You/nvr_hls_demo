@@ -21,6 +21,12 @@ type ScenarioButton = {
   id: string
   name: string
   description: string
+  group: string
+}
+
+type ScenarioGroup = {
+  name: string
+  buttons: ScenarioButton[]
 }
 
 const REFRESH_INTERVAL = 15000
@@ -33,46 +39,129 @@ const resetLoading = ref(false)
 
 const scenarioButtons: ScenarioButton[] = [
   {
-    id: 'light-alert',
-    name: '轻微警情 (F1/P1)',
-    description: '模拟一次短暂的 F1 规则触发，验证系统保持低级警情并自动结束。',
+    id: 'F1-BASE',
+    name: 'F1 一般区人形出现',
+    description: '注入一次普通防区的人形检测，验证 F1 触发 P3 并执行 A1。',
+    group: 'F规则验证',
   },
   {
-    id: 'repeat-escalation',
-    name: '重复事件升级 (P2/A1)',
-    description: '模拟多次触发同一外围入侵，观察警情从初始升级的过程。',
+    id: 'F2-FIRST',
+    name: 'F2 未知 IMSI 首现',
+    description: '创建一个非白名单 IMSI 首次出现的记录，验证 5 分钟内只触发一次。',
+    group: 'F规则验证',
   },
   {
-    id: 'challenge-cleared',
-    name: '挑战警告后离场 (A2)',
-    description: '创建触发远程挑战但在窗口内结束的事件，用于确认未进一步升级。',
+    id: 'F3-REAPPEAR',
+    name: 'F3 IMSI 再现/久留',
+    description: '模拟同一设备在 30 分钟内再现并由摄像头佐证，验证升级至 P2 并触发 A2。',
+    group: 'F规则验证',
   },
   {
-    id: 'challenge-ignored',
-    name: '无视挑战触发出警 (A2→G2)',
-    description: '模拟挑战后仍持续违规的目标，验证系统自动升级并出警。',
+    id: 'F4-CORELINE',
+    name: 'F4 虚拟警戒线越界',
+    description: '注入核心区越界数据，验证直接评为 P1 并进入 G1 出警路径。',
+    group: 'F规则验证',
   },
   {
-    id: 'severe-direct',
-    name: '严重事件直接警报 (A3/G3)',
-    description: '模拟一次核心区域越界，检查系统直接进入最高优先级和出警流程。',
+    id: 'A1-ONLY',
+    name: 'A1 静默记录闭环',
+    description: '构造弱证据事件，仅触发 A1，确认不会误升至 A2/A3。',
+    group: 'A动作路径',
   },
   {
-    id: 'fusion-escalation',
-    name: '多源事件融合升级',
-    description: '注入摄像头、IMSI、雷达组合事件，测试融合逻辑的优先级提升。',
+    id: 'A2-SUCCEED',
+    name: 'A2 挑战有效',
+    description: '模拟 A2 后目标离场的情形，验证事件在挑战窗口内收束。',
+    group: 'A动作路径',
   },
   {
-    id: 'imsi-challenge-return',
-    name: '挑战期内IMSI再识别',
-    description: '同一 IMSI 在挑战期内再次出现，验证事件被视为持续并升级处理。',
+    id: 'A2-FAIL-G2',
+    name: 'A2 挑战无效→G2',
+    description: '目标无视远程警告持续存在，验证 G2 在挑战窗口后触发 A3。',
+    group: 'A动作路径',
   },
   {
-    id: 'imsi-post-challenge',
-    name: '挑战窗后再现 (新事件)',
-    description: '在挑战窗口结束后重新出现的目标，应被识别为新的低级事件。',
+    id: 'G1-P1-A3',
+    name: 'G1 P1 即刻出警',
+    description: '通过核心区越界与外围佐证，验证 P1 优先触发 G1 且忽略低级规则。',
+    group: 'G派警逻辑',
+  },
+  {
+    id: 'G2-CHALLENGE',
+    name: 'G2 挑战窗口对齐',
+    description: '在挑战窗口内外分别注入 IMSI，再现挑战无效升级与新事件分界。',
+    group: 'G派警逻辑',
+  },
+  {
+    id: 'G3-REPEAT',
+    name: 'G3 重复侵扰巡查',
+    description: '注入 24 小时内多次 P2/P3 事件，验证触发预防性巡查。',
+    group: 'G派警逻辑',
+  },
+  {
+    id: 'FX-MERGE-UP',
+    name: '融合多源上调',
+    description: '联合摄像头、IMSI、雷达注入，检查融合引擎合并并提升优先级。',
+    group: '融合与状态机',
+  },
+  {
+    id: 'SM-ONE-A3',
+    name: '状态机单次出警',
+    description: '模拟同一事件多次触发出警条件，验证状态机仅执行一次 A3。',
+    group: '融合与状态机',
+  },
+  {
+    id: 'SM-CLOSE',
+    name: '状态机干净收尾',
+    description: '构造目标离场且双倍挑战窗无再现的记录，验证事件转入已恢复状态。',
+    group: '融合与状态机',
+  },
+  {
+    id: 'NEW-INCIDENT',
+    name: '挑战窗后新事件',
+    description: '在挑战窗口结束后重新注入同一 IMSI，验证被视为全新事件。',
+    group: '融合与状态机',
+  },
+  {
+    id: 'SYNC-T-REID',
+    name: '挑战窗口同步',
+    description: '制造 T−ε 与 T+ε 两种再识别，验证挑战窗口与再识别窗口完全一致。',
+    group: '同步与冷却',
+  },
+  {
+    id: 'CD-F1',
+    name: 'F1 30 秒冷却',
+    description: '在 30 秒内多次注入同一目标 F1，验证冷却抑制重复触发。',
+    group: '同步与冷却',
+  },
+  {
+    id: 'CD-F2',
+    name: 'F2 5 分钟冷却',
+    description: '对同一 IMSI 在 5 分钟内重复注入，验证只记录第一次出现。',
+    group: '同步与冷却',
+  },
+  {
+    id: 'CD-F4',
+    name: 'F4 越界防抖',
+    description: '连续越界抖动的模拟数据，验证一次事件只触发一次 F4/G1。',
+    group: '同步与冷却',
   },
 ]
+
+const scenarioGroups = computed<ScenarioGroup[]>(() => {
+  const groups: ScenarioGroup[] = []
+  const lookup = new Map<string, ScenarioGroup>()
+  for (const button of scenarioButtons) {
+    let group = lookup.get(button.group)
+    if (!group) {
+      group = { name: button.group, buttons: [] }
+      lookup.set(button.group, group)
+      groups.push(group)
+    }
+    group.buttons.push(button)
+  }
+  return groups
+})
 
 const classificationOrder: Classification[] = ['P1', 'P2', 'P3', 'P4']
 const classificationMeta: Record<Classification, { label: string; tag: string; empty: string; description: string }> = {
@@ -655,13 +744,18 @@ const fusionHighlights = [
           <a-button danger :loading="resetLoading">清空模型数据</a-button>
         </a-popconfirm>
       </div>
-      <div class="scenario-grid">
-        <a-card v-for="button in scenarioButtons" :key="button.id" class="scenario-card" :title="button.name">
-          <p class="scenario-desc">{{ button.description }}</p>
-          <a-button type="primary" block :loading="scenarioLoading === button.id" @click="triggerScenario(button)">
-            触发场景
-          </a-button>
-        </a-card>
+      <div class="scenario-groups">
+        <div v-for="group in scenarioGroups" :key="group.name" class="scenario-group">
+          <h3 class="scenario-group-title">{{ group.name }}</h3>
+          <div class="scenario-grid">
+            <a-card v-for="button in group.buttons" :key="button.id" class="scenario-card" :title="button.name">
+              <p class="scenario-desc">{{ button.description }}</p>
+              <a-button type="primary" block :loading="scenarioLoading === button.id" @click="triggerScenario(button)">
+                触发场景
+              </a-button>
+            </a-card>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -912,6 +1006,20 @@ const fusionHighlights = [
   display: flex;
   justify-content: flex-end;
   margin-top: 12px;
+}
+
+.scenario-groups {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.scenario-group-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
 }
 
 .scenario-grid {

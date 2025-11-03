@@ -55,49 +55,97 @@ public class RiskScenarioService {
         cleanupScenarioArtifacts();
         Instant now = Instant.now();
         Map<String, Integer> created = new LinkedHashMap<>();
+        String normalized = normalizeScenarioId(scenarioId);
         String message;
-        switch (scenarioId) {
-            case "light-alert":
-                created.put("camera", simulateLightAlert(now));
-                message = "已注入轻微警情场景数据";
+        switch (normalized) {
+            case "F1-BASE":
+                simulateF1Base(now, created);
+                message = "已注入 F1 一般区域闯入的基础验证数据";
                 break;
-            case "repeat-escalation":
-                created.put("camera", simulateRepeatedIntrusion(now));
-                message = "已注入重复事件升级场景数据";
+            case "F2-FIRST":
+                simulateF2First(now, created);
+                message = "已注入 F2 未知 IMSI 首次出现的数据";
                 break;
-            case "challenge-cleared":
-                created.put("camera", simulateChallengeCleared(now));
-                created.merge("imsi", 2, Integer::sum);
-                message = "已注入挑战后离场测试数据";
+            case "F3-REAPPEAR":
+                simulateF3Reappear(now, created);
+                message = "已注入 F3 再现/久留并触发 A2 的数据";
                 break;
-            case "challenge-ignored":
-                created.put("camera", simulateChallengeIgnored(now));
-                created.merge("imsi", 2, Integer::sum);
-                message = "已注入挑战无效出警场景数据";
+            case "F4-CORELINE":
+                simulateF4Coreline(now, created);
+                message = "已注入 F4 虚拟警戒线越界直接触发 P1 的数据";
                 break;
-            case "severe-direct":
-                created.put("camera", simulateSevereIntrusion(now));
-                message = "已注入严重事件直接警报数据";
+            case "A1-ONLY":
+                simulateA1Only(now, created);
+                message = "已注入仅触发 A1 监控记录的低级事件数据";
                 break;
-            case "fusion-escalation":
-                created.put("camera", simulateFusionEscalation(now));
-                created.merge("imsi", 1, Integer::sum);
-                created.merge("radar", simulateRadarFusion(now), Integer::sum);
-                message = "已注入多源融合升级场景数据";
+            case "A2-SUCCEED":
+                simulateA2Succeed(now, created);
+                message = "已注入 A2 挑战有效后事件收束的数据";
                 break;
-            case "imsi-challenge-return":
-                created.put("imsi", simulateChallengeReentry(now));
-                message = "已注入挑战期内IMSI再识别数据";
+            case "A2-FAIL-G2":
+                simulateA2FailG2(now, created);
+                message = "已注入 A2 挑战无效由 G2 出警的数据";
                 break;
-            case "imsi-post-challenge":
-                created.put("imsi", simulatePostChallengeReturn(now));
-                message = "已注入挑战窗后再现新事件数据";
+            case "G1-P1-A3":
+                simulateG1P1A3(now, created);
+                message = "已注入 P1 立即触发 G1 出警的数据";
+                break;
+            case "G2-CHALLENGE":
+                simulateG2Challenge(now, created);
+                message = "已注入挑战窗口与再识别窗口对齐的验证数据";
+                break;
+            case "G3-REPEAT":
+                simulateG3Repeat(now, created);
+                message = "已注入 24 小时内重复触发的巡查派警数据";
+                break;
+            case "FX-MERGE-UP":
+                simulateFusionMergeUp(now, created);
+                message = "已注入多源融合上调优先级的数据";
+                break;
+            case "SM-ONE-A3":
+                simulateStateMachineSingleDispatch(now, created);
+                message = "已注入一次事件仅出警一次的状态机测试数据";
+                break;
+            case "SM-CLOSE":
+                simulateStateMachineClose(now, created);
+                message = "已注入事件在双倍挑战窗后自然收束的数据";
+                break;
+            case "NEW-INCIDENT":
+                simulateNewIncident(now, created);
+                message = "已注入挑战窗口后重新出现被视为新事件的数据";
+                break;
+            case "SYNC-T-REID":
+                simulateSyncWindow(now, created);
+                message = "已注入挑战窗口与再识别窗口同步边界的数据";
+                break;
+            case "CD-F1":
+                simulateCooldownF1(now, created);
+                message = "已注入 F1 30 秒冷却防抖的数据";
+                break;
+            case "CD-F2":
+                simulateCooldownF2(now, created);
+                message = "已注入 F2 5 分钟去重冷却的数据";
+                break;
+            case "CD-F4":
+                simulateCooldownF4(now, created);
+                message = "已注入 F4 越界 1 分钟冷却防抖的数据";
                 break;
             default:
                 throw new IllegalArgumentException("未知的场景标识: " + scenarioId);
         }
         riskAssessmentService.recomputeAll();
-        return new ScenarioResult(true, scenarioId, created, message);
+        return new ScenarioResult(true, normalized, created, message);
+    }
+
+    private String normalizeScenarioId(String scenarioId) {
+        if (scenarioId == null) {
+            return "";
+        }
+        return scenarioId.trim()
+                .toUpperCase()
+                .replace('→', '-')
+                .replace('＝', '-')
+                .replace('=', '-');
     }
 
     @Transactional
@@ -141,94 +189,158 @@ public class RiskScenarioService {
         return (int) value;
     }
 
-    private int simulateLightAlert(Instant now) {
-        Instant eventTime = now.minusSeconds(40);
-        createCameraAlarm("light", "outer-01", eventTime, false);
-        return 1;
+    private void simulateF1Base(Instant now, Map<String, Integer> created) {
+        createCameraAlarm("f1-base", "outer-01", now.minusSeconds(25), false);
+        addCount(created, "camera", 1);
     }
 
-    private int simulateRepeatedIntrusion(Instant now) {
-        createCameraAlarm("repeat", "outer-02", now.minusSeconds(120), false);
-        createCameraAlarm("repeat", "outer-02", now.minusSeconds(80), false);
-        createCameraAlarm("repeat", "outer-02", now.minusSeconds(45), false);
-        return 3;
+    private void simulateF2First(Instant now, Map<String, Integer> created) {
+        String imsi = "46010" + randomDigits(5);
+        createImsiRecord("f2-first", imsi, now.minus(Duration.ofMinutes(2)));
+        addCount(created, "imsi", 1);
     }
 
-    private int simulateChallengeCleared(Instant now) {
-        // IMSI持续但在挑战窗口前结束
-        String imsi = "46000" + randomDigits(6);
-        createImsiRecord("challenge-cleared", imsi, now.minus(Duration.ofMinutes(16)));
-        createImsiRecord("challenge-cleared", imsi, now.minus(Duration.ofMinutes(6)));
-        // 摄像头在挑战前记录一次
-        createCameraAlarm("challenge-cleared", "outer-03", now.minus(Duration.ofMinutes(6)), false);
-        return 1;
+    private void simulateF3Reappear(Instant now, Map<String, Integer> created) {
+        String imsi = "46020" + randomDigits(5);
+        createImsiRecord("f3-reappear", imsi, now.minus(Duration.ofMinutes(26)));
+        createImsiRecord("f3-reappear", imsi, now.minus(Duration.ofMinutes(8)));
+        createImsiRecord("f3-reappear", imsi, now.minus(Duration.ofMinutes(2)));
+        createCameraAlarm("f3-reappear", "outer-02", now.minus(Duration.ofMinutes(2)), false);
+        addCount(created, "imsi", 3);
+        addCount(created, "camera", 1);
     }
 
-    private int simulateChallengeIgnored(Instant now) {
-        // IMSI触发F3并由摄像头证明持续存在
-        String imsi = "46000" + randomDigits(6);
-        createImsiRecord("challenge-ignored", imsi, now.minus(Duration.ofMinutes(16)));
-        createImsiRecord("challenge-ignored", imsi, now.minus(Duration.ofMinutes(6)));
-        createCameraAlarm("challenge-ignored", "outer-04", now.minus(Duration.ofMinutes(6)), false);
-        createCameraAlarm("challenge-ignored", "outer-04", now.minus(Duration.ofMinutes(2)), false);
-        return 2;
+    private void simulateF4Coreline(Instant now, Map<String, Integer> created) {
+        createCameraAlarm("f4-core", "core-01", now.minusSeconds(30), true);
+        addCount(created, "camera", 1);
     }
 
-    private int simulateSevereIntrusion(Instant now) {
-        createCameraAlarm("severe", "core-01", now.minusSeconds(20), true);
-        return 1;
+    private void simulateA1Only(Instant now, Map<String, Integer> created) {
+        createCameraAlarm("a1-only", "outer-03", now.minus(Duration.ofMinutes(4)), false);
+        String imsi = "46030" + randomDigits(5);
+        createImsiRecord("a1-only", imsi, now.minus(Duration.ofMinutes(5)));
+        addCount(created, "camera", 1);
+        addCount(created, "imsi", 1);
     }
 
-    private int simulateFusionEscalation(Instant now) {
-        createCameraAlarm("fusion", "outer-05", now.minus(Duration.ofMinutes(3)), false);
-        createImsiRecord("fusion", "46088" + randomDigits(5), now.minus(Duration.ofMinutes(2)));
-        return 1;
+    private void simulateA2Succeed(Instant now, Map<String, Integer> created) {
+        String imsi = "46040" + randomDigits(5);
+        createImsiRecord("a2-succeed", imsi, now.minus(Duration.ofMinutes(18)));
+        createImsiRecord("a2-succeed", imsi, now.minus(Duration.ofMinutes(6)));
+        createCameraAlarm("a2-succeed", "outer-04", now.minus(Duration.ofMinutes(6)), false);
+        addCount(created, "imsi", 2);
+        addCount(created, "camera", 1);
     }
 
-    private int simulateRadarFusion(Instant now) {
-        RadarTargetEntity entity = new RadarTargetEntity(
-                SCENARIO_PREFIX + "fusion",
-                6100,
-                6200,
-                6201,
-                true,
-                200,
-                256,
-                1,
-                77,
-                12.0,
-                2.5,
-                0.6,
-                45.0,
-                18.0,
-                120,
-                35,
-                22.5,
-                3,
-                2,
-                1,
-                0,
-                0,
-                0,
-                now.minus(Duration.ofMinutes(2))
-        );
-        radarTargetRepository.save(entity);
-        return 1;
+    private void simulateA2FailG2(Instant now, Map<String, Integer> created) {
+        String imsi = "46050" + randomDigits(5);
+        createImsiRecord("a2-fail", imsi, now.minus(Duration.ofMinutes(16)));
+        createImsiRecord("a2-fail", imsi, now.minus(Duration.ofMinutes(4)));
+        createImsiRecord("a2-fail", imsi, now.minus(Duration.ofMinutes(2)));
+        createCameraAlarm("a2-fail", "outer-05", now.minus(Duration.ofMinutes(2)), false);
+        addCount(created, "imsi", 3);
+        addCount(created, "camera", 1);
     }
 
-    private int simulateChallengeReentry(Instant now) {
-        String imsi = "46077" + randomDigits(5);
-        createImsiRecord("imsi-challenge", imsi, now.minus(Duration.ofMinutes(18)));
-        createImsiRecord("imsi-challenge", imsi, now.minus(Duration.ofMinutes(4)));
-        createImsiRecord("imsi-challenge", imsi, now.minus(Duration.ofMinutes(2)));
-        return 3;
+    private void simulateG1P1A3(Instant now, Map<String, Integer> created) {
+        createCameraAlarm("g1-p1", "core-02", now.minusSeconds(40), true);
+        createCameraAlarm("g1-p1", "outer-06", now.minusSeconds(55), false);
+        addCount(created, "camera", 2);
     }
 
-    private int simulatePostChallengeReturn(Instant now) {
-        String imsi = "46055" + randomDigits(5);
-        createImsiRecord("imsi-post", imsi, now.minus(Duration.ofMinutes(40)));
-        createImsiRecord("imsi-post", imsi, now.minusSeconds(50));
-        return 2;
+    private void simulateG2Challenge(Instant now, Map<String, Integer> created) {
+        String imsi = "46060" + randomDigits(5);
+        createImsiRecord("g2-challenge", imsi, now.minus(Duration.ofMinutes(9)));
+        createImsiRecord("g2-challenge", imsi, now.minus(Duration.ofMinutes(4)).minusSeconds(30));
+        createCameraAlarm("g2-challenge", "outer-07", now.minus(Duration.ofMinutes(4)).minusSeconds(15), false);
+
+        String imsiNew = "46061" + randomDigits(5);
+        createImsiRecord("g2-challenge", imsiNew, now.minus(Duration.ofMinutes(9)));
+        createImsiRecord("g2-challenge", imsiNew, now.minusSeconds(30));
+
+        addCount(created, "imsi", 4);
+        addCount(created, "camera", 1);
+    }
+
+    private void simulateG3Repeat(Instant now, Map<String, Integer> created) {
+        createCameraAlarm("g3-repeat", "outer-08", now.minus(Duration.ofHours(20)), false);
+        createCameraAlarm("g3-repeat", "outer-08", now.minus(Duration.ofHours(2)), false);
+        String imsi = "46070" + randomDigits(5);
+        createImsiRecord("g3-repeat", imsi, now.minus(Duration.ofHours(21)));
+        createImsiRecord("g3-repeat", imsi, now.minus(Duration.ofHours(1)));
+        addCount(created, "camera", 2);
+        addCount(created, "imsi", 2);
+    }
+
+    private void simulateFusionMergeUp(Instant now, Map<String, Integer> created) {
+        createCameraAlarm("fx-merge", "outer-09", now.minus(Duration.ofMinutes(3)), false);
+        String imsi = "46080" + randomDigits(5);
+        createImsiRecord("fx-merge", imsi, now.minus(Duration.ofMinutes(2)));
+        createRadarTarget("fx-merge", now.minus(Duration.ofMinutes(2)));
+        addCount(created, "camera", 1);
+        addCount(created, "imsi", 1);
+        addCount(created, "radar", 1);
+    }
+
+    private void simulateStateMachineSingleDispatch(Instant now, Map<String, Integer> created) {
+        createCameraAlarm("sm-one", "core-03", now.minusSeconds(90), true);
+        createCameraAlarm("sm-one", "core-03", now.minusSeconds(45), true);
+        String imsi = "46090" + randomDigits(5);
+        createImsiRecord("sm-one", imsi, now.minus(Duration.ofMinutes(4)));
+        createImsiRecord("sm-one", imsi, now.minus(Duration.ofMinutes(3)));
+        addCount(created, "camera", 2);
+        addCount(created, "imsi", 2);
+    }
+
+    private void simulateStateMachineClose(Instant now, Map<String, Integer> created) {
+        String imsi = "46100" + randomDigits(5);
+        createImsiRecord("sm-close", imsi, now.minus(Duration.ofMinutes(18)));
+        createImsiRecord("sm-close", imsi, now.minus(Duration.ofMinutes(7)));
+        createCameraAlarm("sm-close", "outer-10", now.minus(Duration.ofMinutes(7)), false);
+        addCount(created, "imsi", 2);
+        addCount(created, "camera", 1);
+    }
+
+    private void simulateNewIncident(Instant now, Map<String, Integer> created) {
+        String imsi = "46110" + randomDigits(5);
+        createImsiRecord("new-incident", imsi, now.minus(Duration.ofMinutes(20)));
+        createImsiRecord("new-incident", imsi, now.minus(Duration.ofMinutes(13)));
+        createImsiRecord("new-incident", imsi, now.minus(Duration.ofMinutes(3)));
+        addCount(created, "imsi", 3);
+    }
+
+    private void simulateSyncWindow(Instant now, Map<String, Integer> created) {
+        String imsiWithin = "46120" + randomDigits(5);
+        createImsiRecord("sync-window", imsiWithin, now.minus(Duration.ofMinutes(6)));
+        createImsiRecord("sync-window", imsiWithin, now.minus(Duration.ofMinutes(1)).minusSeconds(10));
+
+        String imsiOutside = "46121" + randomDigits(5);
+        createImsiRecord("sync-window", imsiOutside, now.minus(Duration.ofMinutes(6)));
+        createImsiRecord("sync-window", imsiOutside, now.minusSeconds(40));
+
+        addCount(created, "imsi", 4);
+    }
+
+    private void simulateCooldownF1(Instant now, Map<String, Integer> created) {
+        createCameraAlarm("cd-f1", "outer-11", now.minusSeconds(25), false);
+        createCameraAlarm("cd-f1", "outer-11", now.minusSeconds(15), false);
+        createCameraAlarm("cd-f1", "outer-11", now.minusSeconds(5), false);
+        addCount(created, "camera", 3);
+    }
+
+    private void simulateCooldownF2(Instant now, Map<String, Integer> created) {
+        String imsi = "46130" + randomDigits(5);
+        createImsiRecord("cd-f2", imsi, now.minus(Duration.ofMinutes(4)));
+        createImsiRecord("cd-f2", imsi, now.minus(Duration.ofMinutes(2)));
+        createImsiRecord("cd-f2", imsi, now.minus(Duration.ofMinutes(1)));
+        addCount(created, "imsi", 3);
+    }
+
+    private void simulateCooldownF4(Instant now, Map<String, Integer> created) {
+        createCameraAlarm("cd-f4", "core-04", now.minusSeconds(50), true);
+        createCameraAlarm("cd-f4", "core-04", now.minusSeconds(30), true);
+        createCameraAlarm("cd-f4", "core-04", now.minusSeconds(10), true);
+        addCount(created, "camera", 3);
     }
 
     private void createCameraAlarm(String scenario, String channel, Instant createdAt, boolean core) {
@@ -266,6 +378,40 @@ public class RiskScenarioService {
                 fetchedAt
         );
         imsiRecordRepository.save(entity);
+    }
+
+    private void createRadarTarget(String scenario, Instant capturedAt) {
+        RadarTargetEntity entity = new RadarTargetEntity(
+                SCENARIO_PREFIX + scenario,
+                6100,
+                6200,
+                6201,
+                true,
+                200,
+                256,
+                1,
+                77,
+                11.8,
+                2.4,
+                2.6,
+                0.5,
+                44.0,
+                118,
+                35,
+                21.5,
+                3,
+                2,
+                1,
+                0,
+                0,
+                0,
+                capturedAt
+        );
+        radarTargetRepository.save(entity);
+    }
+
+    private void addCount(Map<String, Integer> created, String key, int amount) {
+        created.merge(key, amount, Integer::sum);
     }
 
     private String randomDigits(int length) {

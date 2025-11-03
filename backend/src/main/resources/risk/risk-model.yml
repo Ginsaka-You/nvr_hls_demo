@@ -3,7 +3,7 @@ parameters:
   analysisWindow: PT30M
   historyWindow: PT336H   # 14 days
   challengeWindow: PT5M
-  imsiReentryWindow: PT30M
+  imsiReentryWindow: PT5M   # 与挑战窗口保持一致
   imsiCooldown: PT5M
   imsiDwellThreshold: PT10M
   cameraCooldown: PT30S
@@ -82,9 +82,9 @@ gRules:
     notes: "挑战窗口与IMSI再识别周期保持一致（5分钟）。"
   - id: G3
     name: "重复侵扰巡查"
-    trigger: "24小时内同站点多次触发P2以上事件"
+    trigger: "24小时内同站点多次触发P2或P3事件"
     action: "A3"
-    notes: "用于应对持续试探或踩点。"
+    notes: "用于应对持续试探或踩点，仅执行一次现场派警。"
 stateMachine:
   states:
     - id: IDLE
