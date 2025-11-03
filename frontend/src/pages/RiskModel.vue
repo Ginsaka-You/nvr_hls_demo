@@ -551,24 +551,24 @@ onUnmounted(() => {
 
 const overviewHighlights = [
   {
-    title: '统一时序',
-    detail: '挑战窗口、IMSI 再识别周期与派警规则统一，保证远程喊话与再入判定连贯。',
+    title: '三层圈防',
+    detail: 'IMSI ≈500m 外圈、雷达 10–150m 中圈、摄像头 30–50m 核心区协同，统一事件视角。',
   },
   {
-    title: '动作解耦',
-    detail: 'A1/A2/A3 分层响应独立于等级，可按实时威胁自主组合。',
+    title: '协同计分',
+    detail: 'F1/F2/F3 逐项加分，命中多源协同 ×1.2，再按昼夜乘子输出综合得分。',
   },
   {
-    title: '规则可配置',
-    detail: 'F/G 规则、阈值与时间窗集中在 risk-model.yml，可热调优。',
+    title: '昼夜分流',
+    detail: '18:00–06:00 执行 A2/A3，白天自动降级为 A1 取证，避免误派警。',
   },
   {
-    title: '状态闭环',
-    detail: '站点状态机覆盖监测、挑战、出警、结束全流程，避免事件被冷却遗忘。',
+    title: '挑战闭环',
+    detail: 'A2 挑战窗口 T=5min 与 IMSI 再识别周期对齐，挑战失败才进入 A3。',
   },
   {
-    title: '多源融合',
-    detail: 'IMSI、视频、雷达在事件级别融合，提升可信度并抑制误报。',
+    title: '统一归并',
+    detail: 'mergeWindow=300s 对多源信号归并，同一事件只触发一次 A2/A3。',
   },
 ]
 
@@ -576,40 +576,40 @@ const priorityCards = [
   {
     id: 'P1',
     title: 'P1 最高优先级',
-    description: '核心区越界或多传感器确认的重大入侵，直接进入 A2 + G1→A3。',
+    description: '综合得分 ≥70 或核心摄像头见人，夜间立即进入挑战流程。',
   },
   {
     id: 'P2',
     title: 'P2 高优先级',
-    description: '持续停留、重返或挑战失败的高危事件，执行 A2，必要时 G2 派警。',
+    description: '综合得分 40–69，多源协同或雷达持续逼近需执行 A2。',
   },
   {
     id: 'P3',
     title: 'P3 中等优先级',
-    description: '外围闯入或未知设备出现，触发 A1 监控并持续评估。',
+    description: '综合得分 15–39，弱线索持续观察并等待链路合并。',
   },
   {
     id: 'P4',
     title: 'P4 低优先级',
-    description: '轻微异常或试探事件，仅留痕监控。',
+    description: '综合得分 <15，仅记录取证，不主动干预。',
   },
 ]
 
 const actionCards = [
   {
     id: 'A1',
-    title: 'A1 监控记录',
-    detail: '静默录像、标记事件、增强跟踪，为后续处置积累证据。',
+    title: 'A1 取证记录',
+    detail: '任一 F 规则得分即刻留痕，持续汇总事件证据链。',
   },
   {
     id: 'A2',
-    title: 'A2 远程交互',
-    detail: '语音警告、闪灯或警号，挑战入侵者并观察 5 分钟窗口。',
+    title: 'A2 远程挑战',
+    detail: '夜间命中 G1 执行灯光+喊话一次，启动 5 分钟挑战窗口。',
   },
   {
     id: 'A3',
-    title: 'A3 人力响应',
-    detail: '通知安保/警方现场处置，G1/G2/G3 任一命中即触发。',
+    title: 'A3 人员出动',
+    detail: '仅夜间且挑战失败触发，通知安保到场，每事件仅一次。',
   },
 ]
 
@@ -626,39 +626,30 @@ const fRuleColumns = [
 const fRuleRows = [
   {
     id: 'F1',
-    trigger: '摄像头检测一般保护区人形闯入',
-    source: '视频监控（虚拟警戒线/入侵）',
-    window: '即时触发，单目标追踪 30s',
-    limit: '同一摄像头 30s 内至多 1 次',
-    cooldown: '30s',
-    impact: '触发 A1，事件优先级 ≥ P3',
+    trigger: '非白名单 IMSI 首次出现或 30min 内再次出现',
+    source: 'IMSI 探针（≈500m 外圈）',
+    window: 'mergeWindow=300s 内去重统计',
+    limit: '同一 IMSI 5min 内仅记 1 次',
+    cooldown: '5min',
+    impact: '弱线索 +10/+8，可与雷达/摄像头协同放大',
   },
   {
     id: 'F2',
-    trigger: 'IMSI 探针捕获非白名单设备首次出现',
-    source: 'IMSI 探针',
-    window: '即时触发，同一设备 5 分钟去重',
-    limit: '同一 IMEI/IMSI 首次出现 1 次',
-    cooldown: '5min',
-    impact: '触发 A1，提升至 P3/P4',
+    trigger: '雷达检测人形靠近核心（持续≥10s、逼近、≤10m 可叠加）',
+    source: '毫米波雷达（10–150m 中圈）',
+    window: 'mergeWindow=300s 内按轨迹聚合',
+    limit: '同一目标轨迹仅记 1 次',
+    cooldown: '10s',
+    impact: '持续/逼近/近域逐项加分，夜间易触达 P2',
   },
   {
     id: 'F3',
-    trigger: 'IMSI 持续停留 ≥10min 或 30min 内重返',
-    source: 'IMSI + 历史会话',
-    window: '30min 分析窗',
-    limit: '同一事件周期 1 次',
-    cooldown: '30min',
-    impact: '提升至 P2，建议执行 A2',
-  },
-  {
-    id: 'F4',
-    trigger: '跨越虚拟警戒线进入核心区',
-    source: '视频警戒线 / 周界传感器',
+    trigger: '核心摄像头识别人形跨越警戒线',
+    source: '核心摄像头（30–50m）',
     window: '即时触发',
     limit: '每次越界 1 次',
     cooldown: '1min',
-    impact: '立即升至 P1，执行 A2 并触发 G1',
+    impact: '单次 +60，夜间一般直接进入 P1/G1',
   },
 ]
 
@@ -672,53 +663,53 @@ const gRuleColumns = [
 const gRuleRows = [
   {
     id: 'G1',
-    trigger: '事件优先级达到 P1',
-    action: 'A3',
-    note: '重大入侵立即派警，忽略低优先级规则。',
+    trigger: '夜间且核心见人，或 P≥P2 并伴随雷达持续/近域/IMSI→雷达链路',
+    action: 'A2',
+    note: '执行一次远程挑战并启动 T=5min，事件内不重复触发。',
   },
   {
     id: 'G2',
-    trigger: 'A2 执行后挑战窗口（5min）仍未解除',
+    trigger: '夜间且 A2 挑战结束仍异常（核心仍见人或雷达持续逼近）',
     action: 'A3',
-    note: '警告无效立即升级为出警。',
+    note: '仅夜间允许人员出动，挑战失败后执行且仅一次。',
   },
   {
     id: 'G3',
-    trigger: '24h 内同站点多次触发 P2/P1',
-    action: 'A3',
-    note: '持续试探或踩点触发巡查。',
+    trigger: '06:00–18:00 任意综合得分',
+    action: 'A1',
+    note: '白天只留痕取证，禁止 A2/A3。',
   },
 ]
 
 const stateMachineSteps = [
-  { state: 'IDLE', description: '空闲：站点无事件。' },
-  { state: 'MONITORING', description: '警戒激活：任一 F 规则触发，执行 A1。' },
-  { state: 'CHALLENGE', description: '远程挑战：A2 执行后等待挑战窗口。' },
-  { state: 'DISPATCHED', description: '出警处理中：G1/G2/G3 任一命中，执行 A3。' },
-  { state: 'RESOLVED', description: '事件结束：威胁解除或出警完成，进入冷却。' },
+  { state: 'IDLE', description: '空闲：未检测到风险信号。' },
+  { state: 'MONITORING', description: '监控记录：任一 F 规则得分，执行 A1 并等待合并窗口。' },
+  { state: 'CHALLENGE', description: '远程挑战：夜间命中 G1，A2 执行并进入 T=5min。' },
+  { state: 'DISPATCHED', description: '出警处理中：夜间命中 G2，通知安保到场。' },
+  { state: 'RESOLVED', description: '事件结束：挑战窗口内消退或出警闭环，进入冷却。' },
 ]
 
 const advantageList = [
-  'P1–P4 多因子优先级替代旧版 E1–E3，准确反映威胁强度。',
-  'A1/A2/A3 响应解耦，远程喊话与现场派警各自可控。',
-  '派警决策由 G1–G3 接管，规则互斥且优先级清晰，避免重复出警。',
-  'F 规则标准化定义时间窗、冷却与数据源，易于工程落地。',
-  '站点状态机与事件融合引擎让 IMSI、视频、雷达形成单一事件视角。',
-  'YAML 参数集中管理，可结合现场反馈快速调优。',
+  '三类设备三重圈层，统一归并窗口确保事件视角一致。',
+  '综合得分叠加协同与昼夜乘子，量化威胁强度。',
+  '仅夜间允许 A2/A3，白天自动降级为 A1 取证。',
+  'A2 挑战窗口与 IMSI 再识别周期对齐，挑战失败才升级 A3。',
+  'G1/G2 闸门清晰约束，避免 IMSI 单独触发出警的歧义。',
+  'YAML 配置集中，阈值与时间窗可按现场反馈快速调整。',
 ]
 
 const migrationSteps = [
-  '导入 risk-model.yml 并校准站点参数（警戒线、挑战窗口、冷却时间等）。',
-  '部署融合引擎与状态机模块，联调 IMSI / 摄像头 / 雷达数据接口。',
-  '分阶段启用：先监测后处置，收集触发数据再逐步开放 A2/A3。',
-  '培训值守人员理解 P1–P4 与 A1/A2/A3 的对应策略。',
-  '上线后持续评估误报/漏报情况，通过配置迭代优化规则。',
+  '导入 risk-model.yml，校准夜间时段、合并窗口与白名单。',
+  '对接 IMSI / 雷达 / 摄像头数据，确认 mergeWindow=300s 内可成功归并。',
+  '模拟夜间场景验证 G1→A2→G2 闭环，确保挑战窗口与再识别同步。',
+  '检查白天只触发 A1，防止误派警；调整雷达近域阈值与分类策略。',
+  '上线后跟踪综合得分分布，迭代贡献系数与白名单。',
 ]
 
 const fusionHighlights = [
-  'IMSI 再识别窗口与挑战窗口统一为 5 分钟，保证远程喊话结果可验证。',
-  '事件详情包含 F 规则触发次数、持续时长、涉事设备等指标，便于复核。',
-  '雷达数据可用于补强无光场景的发现能力，并在详情中展示触发计数。',
+  'IMSI 去重窗=5min、重现窗=30min，与挑战窗口形成统一闭环。',
+  'F1→F2 链路窗 Δt=240s，IMSI 先行触发可叠加雷达得分。',
+  '详情页输出逐项得分与协同乘子，便于复盘与调参。',
 ]
 
 </script>

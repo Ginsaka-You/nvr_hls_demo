@@ -143,15 +143,51 @@ public class RiskModelConfig {
     }
 
     public static class Parameters {
+        private String timezone = "Asia/Shanghai";
+        private int nightStartHour = 18;
+        private int nightEndHour = 6;
+        private Duration mergeWindow = Duration.ofMinutes(5);
         private Duration analysisWindow = Duration.ofMinutes(30);
-        private Duration historyWindow = Duration.ofHours(336); // 14 days
+        private Duration historyWindow = Duration.ofHours(6);
         private Duration challengeWindow = Duration.ofMinutes(5);
         private Duration imsiReentryWindow = Duration.ofMinutes(30);
-        private Duration imsiCooldown = Duration.ofMinutes(5);
-        private Duration imsiDwellThreshold = Duration.ofMinutes(10);
-        private Duration cameraCooldown = Duration.ofSeconds(30);
-        private Duration repeatWindow = Duration.ofHours(24);
-        private int repeatThreshold = 2;
+        private Duration imsiDedupWindow = Duration.ofMinutes(5);
+        private Duration f1ToF2LinkWindow = Duration.ofMinutes(4);
+        private Duration radarPersistThreshold = Duration.ofSeconds(10);
+        private double radarNearCoreMeters = 10.0;
+        private List<String> imsiWhitelist = new ArrayList<>();
+
+        public String getTimezone() {
+            return timezone;
+        }
+
+        public void setTimezone(String timezone) {
+            this.timezone = timezone;
+        }
+
+        public int getNightStartHour() {
+            return nightStartHour;
+        }
+
+        public void setNightStartHour(int nightStartHour) {
+            this.nightStartHour = nightStartHour;
+        }
+
+        public int getNightEndHour() {
+            return nightEndHour;
+        }
+
+        public void setNightEndHour(int nightEndHour) {
+            this.nightEndHour = nightEndHour;
+        }
+
+        public Duration getMergeWindow() {
+            return mergeWindow;
+        }
+
+        public void setMergeWindow(Duration mergeWindow) {
+            this.mergeWindow = mergeWindow;
+        }
 
         public Duration getAnalysisWindow() {
             return analysisWindow;
@@ -185,57 +221,61 @@ public class RiskModelConfig {
             this.imsiReentryWindow = imsiReentryWindow;
         }
 
-        public Duration getImsiCooldown() {
-            return imsiCooldown;
+        public Duration getImsiDedupWindow() {
+            return imsiDedupWindow;
         }
 
-        public void setImsiCooldown(Duration imsiCooldown) {
-            this.imsiCooldown = imsiCooldown;
+        public void setImsiDedupWindow(Duration imsiDedupWindow) {
+            this.imsiDedupWindow = imsiDedupWindow;
         }
 
-        public Duration getImsiDwellThreshold() {
-            return imsiDwellThreshold;
+        public Duration getF1ToF2LinkWindow() {
+            return f1ToF2LinkWindow;
         }
 
-        public void setImsiDwellThreshold(Duration imsiDwellThreshold) {
-            this.imsiDwellThreshold = imsiDwellThreshold;
+        public void setF1ToF2LinkWindow(Duration f1ToF2LinkWindow) {
+            this.f1ToF2LinkWindow = f1ToF2LinkWindow;
         }
 
-        public Duration getCameraCooldown() {
-            return cameraCooldown;
+        public Duration getRadarPersistThreshold() {
+            return radarPersistThreshold;
         }
 
-        public void setCameraCooldown(Duration cameraCooldown) {
-            this.cameraCooldown = cameraCooldown;
+        public void setRadarPersistThreshold(Duration radarPersistThreshold) {
+            this.radarPersistThreshold = radarPersistThreshold;
         }
 
-        public Duration getRepeatWindow() {
-            return repeatWindow;
+        public double getRadarNearCoreMeters() {
+            return radarNearCoreMeters;
         }
 
-        public void setRepeatWindow(Duration repeatWindow) {
-            this.repeatWindow = repeatWindow;
+        public void setRadarNearCoreMeters(double radarNearCoreMeters) {
+            this.radarNearCoreMeters = radarNearCoreMeters;
         }
 
-        public int getRepeatThreshold() {
-            return repeatThreshold;
+        public List<String> getImsiWhitelist() {
+            return imsiWhitelist;
         }
 
-        public void setRepeatThreshold(int repeatThreshold) {
-            this.repeatThreshold = repeatThreshold;
+        public void setImsiWhitelist(List<String> imsiWhitelist) {
+            this.imsiWhitelist = imsiWhitelist != null ? new ArrayList<>(imsiWhitelist) : new ArrayList<>();
         }
 
         public Map<String, Object> toMetadata() {
             Map<String, Object> meta = new HashMap<>();
+            meta.put("timezone", timezone);
+            meta.put("nightStartHour", nightStartHour);
+            meta.put("nightEndHour", nightEndHour);
+            meta.put("mergeWindow", mergeWindow);
             meta.put("analysisWindow", analysisWindow);
             meta.put("historyWindow", historyWindow);
             meta.put("challengeWindow", challengeWindow);
             meta.put("imsiReentryWindow", imsiReentryWindow);
-            meta.put("imsiCooldown", imsiCooldown);
-            meta.put("imsiDwellThreshold", imsiDwellThreshold);
-            meta.put("cameraCooldown", cameraCooldown);
-            meta.put("repeatWindow", repeatWindow);
-            meta.put("repeatThreshold", repeatThreshold);
+            meta.put("imsiDedupWindow", imsiDedupWindow);
+            meta.put("f1ToF2LinkWindow", f1ToF2LinkWindow);
+            meta.put("radarPersistThreshold", radarPersistThreshold);
+            meta.put("radarNearCoreMeters", radarNearCoreMeters);
+            meta.put("imsiWhitelist", imsiWhitelist);
             return meta;
         }
     }

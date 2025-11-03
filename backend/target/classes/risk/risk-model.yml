@@ -1,126 +1,119 @@
-version: "2024Q3-RC"
+version: "2024Q4-RC2"
 parameters:
+  timezone: "Asia/Shanghai"
+  nightStartHour: 18
+  nightEndHour: 6
+  mergeWindow: PT5M
   analysisWindow: PT30M
-  historyWindow: PT336H   # 14 days
+  historyWindow: PT6H
   challengeWindow: PT5M
-  imsiReentryWindow: PT5M   # 与挑战窗口保持一致
-  imsiCooldown: PT5M
-  imsiDwellThreshold: PT10M
-  cameraCooldown: PT30S
-  repeatWindow: PT24H
-  repeatThreshold: 2
+  imsiReentryWindow: PT30M
+  imsiDedupWindow: PT5M
+  f1ToF2LinkWindow: PT4M
+  radarPersistThreshold: PT10S
+  radarNearCoreMeters: 10
+  imsiWhitelist: []
 priorities:
   - id: P1
-    name: "最高优先级"
-    description: "确认的重大入侵威胁事件，例如闯入核心保护区或多传感器同时报警。"
-    guidance: "立即执行A2远程警示与A3人力出警，并保持实时跟踪。"
+    name: "P1 最高优先级"
+    description: "综合得分 ≥70，或核心摄像头直接见人，表明入侵已抵达警戒线内。"
+    guidance: "立即执行 A2 并进入 G1，挑战窗口到期仍异常时准备 A3。"
   - id: P2
-    name: "高优先级"
-    description: "严重怀疑的入侵威胁，存在持续徘徊或多次重返的迹象。"
-    guidance: "执行A2远程交互，观察挑战窗口，如无效则按G2派警。"
+    name: "P2 高优先级"
+    description: "综合得分 40–69，通常为雷达近域逼近或 IMSI+雷达协同。"
+    guidance: "执行 A2 远程挑战，等待挑战窗口 T=5min 的反馈。"
   - id: P3
-    name: "中等优先级"
-    description: "一般可疑事件，需要持续监视并准备升级。"
-    guidance: "执行A1监控记录，人工评估是否需要远程警告。"
+    name: "P3 中等优先级"
+    description: "综合得分 15–39，外圈弱线索或单一感知需继续观察。"
+    guidance: "执行 A1 留痕，关注是否形成链路升级。"
   - id: P4
-    name: "低优先级"
-    description: "轻微异常或系统试探，仅记录并继续观察。"
-    guidance: "保持监控，等待更多证据。"
+    name: "P4 低优先级"
+    description: "综合得分 <15，仅记录或取证，无需处置。"
+    guidance: "保持监控即可。"
 actions:
   - id: A1
-    name: "监控记录"
-    description: "静默关注，自动录像与事件标记，未主动干预。"
+    name: "A1 取证记录"
+    description: "自动留痕并维持事件上下文，不主动干预。"
   - id: A2
-    name: "远程交互"
-    description: "语音警告、闪灯或警号等远程劝离手段。"
+    name: "A2 远程挑战"
+    description: "灯光+喊话一次性执行，并启动 5 分钟挑战窗口。"
   - id: A3
-    name: "人力响应"
-    description: "派遣安保或通知警方现场处置。"
+    name: "A3 人员出动"
+    description: "通知安保到场（非公安），同一事件仅一次。"
 fRules:
   - id: F1
-    name: "一般保护区闯入"
-    trigger: "摄像头AI检测人形进入一般保护区域"
-    dataSource: "视频监控"
-    window: "即时触发，单目标30秒跟踪窗口"
-    frequencyLimit: "同一摄像头每30秒1次"
-    cooldown: "PT30S"
-    actionImpact: "触发A1，优先级至少提升至P3"
-  - id: F2
-    name: "未知IMSI出现"
-    trigger: "IMSI探针捕获非白名单设备首次出现"
-    dataSource: "IMSI探针"
-    window: "即时触发，同一IMSI5分钟去重"
-    frequencyLimit: "同一IMSI首次出现触发1次"
+    name: "外圈 IMSI 异常"
+    trigger: "非白名单 IMSI 首次出现或 30min 内再次出现"
+    dataSource: "IMSI 探针（≈500m 村落覆盖）"
+    window: "mergeWindow=300s 内去重统计"
+    frequencyLimit: "同一 IMSI 5min 内仅记 1 次首次出现"
     cooldown: "PT5M"
-    actionImpact: "触发A1，优先级提升至P3/P4"
+    actionImpact: "提供弱线索，得分受昼夜与协同乘子影响"
+  - id: F2
+    name: "雷达中圈逼近"
+    trigger: "雷达检测人形 10–150m 内靠近核心，持续≥10s 计强信号"
+    dataSource: "毫米波雷达"
+    window: "mergeWindow=300s 内按轨迹聚合"
+    frequencyLimit: "同一目标轨迹仅记 1 次"
+    cooldown: "PT10S"
+    actionImpact: "得分可叠加（持续/逼近/近域），与 F1/F3 协同强化"
   - id: F3
-    name: "IMSI持续或重返"
-    trigger: "同一IMSI持续停留超过10分钟或30分钟内再次出现"
-    dataSource: "IMSI探针+历史记录"
-    window: "30分钟分析窗"
-    frequencyLimit: "同一事件周期触发1次"
-    cooldown: "PT30M"
-    actionImpact: "提升至P2，并建议执行A2"
-  - id: F4
-    name: "核心区域越界"
-    trigger: "人员跨越虚拟警戒线或周界传感器进入核心区"
-    dataSource: "视频警戒线/周界传感器"
+    name: "核心摄像头见人"
+    trigger: "核心区摄像头识别人形跨越警戒线"
+    dataSource: "核心摄像头（30–50m）"
     window: "即时触发"
-    frequencyLimit: "每次越界触发1次"
+    frequencyLimit: "每次越界 1 次"
     cooldown: "PT1M"
-    actionImpact: "立即升至P1，执行A2并触发G1"
+    actionImpact: "直接贡献 +60，夜间通常触及 P1 并触发 A2"
 gRules:
   - id: G1
-    name: "P1直接派警"
-    trigger: "事件优先级达到P1"
-    action: "A3"
-    notes: "重大入侵立即通知值守与警方。"
+    name: "夜间挑战闸门"
+    trigger: "夜间且满足 core_human 或 P≥P2 且（mid_persist/near_core/link_f1_f2）"
+    action: "A2"
+    notes: "A2 每事件仅一次，挑战窗口 T=5min"
   - id: G2
-    name: "警告无效升级"
-    trigger: "执行A2后经过挑战窗口仍未解除威胁"
+    name: "挑战失败升级"
+    trigger: "夜间且 A2 后 T 到仍异常（核心见人或雷达持续逼近）"
     action: "A3"
-    notes: "挑战窗口与IMSI再识别周期保持一致（5分钟）。"
+    notes: "仅夜间允许 A3，T 与 IMSI 再识别周期对齐"
   - id: G3
-    name: "重复侵扰巡查"
-    trigger: "24小时内同站点多次触发P2或P3事件"
-    action: "A3"
-    notes: "用于应对持续试探或踩点，仅执行一次现场派警。"
+    name: "白天取证闸门"
+    trigger: "06:00–18:00 任意得分"
+    action: "A1"
+    notes: "白天仅取证，不执行 A2/A3"
 stateMachine:
   states:
     - id: IDLE
       name: "空闲"
-      description: "站点无事件。"
+      description: "站点未检测到风险。"
     - id: MONITORING
-      name: "警戒激活"
-      description: "存在可疑事件，执行A1监控。"
+      name: "监控记录"
+      description: "得分 ≥15 或任一 F 规则成立，执行 A1。"
     - id: CHALLENGE
       name: "远程挑战"
-      description: "已执行A2，等待挑战窗口结果。"
+      description: "夜间命中 G1，A2 已执行并等待 T。"
     - id: DISPATCHED
       name: "出警处理中"
-      description: "已触发A3，人力介入。"
+      description: "夜间命中 G2，A3 已派出。"
     - id: RESOLVED
       name: "事件结束"
-      description: "威胁解除，进入冷却。"
+      description: "挑战窗口结束且无异常或出警闭环。"
   transitions:
     - from: IDLE
       to: MONITORING
-      trigger: "任一F规则触发"
+      trigger: "任一 F 规则得分 >0"
     - from: MONITORING
       to: CHALLENGE
-      trigger: "执行A2远程交互"
+      trigger: "夜间命中 G1 执行 A2"
     - from: CHALLENGE
       to: DISPATCHED
-      trigger: "G2或G1触发派警"
-    - from: MONITORING
-      to: DISPATCHED
-      trigger: "G1触发"
+      trigger: "夜间命中 G2 执行 A3"
     - from: MONITORING
       to: RESOLVED
-      trigger: "事件自然消退"
+      trigger: "事件合并窗结束且无新增线索"
     - from: CHALLENGE
       to: RESOLVED
-      trigger: "挑战窗口内目标消失"
+      trigger: "T 内异常消失"
     - from: DISPATCHED
       to: RESOLVED
       trigger: "出警完成"

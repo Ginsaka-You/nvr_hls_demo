@@ -11,6 +11,8 @@ import com.example.nvr.persistence.RiskAssessmentRepository;
 import com.example.nvr.risk.config.RiskModelConfig;
 import com.example.nvr.risk.config.RiskModelConfig.ActionDefinition;
 import com.example.nvr.risk.config.RiskModelConfig.GRuleDefinition;
+import com.example.nvr.risk.config.RiskModelConfig.Parameters;
+import com.example.nvr.risk.config.RiskModelConfig.PriorityDefinition;
 import com.example.nvr.risk.config.RiskModelConfigLoader;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -22,26 +24,32 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 /**
- * 风控模型服务（P1–P4 + A1/A2/A3 重构版）。
+ * 风控模型服务（综合得分 + G 闸门 + A 动作）。
  */
 @Service
 public class RiskAssessmentService {
 
     private static final Logger log = LoggerFactory.getLogger(RiskAssessmentService.class);
+    private static final double MULTI_SOURCE_MULTIPLIER = 1.2;
+    private static final double NIGHT_MULTIPLIER = 1.5;
+    private static final double APPROACH_THRESHOLD_METERS = 1.5;
 
     private final RiskAssessmentRepository riskAssessmentRepository;
     private final ImsiRecordRepository imsiRecordRepository;
@@ -105,10 +113,15 @@ public class RiskAssessmentService {
 
     private void evaluateSiteWindow(Instant now) {
         RiskModelConfig config = configLoader.getConfig();
-        RiskModelConfig.Parameters parameters = config.getParameters();
+        Parameters params = config.getParameters();
+        ZoneId zone = resolveZone(params);
 
-        Instant windowStart = now.minus(parameters.getAnalysisWindow());
-        Instant historyStart = now.minus(parameters.getHistoryWindow());
+        Instant windowStart = now.minus(params.getMergeWindow());
+        Duration historyDuration = params.getHistoryWindow().compareTo(params.getImsiReentryWindow()) >= 0
+                ? params.getHistoryWindow()
+                : params.getImsiReentryWindow();
+        Instant historyStart = now.minus(historyDuration);
+        Instant challengeStart = now.minus(params.getChallengeWindow());
 
         List<ImsiRecordEntity> imsiHistory = imsiRecordRepository
                 .findByFetchedAtBetweenOrderByFetchedAtAsc(historyStart, now);
@@ -130,31 +143,449 @@ public class RiskAssessmentService {
                 .filter(it -> !it.getCapturedAt().isBefore(windowStart) && !it.getCapturedAt().isAfter(now))
                 .collect(Collectors.toList());
 
+        EvaluationContext context = new EvaluationContext();
+        FRuleEvaluation f1 = evaluateF1(imsiWindow, imsiHistory, windowStart, params, context);
+        FRuleEvaluation f2 = evaluateF2(radarWindow, radarHistory, challengeStart, params, context);
+        FRuleEvaluation f3 = evaluateF3(cameraWindow, cameraHistory, challengeStart, context);
+        context.computeLinkF1F2(params);
+
         Map<String, FRuleEvaluation> fEvaluations = new LinkedHashMap<>();
-        fEvaluations.put("F1", evaluateF1(cameraWindow, parameters));
-        fEvaluations.put("F2", evaluateF2(imsiWindow, imsiHistory, windowStart, parameters));
-        fEvaluations.put("F3", evaluateF3(imsiWindow, imsiHistory, windowStart, parameters));
-        fEvaluations.put("F4", evaluateF4(cameraWindow, parameters));
+        fEvaluations.put("F1", f1);
+        fEvaluations.put("F2", f2);
+        fEvaluations.put("F3", f3);
 
-        RiskModelConfig.PriorityDefinition priority = determinePriority(fEvaluations, config);
-        List<ActionStatus> actions = determineActions(fEvaluations, priority, config, now);
-        List<GRuleStatus> gStatuses = evaluateGRules(fEvaluations, priority, actions, imsiWindow, cameraWindow, now, config);
-        updateActionsWithDispatch(actions, gStatuses);
+        double baseScore = fEvaluations.values().stream().mapToDouble(FRuleEvaluation::getScore).sum();
+        boolean multiSource = fEvaluations.values().stream().filter(FRuleEvaluation::isTriggered).count() >= 2;
+        double afterMulti = multiSource ? baseScore * MULTI_SOURCE_MULTIPLIER : baseScore;
+        boolean night = isNight(now, zone, params);
+        double timeMultiplier = night ? NIGHT_MULTIPLIER : 1.0;
+        double finalScore = afterMulti * timeMultiplier;
+        ScoreSummary scoreSummary = new ScoreSummary(baseScore, multiSource, afterMulti, timeMultiplier, finalScore);
 
-        String state = deriveState(fEvaluations, actions, gStatuses);
+        PriorityDefinition priority = determinePriority(finalScore, config);
+        List<GRuleStatus> gStatuses = evaluateGRules(priority, context, scoreSummary, night, config);
+        List<ActionStatus> actions = determineActions(scoreSummary, gStatuses, night, now);
 
-        Map<String, Object> details = buildDetails(config, fEvaluations, actions, gStatuses, state,
+        String summary = buildSummary(priority, scoreSummary, context, gStatuses, actions);
+        Map<String, Object> details = buildDetails(config, scoreSummary, context, fEvaluations, actions, gStatuses,
                 windowStart, now, imsiWindow, cameraWindow, radarWindow);
-        String summary = buildSummary(priority, fEvaluations, actions, gStatuses);
+        persistAssessment(now, windowStart, priority, scoreSummary, details, summary);
+    }
 
-        persistAssessment(now, windowStart, priority, details, summary);
+    private ZoneId resolveZone(Parameters params) {
+        if (params == null || params.getTimezone() == null) {
+            return ZoneId.systemDefault();
+        }
+        try {
+            return ZoneId.of(params.getTimezone());
+        } catch (Exception ex) {
+            log.warn("Invalid timezone '{}' in risk model config, falling back to system default", params.getTimezone());
+            return ZoneId.systemDefault();
+        }
+    }
+
+    private boolean isNight(Instant now, ZoneId zone, Parameters params) {
+        ZonedDateTime zoned = ZonedDateTime.ofInstant(now, zone);
+        int hour = zoned.getHour();
+        int nightStart = params.getNightStartHour();
+        int nightEnd = params.getNightEndHour();
+        if (nightStart == nightEnd) {
+            return false;
+        }
+        if (nightStart > nightEnd) {
+            return hour >= nightStart || hour < nightEnd;
+        }
+        return hour >= nightStart && hour < nightEnd;
+    }
+
+    private PriorityDefinition determinePriority(double score, RiskModelConfig config) {
+        if (score >= 70.0) {
+            return config.findPriority("P1");
+        }
+        if (score >= 40.0) {
+            return config.findPriority("P2");
+        }
+        if (score >= 15.0) {
+            return config.findPriority("P3");
+        }
+        return config.findPriority("P4");
+    }
+
+    private FRuleEvaluation evaluateF1(List<ImsiRecordEntity> window,
+                                        List<ImsiRecordEntity> history,
+                                        Instant windowStart,
+                                        Parameters params,
+                                        EvaluationContext context) {
+        Duration dedup = params.getImsiDedupWindow();
+        Duration reentry = params.getImsiReentryWindow();
+        Set<String> whitelist = params.getImsiWhitelist().stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(str -> !str.isEmpty())
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        Map<String, Instant> lastBeforeWindow = new HashMap<>();
+        for (ImsiRecordEntity record : history) {
+            Instant ts = record.getFetchedAt();
+            String imsi = normalizeImsi(record.getImsi());
+            if (ts == null || imsi == null || whitelist.contains(imsi)) {
+                continue;
+            }
+            if (ts.isBefore(windowStart)) {
+                lastBeforeWindow.merge(imsi, ts, (existing, candidate) -> existing.isAfter(candidate) ? existing : candidate);
+            }
+        }
+
+        Map<String, Instant> firstInWindow = new HashMap<>();
+        for (ImsiRecordEntity record : window) {
+            Instant ts = record.getFetchedAt();
+            String imsi = normalizeImsi(record.getImsi());
+            if (ts == null || imsi == null || whitelist.contains(imsi)) {
+                continue;
+            }
+            firstInWindow.merge(imsi, ts, (existing, candidate) -> existing.isBefore(candidate) ? existing : candidate);
+        }
+
+        if (firstInWindow.isEmpty()) {
+            return FRuleEvaluation.notTriggered("F1");
+        }
+
+        context.registerImsi(firstInWindow);
+
+        int newCount = 0;
+        int repeatCount = 0;
+        List<String> newDevices = new ArrayList<>();
+        List<String> repeatDevices = new ArrayList<>();
+        for (Map.Entry<String, Instant> entry : firstInWindow.entrySet()) {
+            String imsi = entry.getKey();
+            Instant first = entry.getValue();
+            Instant previous = lastBeforeWindow.get(imsi);
+            boolean isNew = previous == null || Duration.between(previous, first).compareTo(dedup) > 0;
+            boolean isRepeat = previous != null && Duration.between(previous, first).compareTo(reentry) <= 0;
+            if (isNew) {
+                newCount++;
+                newDevices.add(imsi);
+            }
+            if (isRepeat) {
+                repeatCount++;
+                repeatDevices.add(imsi);
+            }
+        }
+
+        double score = Math.min(newCount, 2) * 10.0 + repeatCount * 8.0;
+        List<ScoreContribution> contributions = new ArrayList<>();
+        if (newCount > 0) {
+            contributions.add(new ScoreContribution("outer_unknown_cnt",
+                    Math.min(newCount, 2) * 10.0,
+                    String.format(Locale.CHINA, "非白名单 IMSI 首现 %d 个", newCount)));
+        }
+        if (repeatCount > 0) {
+            contributions.add(new ScoreContribution("outer_repeat",
+                    repeatCount * 8.0,
+                    String.format(Locale.CHINA, "30 分钟内重复出现 %d 个", repeatCount)));
+        }
+
+        context.markImsiRepeats(repeatDevices);
+
+        Instant first = firstInWindow.values().stream().min(Comparator.naturalOrder()).orElse(windowStart);
+        Instant last = firstInWindow.values().stream().max(Comparator.naturalOrder()).orElse(first);
+        Map<String, Object> metrics = new LinkedHashMap<>();
+        metrics.put("newDevices", newDevices);
+        metrics.put("repeatDevices", repeatDevices);
+        metrics.put("count", firstInWindow.size());
+
+        String reason = String.format(Locale.CHINA, "未知 IMSI %d 个，重复 %d 个", newCount, repeatCount);
+        return new FRuleEvaluation("F1", score > 0, newCount + repeatCount, first, last, reason, metrics, contributions, null, score);
+    }
+
+    private FRuleEvaluation evaluateF2(List<RadarTargetEntity> window,
+                                        List<RadarTargetEntity> history,
+                                        Instant challengeStart,
+                                        Parameters params,
+                                        EvaluationContext context) {
+        if (window.isEmpty()) {
+            registerRadarHistory(history, challengeStart, context);
+            return FRuleEvaluation.notTriggered("F2");
+        }
+
+        Map<String, List<RadarTargetEntity>> grouped = window.stream()
+                .filter(target -> target.getCapturedAt() != null)
+                .collect(Collectors.groupingBy(this::radarTrackKey));
+        if (grouped.isEmpty()) {
+            registerRadarHistory(history, challengeStart, context);
+            return FRuleEvaluation.notTriggered("F2");
+        }
+
+        int shortCount = 0;
+        int persistCount = 0;
+        int approachCount = 0;
+        int nearCoreCount = 0;
+        Instant first = null;
+        Instant last = null;
+
+        for (List<RadarTargetEntity> track : grouped.values()) {
+            List<RadarTargetEntity> sorted = track.stream()
+                    .filter(t -> t.getCapturedAt() != null)
+                    .sorted(Comparator.comparing(RadarTargetEntity::getCapturedAt))
+                    .collect(Collectors.toList());
+            if (sorted.isEmpty()) {
+                continue;
+            }
+            Instant trackFirst = sorted.get(0).getCapturedAt();
+            Instant trackLast = sorted.get(sorted.size() - 1).getCapturedAt();
+            first = first == null || trackFirst.isBefore(first) ? trackFirst : first;
+            last = last == null || trackLast.isAfter(last) ? trackLast : last;
+            context.registerRadarTrack(trackFirst, trackLast);
+
+            Duration duration = Duration.between(trackFirst, trackLast);
+            boolean persist = duration.compareTo(params.getRadarPersistThreshold()) >= 0;
+            boolean nearCore = sorted.stream()
+                    .mapToDouble(this::distanceMeters)
+                    .filter(d -> !Double.isNaN(d) && !Double.isInfinite(d))
+                    .anyMatch(d -> d <= params.getRadarNearCoreMeters());
+            double firstDistance = distanceMeters(sorted.get(0));
+            double lastDistance = distanceMeters(sorted.get(sorted.size() - 1));
+            boolean approach = !Double.isNaN(firstDistance) && !Double.isNaN(lastDistance)
+                    && firstDistance - lastDistance >= APPROACH_THRESHOLD_METERS;
+
+            if (persist) {
+                persistCount++;
+                context.setRadarPersist(true);
+            } else {
+                shortCount++;
+            }
+            if (nearCore) {
+                nearCoreCount++;
+                context.setRadarNearCore(true);
+            }
+            if (approach) {
+                approachCount++;
+                context.setRadarApproach(true);
+            }
+        }
+
+        registerRadarHistory(history, challengeStart, context);
+
+        double score = shortCount * 10.0 + persistCount * 20.0 + approachCount * 8.0 + nearCoreCount * 20.0;
+        if (score <= 0) {
+            return FRuleEvaluation.notTriggered("F2");
+        }
+
+        List<ScoreContribution> contributions = new ArrayList<>();
+        if (shortCount > 0) {
+            contributions.add(new ScoreContribution("mid_short",
+                    shortCount * 10.0,
+                    String.format(Locale.CHINA, "短暂人形轨迹 %d 条", shortCount)));
+        }
+        if (persistCount > 0) {
+            contributions.add(new ScoreContribution("mid_persist",
+                    persistCount * 20.0,
+                    String.format(Locale.CHINA, "持续 ≥10s 轨迹 %d 条", persistCount)));
+        }
+        if (approachCount > 0) {
+            contributions.add(new ScoreContribution("approach_core",
+                    approachCount * 8.0,
+                    String.format(Locale.CHINA, "逼近核心轨迹 %d 条", approachCount)));
+        }
+        if (nearCoreCount > 0) {
+            contributions.add(new ScoreContribution("near_core_10m",
+                    nearCoreCount * 20.0,
+                    String.format(Locale.CHINA, "进入 ≤10m 轨迹 %d 条", nearCoreCount)));
+        }
+
+        Map<String, Object> metrics = new LinkedHashMap<>();
+        metrics.put("tracks", grouped.size());
+        metrics.put("persist", persistCount);
+        metrics.put("short", shortCount);
+        metrics.put("approach", approachCount);
+        metrics.put("nearCore", nearCoreCount);
+
+        String reason = String.format(Locale.CHINA,
+                "雷达轨迹：持续 %d，短暂 %d，逼近 %d，近域 %d",
+                persistCount, shortCount, approachCount, nearCoreCount);
+        return new FRuleEvaluation("F2", true, grouped.size(), first, last, reason, metrics, contributions, null, score);
+    }
+
+    private void registerRadarHistory(List<RadarTargetEntity> history,
+                                      Instant challengeStart,
+                                      EvaluationContext context) {
+        for (RadarTargetEntity target : history) {
+            Instant ts = target.getCapturedAt();
+            if (ts == null) {
+                continue;
+            }
+            double distance = distanceMeters(target);
+            if (Double.isNaN(distance) || Double.isInfinite(distance) || distance > 200.0) {
+                continue;
+            }
+            if (ts.isBefore(challengeStart)) {
+                context.setRadarBeforeChallenge(true);
+            } else {
+                context.setRadarAfterChallenge(true);
+            }
+        }
+    }
+
+    private FRuleEvaluation evaluateF3(List<CameraAlarmEntity> window,
+                                        List<CameraAlarmEntity> history,
+                                        Instant challengeStart,
+                                        EvaluationContext context) {
+        List<CameraAlarmEntity> coreWindow = window.stream()
+                .filter(this::isCoreCameraEvent)
+                .collect(Collectors.toList());
+        List<CameraAlarmEntity> coreHistory = history.stream()
+                .filter(this::isCoreCameraEvent)
+                .collect(Collectors.toList());
+
+        if (coreHistory.stream().anyMatch(event -> {
+            Instant ts = event.getCreatedAt();
+            return ts != null && ts.isBefore(challengeStart);
+        })) {
+            context.setCoreBeforeChallenge(true);
+        }
+        if (coreHistory.stream().anyMatch(event -> {
+            Instant ts = event.getCreatedAt();
+            return ts != null && !ts.isBefore(challengeStart);
+        })) {
+            context.setCoreAfterChallenge(true);
+        }
+
+        if (coreWindow.isEmpty()) {
+            return FRuleEvaluation.notTriggered("F3");
+        }
+
+        context.setCoreHuman(true);
+        int occurrences = coreWindow.size();
+        Instant first = coreWindow.stream()
+                .map(CameraAlarmEntity::getCreatedAt)
+                .filter(Objects::nonNull)
+                .min(Comparator.naturalOrder())
+                .orElse(challengeStart);
+        Instant last = coreWindow.stream()
+                .map(CameraAlarmEntity::getCreatedAt)
+                .filter(Objects::nonNull)
+                .max(Comparator.naturalOrder())
+                .orElse(first);
+
+        double score = 60.0 * occurrences;
+        List<ScoreContribution> contributions = List.of(new ScoreContribution("core_human", score,
+                occurrences > 1
+                        ? String.format(Locale.CHINA, "核心摄像头见人 %d 次", occurrences)
+                        : "核心摄像头见人"));
+
+        Map<String, Object> metrics = new LinkedHashMap<>();
+        metrics.put("events", occurrences);
+        metrics.put("channels", coreWindow.stream()
+                .map(CameraAlarmEntity::getCamChannel)
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList()));
+
+        return new FRuleEvaluation("F3", true, occurrences, first, last,
+                "核心摄像头识别人形", metrics, contributions, null, score);
+    }
+
+    private List<GRuleStatus> evaluateGRules(PriorityDefinition priority,
+                                             EvaluationContext context,
+                                             ScoreSummary scores,
+                                             boolean night,
+                                             RiskModelConfig config) {
+        List<GRuleStatus> statuses = new ArrayList<>();
+        boolean highPriority = priority != null
+                && ("P1".equalsIgnoreCase(priority.getId()) || "P2".equalsIgnoreCase(priority.getId()));
+        boolean g1 = night && (context.hasCoreHuman
+                || (highPriority && (context.hasRadarPersist || context.hasRadarNearCore || context.linkF1F2)));
+        String g1Reason;
+        if (!night) {
+            g1Reason = "仅夜间触发";
+        } else if (context.hasCoreHuman) {
+            g1Reason = "核心摄像头见人，进入挑战";
+        } else if (highPriority && (context.hasRadarPersist || context.hasRadarNearCore || context.linkF1F2)) {
+            g1Reason = "P≥P2 且雷达/IMSI 形成链路";
+        } else {
+            g1Reason = "未满足触发条件";
+        }
+        statuses.add(new GRuleStatus("G1", g1, g1Reason));
+
+        boolean challengePersists = (context.coreBeforeChallenge && context.coreAfterChallenge)
+                || ((context.radarBeforeChallenge || context.hasRadarPersist) && context.radarAfterChallenge);
+        boolean g2 = night && g1 && challengePersists;
+        String g2Reason;
+        if (!night) {
+            g2Reason = "仅夜间允许 A3";
+        } else if (!g1) {
+            g2Reason = "尚未执行 A2";
+        } else if (challengePersists) {
+            g2Reason = "挑战窗口到期仍有异常";
+        } else {
+            g2Reason = "挑战窗口内已消失";
+        }
+        statuses.add(new GRuleStatus("G2", g2, g2Reason));
+
+        boolean g3 = !night && scores.getBaseScore() > 0.0;
+        statuses.add(new GRuleStatus("G3", g3, g3 ? "白天仅取证" : "夜间或未触发"));
+        return statuses;
+    }
+
+    private List<ActionStatus> determineActions(ScoreSummary scores,
+                                                List<GRuleStatus> gStatuses,
+                                                boolean night,
+                                                Instant now) {
+        List<ActionStatus> actions = new ArrayList<>();
+        boolean anyScore = scores.getBaseScore() > 0.0;
+        actions.add(ActionStatus.create("A1", anyScore, anyScore,
+                anyScore ? "F 规则得分，执行取证" : "未触发 F 规则", now));
+
+        boolean g1 = gStatuses.stream().anyMatch(rule -> "G1".equals(rule.getId()) && rule.isTriggered());
+        actions.add(ActionStatus.create("A2", g1, g1,
+                g1 ? "夜间挑战已执行" : (night ? "未命中 G1" : "白天不执行 A2"),
+                g1 ? now : null));
+
+        boolean g2 = gStatuses.stream().anyMatch(rule -> "G2".equals(rule.getId()) && rule.isTriggered());
+        actions.add(ActionStatus.create("A3", g2, g2,
+                g2 ? "挑战失败，已通知安保" : (night ? "未触发 G2" : "白天禁用 A3"),
+                g2 ? now : null));
+        return actions;
+    }
+
+    private String buildSummary(PriorityDefinition priority,
+                                 ScoreSummary scores,
+                                 EvaluationContext context,
+                                 List<GRuleStatus> gStatuses,
+                                 List<ActionStatus> actions) {
+        String priorityLabel = Optional.ofNullable(priority)
+                .map(def -> def.getId() + " " + Optional.ofNullable(def.getName()).orElse(""))
+                .orElse("P4 低优先级");
+        List<String> segments = new ArrayList<>();
+        segments.add(String.format(Locale.CHINA, "综合得分 %.1f → %s", scores.getTotalScore(), priorityLabel.trim()));
+        if (!context.newImsi.isEmpty()) {
+            segments.add(String.format(Locale.CHINA, "未知 IMSI %d", context.newImsi.size()));
+        }
+        if (context.hasRadarNearCore) {
+            segments.add("雷达近域接近");
+        }
+        if (context.hasRadarApproach) {
+            segments.add("雷达向核心逼近");
+        }
+        if (context.hasCoreHuman) {
+            segments.add("核心摄像头见人");
+        }
+        if (gStatuses.stream().anyMatch(rule -> "G2".equals(rule.getId()) && rule.isTriggered())) {
+            segments.add("已派安保出动");
+        } else if (gStatuses.stream().anyMatch(rule -> "G1".equals(rule.getId()) && rule.isTriggered())) {
+            segments.add("已执行远程挑战");
+        } else if (actions.stream().anyMatch(action -> "A1".equals(action.getId()) && action.isTriggered())) {
+            segments.add("已记录取证");
+        }
+        return String.join(" ｜ ", segments);
     }
 
     private Map<String, Object> buildDetails(RiskModelConfig config,
+                                             ScoreSummary scores,
+                                             EvaluationContext context,
                                              Map<String, FRuleEvaluation> fEvaluations,
                                              List<ActionStatus> actions,
                                              List<GRuleStatus> gStatuses,
-                                             String state,
                                              Instant windowStart,
                                              Instant windowEnd,
                                              List<ImsiRecordEntity> imsiWindow,
@@ -167,6 +598,8 @@ public class RiskAssessmentService {
                 "start", windowStart,
                 "end", windowEnd
         ));
+        details.put("scores", scores.toMap());
+        details.put("signals", context.toMap());
         details.put("fRules", fEvaluations.values().stream()
                 .map(eval -> eval.toMap(config.findPriority(eval.getEscalatesTo())))
                 .collect(Collectors.toList()));
@@ -178,12 +611,8 @@ public class RiskAssessmentService {
                         .filter(def -> def.getId().equalsIgnoreCase(status.getId()))
                         .findFirst().orElse(null)))
                 .collect(Collectors.toList()));
-        details.put("stateMachine", Map.of(
-                "current", state,
-                "definition", config.getStateMachine()
-        ));
         details.put("observations", Map.of(
-                "imsiDevices", countDistinctImsi(imsiWindow),
+                "imsiDevices", imsiWindow.size(),
                 "cameraEvents", cameraWindow.size(),
                 "radarTracks", radarWindow.size()
         ));
@@ -192,7 +621,8 @@ public class RiskAssessmentService {
 
     private void persistAssessment(Instant now,
                                    Instant windowStart,
-                                   RiskModelConfig.PriorityDefinition priority,
+                                   PriorityDefinition priority,
+                                   ScoreSummary scores,
                                    Map<String, Object> details,
                                    String summary) {
         String classification = priority != null ? priority.getId() : "P4";
@@ -200,7 +630,7 @@ public class RiskAssessmentService {
                 .findTopByOrderByUpdatedAtDesc()
                 .orElseGet(RiskAssessmentEntity::new);
         entity.setClassification(classification);
-        entity.setScore(null);
+        entity.setScore((int) Math.round(scores.getTotalScore()));
         entity.setSummary(summary);
         entity.setWindowStart(windowStart);
         entity.setWindowEnd(now);
@@ -218,379 +648,194 @@ public class RiskAssessmentService {
         }
     }
 
-    private RiskModelConfig.PriorityDefinition determinePriority(Map<String, FRuleEvaluation> fEvaluations,
-                                                                  RiskModelConfig config) {
-        if (fEvaluations.get("F4").isTriggered()) {
-            return config.findPriority("P1");
+    private String normalizeImsi(String value) {
+        if (value == null) {
+            return null;
         }
-        if (fEvaluations.get("F3").isTriggered()) {
-            return config.findPriority("P2");
-        }
-        if (fEvaluations.get("F1").isTriggered() || fEvaluations.get("F2").isTriggered()) {
-            return config.findPriority("P3");
-        }
-        return config.findPriority("P4");
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 
-    private List<ActionStatus> determineActions(Map<String, FRuleEvaluation> fEvaluations,
-                                                RiskModelConfig.PriorityDefinition priority,
-                                                RiskModelConfig config,
-                                                Instant now) {
-        List<ActionStatus> actions = new ArrayList<>();
-        boolean anyF = fEvaluations.values().stream().anyMatch(FRuleEvaluation::isTriggered);
-        actions.add(ActionStatus.recommended("A1", anyF,
-                anyF ? "触发F规则，进入监控记录" : "未触发F规则", now));
-
-        boolean needA2 = fEvaluations.get("F4").isTriggered() || fEvaluations.get("F3").isTriggered();
-        actions.add(ActionStatus.recommended("A2", needA2,
-                needA2 ? "P2及以上事件需远程挑战" : "无需远程挑战", needA2 ? now : null));
-
-        boolean suggestA3 = priority != null && ("P1".equalsIgnoreCase(priority.getId())
-                || fEvaluations.get("F3").getDuration().compareTo(config.getParameters().getChallengeWindow()) > 0);
-        actions.add(ActionStatus.recommended("A3", suggestA3,
-                suggestA3 ? "满足派警条件（待G规则确认）" : "未满足派警条件", null));
-        return actions;
+    private String radarTrackKey(RadarTargetEntity target) {
+        String host = Optional.ofNullable(target.getRadarHost()).orElse("radar");
+        String id = target.getTargetId() != null ? String.valueOf(target.getTargetId()) : String.valueOf(System.identityHashCode(target));
+        return host + "#" + id;
     }
 
-    private List<GRuleStatus> evaluateGRules(Map<String, FRuleEvaluation> fEvaluations,
-                                             RiskModelConfig.PriorityDefinition priority,
-                                             List<ActionStatus> actions,
-                                             List<ImsiRecordEntity> imsiWindow,
-                                             List<CameraAlarmEntity> cameraWindow,
-                                             Instant now,
-                                             RiskModelConfig config) {
-        List<GRuleStatus> statuses = new ArrayList<>();
-        Duration challenge = config.getParameters().getChallengeWindow();
-
-        boolean g1 = priority != null && "P1".equalsIgnoreCase(priority.getId());
-        statuses.add(new GRuleStatus("G1", g1,
-                g1 ? "P1事件立即派警" : "未达到P1"));
-
-        boolean a2Executed = actions.stream().anyMatch(action -> "A2".equals(action.getId()) && action.isTriggered());
-        boolean persists = persistsAcrossChallenge(imsiWindow, cameraWindow, now, challenge);
-        boolean g2 = a2Executed && persists;
-        statuses.add(new GRuleStatus("G2", g2,
-                g2 ? "挑战窗口后目标未离开" : "未满足挑战失败条件"));
-
-        Instant repeatStart = now.minus(config.getParameters().getRepeatWindow());
-        long priorHigh = riskAssessmentRepository.findTop200ByOrderByUpdatedAtDesc().stream()
-                .filter(entity -> entity.getUpdatedAt() != null)
-                .filter(entity -> !entity.getUpdatedAt().isBefore(repeatStart) && entity.getUpdatedAt().isBefore(now))
-                .filter(entity -> {
-                    String cls = Optional.ofNullable(entity.getClassification()).orElse("");
-                    return cls.equalsIgnoreCase("P1") || cls.equalsIgnoreCase("P2");
-                })
-                .count();
-        boolean g3 = priorHigh + (priority != null && ("P1".equalsIgnoreCase(priority.getId()) || "P2".equalsIgnoreCase(priority.getId())) ? 1 : 0)
-                >= config.getParameters().getRepeatThreshold();
-        statuses.add(new GRuleStatus("G3", g3,
-                g3 ? "重复侵扰达到阈值" : "未达到重复侵扰阈值"));
-        return statuses;
+    private double distanceMeters(RadarTargetEntity target) {
+        if (target.getRange() != null) {
+            return target.getRange();
+        }
+        Double longitudinal = target.getLongitudinalDistance();
+        Double lateral = target.getLateralDistance();
+        if (longitudinal == null || lateral == null) {
+            return Double.NaN;
+        }
+        return Math.hypot(longitudinal, lateral);
     }
 
-    private void updateActionsWithDispatch(List<ActionStatus> actions, List<GRuleStatus> gStatuses) {
-        boolean dispatch = gStatuses.stream().anyMatch(GRuleStatus::isTriggered);
-        actions.stream()
-                .filter(action -> "A3".equals(action.getId()))
-                .findFirst()
-                .ifPresent(action -> action.setTriggered(dispatch));
+    private boolean isCoreCameraEvent(CameraAlarmEntity alarm) {
+        String type = Optional.ofNullable(alarm.getEventType()).orElse("").toLowerCase(Locale.ROOT);
+        String level = Optional.ofNullable(alarm.getLevel()).orElse("").toLowerCase(Locale.ROOT);
+        return type.contains("core") || type.contains("核心") || type.contains("cross")
+                || type.contains("越界") || level.contains("core") || level.contains("一级");
     }
 
-    private String deriveState(Map<String, FRuleEvaluation> fEvaluations,
-                               List<ActionStatus> actions,
-                               List<GRuleStatus> gStatuses) {
-        boolean anyF = fEvaluations.values().stream().anyMatch(FRuleEvaluation::isTriggered);
-        boolean a2 = actions.stream().anyMatch(action -> "A2".equals(action.getId()) && action.isTriggered());
-        boolean a3 = actions.stream().anyMatch(action -> "A3".equals(action.getId()) && action.isTriggered());
-        if (a3) {
-            return "DISPATCHED";
-        }
-        if (a2) {
-            return "CHALLENGE";
-        }
-        if (anyF) {
-            return "MONITORING";
-        }
-        return "IDLE";
-    }
+    private static class EvaluationContext {
+        private final Map<String, Instant> imsiFirstSeen = new HashMap<>();
+        private final List<String> newImsi = new ArrayList<>();
+        private final List<String> repeatedImsi = new ArrayList<>();
+        private final List<Instant> radarFirstDetections = new ArrayList<>();
+        private final List<Instant> radarLastDetections = new ArrayList<>();
+        private boolean hasRadarPersist;
+        private boolean hasRadarNearCore;
+        private boolean hasRadarApproach;
+        private boolean hasCoreHuman;
+        private boolean radarBeforeChallenge;
+        private boolean radarAfterChallenge;
+        private boolean coreBeforeChallenge;
+        private boolean coreAfterChallenge;
+        private boolean linkF1F2;
 
-    private String buildSummary(RiskModelConfig.PriorityDefinition priority,
-                                Map<String, FRuleEvaluation> fEvaluations,
-                                List<ActionStatus> actions,
-                                List<GRuleStatus> gStatuses) {
-        String priorityLabel = priority != null ? priority.getId() + " " + Optional.ofNullable(priority.getName()).orElse("") : "P4 低优先级";
-        List<String> segments = new ArrayList<>();
-        segments.add(priorityLabel.trim());
-
-        List<String> ruleHits = fEvaluations.values().stream()
-                .filter(FRuleEvaluation::isTriggered)
-                .map(FRuleEvaluation::getReason)
-                .filter(Objects::nonNull)
-                .collect(Collectors.toList());
-        if (!ruleHits.isEmpty()) {
-            segments.add(String.join("；", ruleHits));
+        void registerImsi(Map<String, Instant> first) {
+            imsiFirstSeen.putAll(first);
+            newImsi.addAll(first.keySet());
         }
 
-        boolean dispatch = gStatuses.stream().anyMatch(GRuleStatus::isTriggered);
-        if (dispatch) {
-            segments.add("已触发派警");
-        } else if (actions.stream().anyMatch(action -> "A2".equals(action.getId()) && action.isTriggered())) {
-            segments.add("已执行远程挑战，等待反馈");
-        } else if (actions.stream().anyMatch(ActionStatus::isTriggered)) {
-            segments.add("保持监控记录");
-        }
-        return String.join(" ｜ ", segments);
-    }
-
-    private FRuleEvaluation evaluateF1(List<CameraAlarmEntity> window, RiskModelConfig.Parameters parameters) {
-        List<CameraAlarmEntity> general = window.stream()
-                .filter(alarm -> !isCoreAlarm(alarm))
-                .sorted(Comparator.comparing(CameraAlarmEntity::getCreatedAt))
-                .collect(Collectors.toList());
-        if (general.isEmpty()) {
-            return FRuleEvaluation.notTriggered("F1");
-        }
-        List<Instant> timestamps = general.stream()
-                .map(CameraAlarmEntity::getCreatedAt)
-                .collect(Collectors.toList());
-        long occurrences = countDistinctEvents(timestamps, parameters.getCameraCooldown());
-        Instant first = timestamps.get(0);
-        Instant last = timestamps.get(timestamps.size() - 1);
-        Map<String, Object> metrics = Map.of(
-                "events", general.size(),
-                "channels", collectDistinct(general.stream().map(CameraAlarmEntity::getCamChannel)
-                        .filter(Objects::nonNull)
-                        .collect(Collectors.toSet()))
-        );
-        return new FRuleEvaluation("F1", occurrences > 0, occurrences, first, last,
-                "摄像头检测到一般保护区闯入", metrics, "P3");
-    }
-
-    private FRuleEvaluation evaluateF4(List<CameraAlarmEntity> window, RiskModelConfig.Parameters parameters) {
-        List<CameraAlarmEntity> core = window.stream()
-                .filter(this::isCoreAlarm)
-                .sorted(Comparator.comparing(CameraAlarmEntity::getCreatedAt))
-                .collect(Collectors.toList());
-        if (core.isEmpty()) {
-            return FRuleEvaluation.notTriggered("F4");
-        }
-        List<Instant> timestamps = core.stream()
-                .map(CameraAlarmEntity::getCreatedAt)
-                .collect(Collectors.toList());
-        long occurrences = countDistinctEvents(timestamps, parameters.getCameraCooldown());
-        Instant first = timestamps.get(0);
-        Instant last = timestamps.get(timestamps.size() - 1);
-        Map<String, Object> metrics = Map.of(
-                "events", core.size(),
-                "channels", collectDistinct(core.stream().map(CameraAlarmEntity::getCamChannel)
-                        .filter(Objects::nonNull)
-                        .collect(Collectors.toSet()))
-        );
-        return new FRuleEvaluation("F4", occurrences > 0, occurrences, first, last,
-                "核心区域越界触发", metrics, "P1");
-    }
-
-    private FRuleEvaluation evaluateF2(List<ImsiRecordEntity> window,
-                                       List<ImsiRecordEntity> history,
-                                       Instant windowStart,
-                                       RiskModelConfig.Parameters parameters) {
-        Map<String, List<Instant>> groupedWindow = window.stream()
-                .filter(rec -> rec.getFetchedAt() != null)
-                .collect(Collectors.groupingBy(this::imsiKey,
-                        Collectors.mapping(ImsiRecordEntity::getFetchedAt, Collectors.toList())));
-        if (groupedWindow.isEmpty()) {
-            return FRuleEvaluation.notTriggered("F2");
-        }
-        Set<String> seenBeforeWindow = history.stream()
-                .filter(rec -> rec.getFetchedAt() != null && rec.getFetchedAt().isBefore(windowStart))
-                .map(this::imsiKey)
-                .collect(Collectors.toSet());
-        Set<String> newDevices = groupedWindow.entrySet().stream()
-                .filter(entry -> entry.getValue().stream().anyMatch(ts -> !ts.isBefore(windowStart)))
-                .filter(entry -> !seenBeforeWindow.contains(entry.getKey()))
-                .map(Map.Entry::getKey)
-                .collect(Collectors.toCollection(() -> new TreeSet<>(String::compareTo)));
-        if (newDevices.isEmpty()) {
-            return FRuleEvaluation.notTriggered("F2");
-        }
-        Instant first = groupedWindow.get(newDevices.iterator().next()).stream()
-                .min(Instant::compareTo)
-                .orElse(windowStart);
-        Instant last = newDevices.stream()
-                .map(key -> groupedWindow.getOrDefault(key, List.of()).stream().max(Instant::compareTo).orElse(windowStart))
-                .max(Instant::compareTo)
-                .orElse(first);
-        Map<String, Object> metrics = new HashMap<>();
-        metrics.put("newDevices", newDevices);
-        metrics.put("totalHits", groupedWindow.values().stream().mapToInt(List::size).sum());
-        return new FRuleEvaluation("F2", true, newDevices.size(), first, last,
-                String.format(Locale.CHINA, "检测到%d个未知IMSI", newDevices.size()), metrics, "P3");
-    }
-
-    private FRuleEvaluation evaluateF3(List<ImsiRecordEntity> window,
-                                       List<ImsiRecordEntity> history,
-                                       Instant windowStart,
-                                       RiskModelConfig.Parameters parameters) {
-        Duration dwellThreshold = parameters.getImsiDwellThreshold();
-        Duration reentryWindow = parameters.getImsiReentryWindow();
-        Map<String, List<Instant>> groupedWindow = window.stream()
-                .filter(rec -> rec.getFetchedAt() != null)
-                .collect(Collectors.groupingBy(this::imsiKey,
-                        Collectors.mapping(ImsiRecordEntity::getFetchedAt, Collectors.toList())));
-        if (groupedWindow.isEmpty()) {
-            return FRuleEvaluation.notTriggered("F3");
-        }
-        Map<String, Instant> lastBeforeWindow = history.stream()
-                .filter(rec -> rec.getFetchedAt() != null && rec.getFetchedAt().isBefore(windowStart))
-                .collect(Collectors.groupingBy(this::imsiKey,
-                        Collectors.collectingAndThen(Collectors.maxBy(Comparator.comparing(ImsiRecordEntity::getFetchedAt)),
-                                opt -> opt.map(ImsiRecordEntity::getFetchedAt).orElse(null))));
-
-        boolean triggered = false;
-        Instant firstTrigger = null;
-        Instant lastTrigger = null;
-        String reason = null;
-        Map<String, Object> metrics = new HashMap<>();
-        List<String> offenders = new ArrayList<>();
-
-        for (Map.Entry<String, List<Instant>> entry : groupedWindow.entrySet()) {
-            List<Instant> hits = entry.getValue().stream().sorted().collect(Collectors.toList());
-            if (hits.isEmpty()) {
-                continue;
+        void markImsiRepeats(Collection<String> repeat) {
+            if (!repeat.isEmpty()) {
+                repeatedImsi.addAll(repeat);
             }
-            Instant first = hits.get(0);
-            Instant last = hits.get(hits.size() - 1);
-            Duration stay = Duration.between(first, last);
-            boolean dwell = stay.compareTo(dwellThreshold) >= 0;
-            Instant previous = lastBeforeWindow.get(entry.getKey());
-            boolean reentry = previous != null && Duration.between(previous, first).compareTo(reentryWindow) <= 0;
-            if (dwell || reentry || hits.size() >= 3) {
-                triggered = true;
-                firstTrigger = firstTrigger == null ? first : firstTrigger;
-                lastTrigger = last.isAfter(Optional.ofNullable(lastTrigger).orElse(Instant.MIN)) ? last : lastTrigger;
-                offenders.add(entry.getKey());
-                if (reason == null) {
-                    if (dwell) {
-                        reason = "IMSI持续停留超过阈值";
-                    } else if (reentry) {
-                        reason = "IMSI在再识别窗口内重返";
-                    } else {
-                        reason = "IMSI在窗口内多次出现";
-                    }
+        }
+
+        void registerRadarTrack(Instant first, Instant last) {
+            radarFirstDetections.add(first);
+            radarLastDetections.add(last);
+        }
+
+        void computeLinkF1F2(Parameters params) {
+            if (imsiFirstSeen.isEmpty() || radarFirstDetections.isEmpty()) {
+                linkF1F2 = false;
+                return;
+            }
+            Duration linkWindow = params.getF1ToF2LinkWindow();
+            for (Instant imsiTime : imsiFirstSeen.values()) {
+                boolean matched = radarFirstDetections.stream()
+                        .anyMatch(radarTime -> !radarTime.isBefore(imsiTime)
+                                && Duration.between(imsiTime, radarTime).compareTo(linkWindow) <= 0);
+                if (matched) {
+                    linkF1F2 = true;
+                    return;
                 }
             }
+            linkF1F2 = false;
         }
-        if (!triggered) {
-            return FRuleEvaluation.notTriggered("F3");
+
+        void setRadarPersist(boolean value) {
+            hasRadarPersist = hasRadarPersist || value;
         }
-        metrics.put("devices", offenders);
-        metrics.put("count", offenders.size());
-        return new FRuleEvaluation("F3", true, offenders.size(),
-                Optional.ofNullable(firstTrigger).orElse(windowStart),
-                Optional.ofNullable(lastTrigger).orElse(windowStart),
-                reason, metrics, "P2");
-    }
 
-    private long countDistinctEvents(List<Instant> timestamps, Duration cooldown) {
-        if (timestamps.isEmpty()) {
-            return 0;
+        void setRadarNearCore(boolean value) {
+            hasRadarNearCore = hasRadarNearCore || value;
         }
-        Instant last = null;
-        long count = 0;
-        for (Instant ts : timestamps) {
-            if (last == null || Duration.between(last, ts).compareTo(cooldown) > 0) {
-                count++;
-                last = ts;
-            }
+
+        void setRadarApproach(boolean value) {
+            hasRadarApproach = hasRadarApproach || value;
         }
-        return count;
-    }
 
-    private boolean persistsAcrossChallenge(List<ImsiRecordEntity> imsiWindow,
-                                            List<CameraAlarmEntity> cameraWindow,
-                                            Instant now,
-                                            Duration challengeWindow) {
-        Instant threshold = now.minus(challengeWindow);
-        boolean imsiPersist = imsiWindow.stream()
-                .map(ImsiRecordEntity::getFetchedAt)
-                .filter(Objects::nonNull)
-                .anyMatch(ts -> !ts.isBefore(threshold));
-        boolean cameraPersist = cameraWindow.stream()
-                .map(CameraAlarmEntity::getCreatedAt)
-                .filter(Objects::nonNull)
-                .anyMatch(ts -> !ts.isBefore(threshold));
-        boolean imsiHistoric = imsiWindow.stream()
-                .map(ImsiRecordEntity::getFetchedAt)
-                .filter(Objects::nonNull)
-                .anyMatch(ts -> ts.isBefore(threshold));
-        boolean cameraHistoric = cameraWindow.stream()
-                .map(CameraAlarmEntity::getCreatedAt)
-                .filter(Objects::nonNull)
-                .anyMatch(ts -> ts.isBefore(threshold));
-        return (imsiPersist && imsiHistoric) || (cameraPersist && cameraHistoric);
-    }
-
-    private boolean isCoreAlarm(CameraAlarmEntity alarm) {
-        String type = normalize(alarm.getEventType());
-        String level = normalize(alarm.getLevel());
-        String channel = normalize(alarm.getCamChannel());
-        return containsAny(type, "core", "aoi", "perimeter", "fence", "line", "boundary")
-                || containsAny(level, "high", "critical", "p1", "major")
-                || containsAny(channel, "core", "aoi", "inner");
-    }
-
-    private String normalize(String value) {
-        return value == null ? "" : value.toLowerCase(Locale.ROOT);
-    }
-
-    private boolean containsAny(String text, String... keywords) {
-        for (String keyword : keywords) {
-            if (text.contains(keyword)) {
-                return true;
-            }
+        void setCoreHuman(boolean value) {
+            hasCoreHuman = hasCoreHuman || value;
         }
-        return false;
-    }
 
-    private String imsiKey(ImsiRecordEntity entity) {
-        if (entity.getImsi() != null && !entity.getImsi().isEmpty()) {
-            return entity.getImsi();
+        void setRadarBeforeChallenge(boolean value) {
+            radarBeforeChallenge = radarBeforeChallenge || value;
         }
-        if (entity.getDeviceId() != null && !entity.getDeviceId().isEmpty()) {
-            return "DEV-" + entity.getDeviceId();
+
+        void setRadarAfterChallenge(boolean value) {
+            radarAfterChallenge = radarAfterChallenge || value;
         }
-        return "UNKNOWN";
+
+        void setCoreBeforeChallenge(boolean value) {
+            coreBeforeChallenge = coreBeforeChallenge || value;
+        }
+
+        void setCoreAfterChallenge(boolean value) {
+            coreAfterChallenge = coreAfterChallenge || value;
+        }
+
+        Map<String, Object> toMap() {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("newImsi", new ArrayList<>(newImsi));
+            map.put("repeatImsi", new ArrayList<>(repeatedImsi));
+            map.put("linkF1F2", linkF1F2);
+            map.put("radarPersist", hasRadarPersist);
+            map.put("radarNearCore", hasRadarNearCore);
+            map.put("radarApproach", hasRadarApproach);
+            map.put("coreHuman", hasCoreHuman);
+            map.put("radarBeforeChallenge", radarBeforeChallenge);
+            map.put("radarAfterChallenge", radarAfterChallenge);
+            map.put("coreBeforeChallenge", coreBeforeChallenge);
+            map.put("coreAfterChallenge", coreAfterChallenge);
+            return map;
+        }
     }
 
-    private int countDistinctImsi(List<ImsiRecordEntity> window) {
-        return (int) window.stream()
-                .map(this::imsiKey)
-                .collect(Collectors.toSet())
-                .size();
-    }
+    private static class ScoreSummary {
+        private final double baseScore;
+        private final boolean multiSourceApplied;
+        private final double afterMultiSource;
+        private final double timeMultiplier;
+        private final double totalScore;
 
-    private List<String> collectDistinct(Set<String> input) {
-        return input.stream().sorted().collect(Collectors.toList());
+        ScoreSummary(double baseScore, boolean multiSourceApplied, double afterMultiSource, double timeMultiplier, double totalScore) {
+            this.baseScore = baseScore;
+            this.multiSourceApplied = multiSourceApplied;
+            this.afterMultiSource = afterMultiSource;
+            this.timeMultiplier = timeMultiplier;
+            this.totalScore = totalScore;
+        }
+
+        double getBaseScore() {
+            return baseScore;
+        }
+
+        double getTotalScore() {
+            return totalScore;
+        }
+
+        Map<String, Object> toMap() {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("base", baseScore);
+            map.put("multiSourceApplied", multiSourceApplied);
+            map.put("afterMultiSource", afterMultiSource);
+            map.put("timeMultiplier", timeMultiplier);
+            map.put("total", totalScore);
+            return map;
+        }
     }
 
     private static class FRuleEvaluation {
         private final String id;
         private final boolean triggered;
-        private final long occurrences;
+        private final int occurrences;
         private final Instant firstSeen;
         private final Instant lastSeen;
         private final String reason;
         private final Map<String, Object> metrics;
+        private final List<ScoreContribution> contributions;
         private final String escalatesTo;
+        private final double score;
 
-        private FRuleEvaluation(String id,
-                                 boolean triggered,
-                                 long occurrences,
-                                 Instant firstSeen,
-                                 Instant lastSeen,
-                                 String reason,
-                                 Map<String, Object> metrics,
-                                 String escalatesTo) {
+        FRuleEvaluation(String id,
+                        boolean triggered,
+                        int occurrences,
+                        Instant firstSeen,
+                        Instant lastSeen,
+                        String reason,
+                        Map<String, Object> metrics,
+                        List<ScoreContribution> contributions,
+                        String escalatesTo,
+                        double score) {
             this.id = id;
             this.triggered = triggered;
             this.occurrences = occurrences;
@@ -598,43 +843,39 @@ public class RiskAssessmentService {
             this.lastSeen = lastSeen;
             this.reason = reason;
             this.metrics = metrics != null ? metrics : Map.of();
+            this.contributions = contributions != null ? contributions : List.of();
             this.escalatesTo = escalatesTo;
+            this.score = score;
         }
 
         static FRuleEvaluation notTriggered(String id) {
-            return new FRuleEvaluation(id, false, 0, null, null, null, Map.of(), null);
+            return new FRuleEvaluation(id, false, 0, null, null, null, Map.of(), List.of(), null, 0.0);
         }
 
-        public boolean isTriggered() {
+        boolean isTriggered() {
             return triggered;
         }
 
-        public String getReason() {
-            return reason;
+        double getScore() {
+            return score;
         }
 
-        public String getEscalatesTo() {
+        String getEscalatesTo() {
             return escalatesTo;
         }
 
-        public Duration getDuration() {
-            if (firstSeen == null || lastSeen == null) {
-                return Duration.ZERO;
-            }
-            return Duration.between(firstSeen, lastSeen);
-        }
-
-        public Map<String, Object> toMap(RiskModelConfig.PriorityDefinition priority) {
+        Map<String, Object> toMap(PriorityDefinition priority) {
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("id", id);
             map.put("triggered", triggered);
             map.put("occurrences", occurrences);
             map.put("firstSeen", firstSeen);
             map.put("lastSeen", lastSeen);
-            map.put("duration", getDuration());
+            map.put("duration", (firstSeen != null && lastSeen != null) ? Duration.between(firstSeen, lastSeen) : Duration.ZERO);
             map.put("reason", reason);
             map.put("metrics", metrics);
-            map.put("escalatesTo", escalatesTo);
+            map.put("score", score);
+            map.put("contributions", contributions.stream().map(ScoreContribution::toMap).collect(Collectors.toList()));
             if (priority != null) {
                 map.put("priority", priority);
             }
@@ -642,10 +883,30 @@ public class RiskAssessmentService {
         }
     }
 
+    private static class ScoreContribution {
+        private final String id;
+        private final double value;
+        private final String description;
+
+        ScoreContribution(String id, double value, String description) {
+            this.id = id;
+            this.value = value;
+            this.description = description;
+        }
+
+        Map<String, Object> toMap() {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("id", id);
+            map.put("value", value);
+            map.put("description", description);
+            return map;
+        }
+    }
+
     private static class ActionStatus {
         private final String id;
         private final boolean recommended;
-        private boolean triggered;
+        private final boolean triggered;
         private final String rationale;
         private final Instant decidedAt;
 
@@ -657,23 +918,19 @@ public class RiskAssessmentService {
             this.decidedAt = decidedAt;
         }
 
-        static ActionStatus recommended(String id, boolean recommended, String rationale, Instant decidedAt) {
-            return new ActionStatus(id, recommended, recommended, rationale, decidedAt);
+        static ActionStatus create(String id, boolean recommended, boolean triggered, String rationale, Instant decidedAt) {
+            return new ActionStatus(id, recommended, triggered, rationale, decidedAt);
         }
 
-        public String getId() {
+        String getId() {
             return id;
         }
 
-        public boolean isTriggered() {
+        boolean isTriggered() {
             return triggered;
         }
 
-        public void setTriggered(boolean triggered) {
-            this.triggered = triggered;
-        }
-
-        public Map<String, Object> toMap(ActionDefinition definition) {
+        Map<String, Object> toMap(ActionDefinition definition) {
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("id", id);
             map.put("recommended", recommended);
@@ -692,21 +949,21 @@ public class RiskAssessmentService {
         private final boolean triggered;
         private final String rationale;
 
-        private GRuleStatus(String id, boolean triggered, String rationale) {
+        GRuleStatus(String id, boolean triggered, String rationale) {
             this.id = id;
             this.triggered = triggered;
             this.rationale = rationale;
         }
 
-        public String getId() {
+        String getId() {
             return id;
         }
 
-        public boolean isTriggered() {
+        boolean isTriggered() {
             return triggered;
         }
 
-        public Map<String, Object> toMap(GRuleDefinition definition) {
+        Map<String, Object> toMap(GRuleDefinition definition) {
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("id", id);
             map.put("triggered", triggered);
