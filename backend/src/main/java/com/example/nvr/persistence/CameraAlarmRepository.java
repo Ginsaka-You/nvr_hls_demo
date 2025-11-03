@@ -12,4 +12,6 @@ public interface CameraAlarmRepository extends JpaRepository<CameraAlarmEntity, 
     List<CameraAlarmEntity> findByCamChannelAndCreatedAtBetweenOrderByCreatedAtAsc(String camChannel, Instant start, Instant end);
 
     long countByCreatedAtBetween(Instant start, Instant end);
+
+    void deleteByEventIdStartingWith(String prefix);
 }

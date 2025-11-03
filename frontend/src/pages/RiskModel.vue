@@ -17,11 +17,61 @@ type RiskAssessment = {
 
 type RiskState = 'IDLE' | 'MONITORING' | 'CHALLENGE' | 'DISPATCHED' | 'RESOLVED' | string
 
+type ScenarioButton = {
+  id: string
+  name: string
+  description: string
+}
+
 const REFRESH_INTERVAL = 15000
 const loading = ref(false)
 const assessments = ref<RiskAssessment[]>([])
 const errorMessage = ref<string | null>(null)
 const pollingTimer = ref<number | null>(null)
+const scenarioLoading = ref<string | null>(null)
+
+const scenarioButtons: ScenarioButton[] = [
+  {
+    id: 'light-alert',
+    name: '轻微警情 (F1/P1)',
+    description: '模拟一次短暂的 F1 规则触发，验证系统保持低级警情并自动结束。',
+  },
+  {
+    id: 'repeat-escalation',
+    name: '重复事件升级 (P2/A1)',
+    description: '模拟多次触发同一外围入侵，观察警情从初始升级的过程。',
+  },
+  {
+    id: 'challenge-cleared',
+    name: '挑战警告后离场 (A2)',
+    description: '创建触发远程挑战但在窗口内结束的事件，用于确认未进一步升级。',
+  },
+  {
+    id: 'challenge-ignored',
+    name: '无视挑战触发出警 (A2→G2)',
+    description: '模拟挑战后仍持续违规的目标，验证系统自动升级并出警。',
+  },
+  {
+    id: 'severe-direct',
+    name: '严重事件直接警报 (A3/G3)',
+    description: '模拟一次核心区域越界，检查系统直接进入最高优先级和出警流程。',
+  },
+  {
+    id: 'fusion-escalation',
+    name: '多源事件融合升级',
+    description: '注入摄像头、IMSI、雷达组合事件，测试融合逻辑的优先级提升。',
+  },
+  {
+    id: 'imsi-challenge-return',
+    name: '挑战期内IMSI再识别',
+    description: '同一 IMSI 在挑战期内再次出现，验证事件被视为持续并升级处理。',
+  },
+  {
+    id: 'imsi-post-challenge',
+    name: '挑战窗后再现 (新事件)',
+    description: '在挑战窗口结束后重新出现的目标，应被识别为新的低级事件。',
+  },
+]
 
 const classificationOrder: Classification[] = ['P1', 'P2', 'P3', 'P4']
 const classificationMeta: Record<Classification, { label: string; tag: string; empty: string; description: string }> = {
@@ -330,6 +380,36 @@ async function fetchAssessments(showToast = false) {
   }
 }
 
+async function triggerScenario(button: ScenarioButton) {
+  if (scenarioLoading.value) {
+    return
+  }
+  scenarioLoading.value = button.id
+  try {
+    const resp = await fetch(`/api/risk/scenarios/${encodeURIComponent(button.id)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    })
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`)
+    }
+    let data: any = null
+    try {
+      data = await resp.json()
+    } catch (err) {
+      console.debug('Failed to parse scenario response', err)
+    }
+    const tip = typeof data?.message === 'string' && data.message ? data.message : `${button.name} 场景已注入`
+    message.success(tip)
+    await fetchAssessments(true)
+  } catch (err: any) {
+    const msg = err?.message ?? String(err)
+    message.error(`触发场景失败：${msg}`)
+  } finally {
+    scenarioLoading.value = null
+  }
+}
+
 onMounted(() => {
   void fetchAssessments(true)
   pollingTimer.value = window.setInterval(() => {
@@ -524,6 +604,19 @@ const fusionHighlights = [
       <h1>风控模型总览</h1>
       <p>古墓户外安防场景的 P1–P4 事件优先级、A1/A2/A3 响应体系与 F/G 规则重构方案。</p>
     </header>
+
+    <section class="scenario-actions">
+      <h2>虚拟场景注入</h2>
+      <p class="section-note">点击下方按钮向数据库写入模拟数据，快速验证各类 F/P/A/G 流程。</p>
+      <div class="scenario-grid">
+        <a-card v-for="button in scenarioButtons" :key="button.id" class="scenario-card" :title="button.name">
+          <p class="scenario-desc">{{ button.description }}</p>
+          <a-button type="primary" block :loading="scenarioLoading === button.id" @click="triggerScenario(button)">
+            触发场景
+          </a-button>
+        </a-card>
+      </div>
+    </section>
 
     <section class="live-section">
       <h2>实时风险态势</h2>
@@ -760,6 +853,32 @@ const fusionHighlights = [
 
 .page-header p {
   margin-top: 8px;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.scenario-actions .section-note {
+  margin-top: 4px;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.scenario-grid {
+  margin-top: 16px;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.scenario-card {
+  background: rgba(10, 26, 40, 0.7);
+  border: 1px solid rgba(64, 169, 255, 0.2);
+}
+
+.scenario-card :deep(.ant-card-head) {
+  border-bottom-color: rgba(255, 255, 255, 0.12);
+}
+
+.scenario-desc {
+  min-height: 48px;
   color: rgba(255, 255, 255, 0.75);
 }
 

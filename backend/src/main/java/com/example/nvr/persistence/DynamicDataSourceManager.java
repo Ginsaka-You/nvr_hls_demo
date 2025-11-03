@@ -128,6 +128,69 @@ public class DynamicDataSourceManager {
             st.execute("ALTER TABLE camera_alarms DROP COLUMN IF EXISTS port");
             st.execute("ALTER TABLE camera_alarms DROP COLUMN IF EXISTS raw_payload");
 
+            st.execute("CREATE TABLE IF NOT EXISTS imsi_records (" +
+                    "id SERIAL PRIMARY KEY, " +
+                    "device_id VARCHAR(64), " +
+                    "imsi VARCHAR(32), " +
+                    "operator_code VARCHAR(16), " +
+                    "area VARCHAR(128), " +
+                    "rpt_date VARCHAR(16), " +
+                    "rpt_time VARCHAR(16), " +
+                    "source_file VARCHAR(255), " +
+                    "line_number INT, " +
+                    "host VARCHAR(128), " +
+                    "port INT, " +
+                    "directory VARCHAR(255), " +
+                    "message VARCHAR(255), " +
+                    "elapsed_ms BIGINT, " +
+                    "fetched_at TIMESTAMPTZ DEFAULT NOW()" +
+                    ")");
+            st.execute("CREATE INDEX IF NOT EXISTS idx_imsi_records_fetched_at ON imsi_records(fetched_at DESC)");
+            st.execute("CREATE INDEX IF NOT EXISTS idx_imsi_records_imsi ON imsi_records(imsi)");
+            st.execute("CREATE INDEX IF NOT EXISTS idx_imsi_records_source_file ON imsi_records(source_file)");
+            st.execute("ALTER TABLE imsi_records ADD COLUMN IF NOT EXISTS device_id VARCHAR(64)");
+            st.execute("ALTER TABLE imsi_records ADD COLUMN IF NOT EXISTS imsi VARCHAR(32)");
+            st.execute("ALTER TABLE imsi_records ADD COLUMN IF NOT EXISTS operator_code VARCHAR(16)");
+            st.execute("ALTER TABLE imsi_records ADD COLUMN IF NOT EXISTS area VARCHAR(128)");
+            st.execute("ALTER TABLE imsi_records ADD COLUMN IF NOT EXISTS rpt_date VARCHAR(16)");
+            st.execute("ALTER TABLE imsi_records ADD COLUMN IF NOT EXISTS rpt_time VARCHAR(16)");
+            st.execute("ALTER TABLE imsi_records ADD COLUMN IF NOT EXISTS source_file VARCHAR(255)");
+            st.execute("ALTER TABLE imsi_records ADD COLUMN IF NOT EXISTS line_number INT");
+            st.execute("ALTER TABLE imsi_records ADD COLUMN IF NOT EXISTS host VARCHAR(128)");
+            st.execute("ALTER TABLE imsi_records ADD COLUMN IF NOT EXISTS port INT");
+            st.execute("ALTER TABLE imsi_records ADD COLUMN IF NOT EXISTS directory VARCHAR(255)");
+            st.execute("ALTER TABLE imsi_records ADD COLUMN IF NOT EXISTS message VARCHAR(255)");
+            st.execute("ALTER TABLE imsi_records ADD COLUMN IF NOT EXISTS elapsed_ms BIGINT");
+            st.execute("ALTER TABLE imsi_records ADD COLUMN IF NOT EXISTS fetched_at TIMESTAMPTZ");
+            st.execute("UPDATE imsi_records SET fetched_at = COALESCE(fetched_at, NOW())");
+            st.execute("ALTER TABLE imsi_records ALTER COLUMN fetched_at SET DEFAULT NOW()");
+
+            st.execute("CREATE TABLE IF NOT EXISTS risk_assessments (" +
+                    "id SERIAL PRIMARY KEY, " +
+                    "classification VARCHAR(32) NOT NULL, " +
+                    "score INT, " +
+                    "summary VARCHAR(255), " +
+                    "details_json TEXT, " +
+                    "window_start TIMESTAMPTZ, " +
+                    "window_end TIMESTAMPTZ, " +
+                    "updated_at TIMESTAMPTZ DEFAULT NOW()" +
+                    ")");
+            st.execute("CREATE INDEX IF NOT EXISTS idx_risk_assessments_updated_at ON risk_assessments(updated_at DESC)");
+            st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS classification VARCHAR(32)");
+            st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS score INT");
+            st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS summary VARCHAR(255)");
+            st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS details_json TEXT");
+            st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS window_start TIMESTAMPTZ");
+            st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS window_end TIMESTAMPTZ");
+            st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ");
+            st.execute("UPDATE risk_assessments SET classification = COALESCE(NULLIF(classification, ''), 'P4')");
+            st.execute("ALTER TABLE risk_assessments ALTER COLUMN classification SET NOT NULL");
+            st.execute("ALTER TABLE risk_assessments ALTER COLUMN updated_at SET DEFAULT NOW()");
+            st.execute("ALTER TABLE risk_assessments DROP COLUMN IF EXISTS subject_key");
+            st.execute("ALTER TABLE risk_assessments DROP COLUMN IF EXISTS subject_type");
+            st.execute("ALTER TABLE risk_assessments DROP COLUMN IF EXISTS subject_id");
+            st.execute("ALTER TABLE risk_assessments DROP COLUMN IF EXISTS subject_label");
+
             st.execute("CREATE TABLE IF NOT EXISTS radar_targets (" +
                     "id SERIAL PRIMARY KEY, " +
                     "radar_host VARCHAR(128), " +

@@ -16,4 +16,6 @@ public interface ImsiRecordRepository extends JpaRepository<ImsiRecordEntity, Lo
     List<ImsiRecordEntity> findByDeviceIdAndFetchedAtGreaterThanEqualOrderByFetchedAtAsc(String deviceId, Instant start);
 
     List<ImsiRecordEntity> findByFetchedAtBetweenOrderByFetchedAtAsc(Instant start, Instant end);
+
+    void deleteBySourceFileStartingWith(String prefix);
 }
