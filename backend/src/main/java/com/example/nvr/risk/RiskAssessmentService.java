@@ -530,33 +530,72 @@ public class RiskAssessmentService {
         List<GRuleStatus> statuses = new ArrayList<>();
         boolean highPriority = priority != null
                 && ("P1".equalsIgnoreCase(priority.getId()) || "P2".equalsIgnoreCase(priority.getId()));
-        boolean g1;
-        String g1Reason;
-        if (night) {
-            boolean nightCore = context.hasCoreHuman;
-            boolean nightLink = highPriority && (context.hasRadarPersist || context.hasRadarNearCore || context.linkF1F2);
-            g1 = nightCore || nightLink;
-            if (nightCore) {
-                g1Reason = "核心摄像头见人，执行远程警报";
-            } else if (nightLink) {
-                g1Reason = "P≥P2 且雷达/IMSI 形成链路，执行远程警报";
-            } else {
-                g1Reason = "夜间未满足远程警报条件";
-            }
+        boolean highestPriority = priority != null && "P1".equalsIgnoreCase(priority.getId());
+
+        boolean nightCore = context.hasCoreHuman;
+        boolean nightLink = highPriority && (context.hasRadarPersist || context.hasRadarNearCore || context.linkF1F2);
+        boolean g1NightTriggered = night && (nightCore || nightLink);
+        String g1NightReason;
+        if (!night) {
+            g1NightReason = "仅夜间评估";
+        } else if (nightCore) {
+            g1NightReason = "核心摄像头见人，执行远程警报";
+        } else if (nightLink) {
+            g1NightReason = "P≥P2 且满足持续/近域/链路，执行远程警报";
         } else {
-            g1 = context.hasCoreHuman;
-            g1Reason = g1 ? "白天核心越界，执行远程警报" : "白天仅核心越界可远程警报";
+            g1NightReason = "夜间未满足远程警报条件";
         }
-        statuses.add(new GRuleStatus("G1", g1, g1Reason));
+        statuses.add(new GRuleStatus("G1-N", g1NightTriggered, g1NightReason));
+
+        boolean g1DayCoreTriggered = !night && context.hasCoreHuman;
+        String g1DayReason;
+        if (night) {
+            g1DayReason = "仅白天评估";
+        } else if (g1DayCoreTriggered) {
+            g1DayReason = "核心越界人形，执行远程警报";
+        } else {
+            g1DayReason = "白天仅核心越界可执行远程警报";
+        }
+        statuses.add(new GRuleStatus("G1-D", g1DayCoreTriggered, g1DayReason));
+
+        boolean hasOuterRepeat = !context.repeatedImsi.isEmpty();
+        boolean hasMultipleNewImsi = context.getNewImsiCount() >= 2;
+        boolean hasOuterSupport = hasOuterRepeat || context.linkF1F2 || hasMultipleNewImsi;
+        boolean meetsRadarCombo = context.hasRadarPersist && context.hasRadarNearCore && context.hasRadarApproach;
+        boolean g1DayExceptionTriggered = !night && !context.hasCoreHuman && highestPriority && meetsRadarCombo && hasOuterSupport;
+        String supportReason;
+        if (hasOuterRepeat) {
+            supportReason = "IMSI 重现";
+        } else if (context.linkF1F2) {
+            supportReason = "F1→F2 链路";
+        } else {
+            supportReason = "未知 IMSI ≥2";
+        }
+        String g1DayExceptionReason;
+        if (night) {
+            g1DayExceptionReason = "仅白天评估";
+        } else if (!highestPriority) {
+            g1DayExceptionReason = "需达到 P1（≥70 分）";
+        } else if (context.hasCoreHuman) {
+            g1DayExceptionReason = "存在核心越界，请参考 G1-D";
+        } else if (!meetsRadarCombo) {
+            g1DayExceptionReason = "需雷达持续+近域+逼近组合";
+        } else if (!hasOuterSupport) {
+            g1DayExceptionReason = "需 IMSI 重现/链路或未知 IMSI ≥2";
+        } else {
+            g1DayExceptionReason = String.format(Locale.CHINA,
+                    "P1 + 近域持续逼近 + %s，白天例外触发远程警报", supportReason);
+        }
+        statuses.add(new GRuleStatus("G1-D-X", g1DayExceptionTriggered, g1DayExceptionReason));
 
         boolean challengePersists = (context.coreBeforeChallenge && context.coreAfterChallenge)
                 || (context.radarBeforeChallenge && context.radarAfterChallenge);
-        boolean g2 = night && g1 && challengePersists;
+        boolean g2 = night && g1NightTriggered && challengePersists;
         String g2Reason;
         if (!night) {
             g2Reason = "仅夜间允许 A3";
-        } else if (!g1) {
-            g2Reason = "尚未执行远程警报";
+        } else if (!g1NightTriggered) {
+            g2Reason = "尚未执行夜间远程警报";
         } else if (challengePersists) {
             g2Reason = "远程警报等待窗到期仍有异常";
         } else {
@@ -565,16 +604,18 @@ public class RiskAssessmentService {
         statuses.add(new GRuleStatus("G2", g2, g2Reason));
 
         boolean hasScore = scores.getBaseScore() > 0.0;
-        boolean g3 = !night && hasScore && !context.hasCoreHuman;
+        boolean g3 = !night && hasScore && !context.hasCoreHuman && !g1DayExceptionTriggered;
         String g3Reason;
         if (night) {
-            g3Reason = "夜间或未触发";
+            g3Reason = "夜间不适用";
         } else if (!hasScore) {
             g3Reason = "白天无得分";
         } else if (context.hasCoreHuman) {
             g3Reason = "白天核心越界已执行远程警报";
+        } else if (g1DayExceptionTriggered) {
+            g3Reason = "白天例外闸门已执行远程警报";
         } else {
-            g3Reason = "白天非核心线索，仅取证";
+            g3Reason = "白天线索不足，仅取证";
         }
         statuses.add(new GRuleStatus("G3", g3, g3Reason));
         return statuses;
@@ -589,13 +630,13 @@ public class RiskAssessmentService {
         actions.add(ActionStatus.create("A1", anyScore, anyScore,
                 anyScore ? "F 规则得分，执行取证" : "未触发 F 规则", now));
 
-        boolean g1 = gStatuses.stream().anyMatch(rule -> "G1".equals(rule.getId()) && rule.isTriggered());
-        String a2Message;
-        if (g1) {
-            a2Message = night ? "夜间远程警报已执行" : "白天核心越界，远程警报已执行";
-        } else {
-            a2Message = night ? "夜间未命中远程警报条件" : "白天未命中核心越界";
-        }
+        Optional<GRuleStatus> remoteAlarmGate = gStatuses.stream()
+                .filter(GRuleStatus::isTriggered)
+                .filter(status -> isRemoteAlarmGateId(status.getId()))
+                .findFirst();
+        boolean g1 = remoteAlarmGate.isPresent();
+        String a2Message = remoteAlarmGate.map(GRuleStatus::getRationale)
+                .orElseGet(() -> night ? "夜间未命中远程警报闸门" : "白天未命中远程警报闸门");
         actions.add(ActionStatus.create("A2", g1, g1, a2Message, g1 ? now : null));
 
         boolean g2 = gStatuses.stream().anyMatch(rule -> "G2".equals(rule.getId()) && rule.isTriggered());
@@ -629,12 +670,17 @@ public class RiskAssessmentService {
         }
         if (gStatuses.stream().anyMatch(rule -> "G2".equals(rule.getId()) && rule.isTriggered())) {
             segments.add("已派安保出动");
-        } else if (gStatuses.stream().anyMatch(rule -> "G1".equals(rule.getId()) && rule.isTriggered())) {
+        } else if (gStatuses.stream().anyMatch(rule ->
+                isRemoteAlarmGateId(rule.getId()) && rule.isTriggered())) {
             segments.add("已执行远程警报");
         } else if (actions.stream().anyMatch(action -> "A1".equals(action.getId()) && action.isTriggered())) {
             segments.add("已记录取证");
         }
         return String.join(" ｜ ", segments);
+    }
+
+    private boolean isRemoteAlarmGateId(String id) {
+        return id != null && id.toUpperCase(Locale.ROOT).startsWith("G1");
     }
 
     private Map<String, Object> buildDetails(RiskModelConfig config,
@@ -842,6 +888,10 @@ public class RiskAssessmentService {
             coreAfterChallenge = coreAfterChallenge || value;
         }
 
+        int getNewImsiCount() {
+            return new LinkedHashSet<>(newImsi).size();
+        }
+
         Map<String, Object> toMap() {
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("newImsi", new ArrayList<>(newImsi));
@@ -1040,6 +1090,10 @@ public class RiskAssessmentService {
 
         boolean isTriggered() {
             return triggered;
+        }
+
+        String getRationale() {
+            return rationale;
         }
 
         Map<String, Object> toMap(GRuleDefinition definition) {

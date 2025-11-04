@@ -1,4 +1,4 @@
-version: "2024Q4-REMOTE-ALARM"
+version: "2024Q4-REMOTE-ALARM-v0.51"
 parameters:
   timezone: "Asia/Shanghai"
   nightStartHour: 18
@@ -39,7 +39,7 @@ actions:
     description: "自动留痕并维持事件上下文，不主动干预。"
   - id: A2
     name: "A2 远程警报"
-    description: "灯光+喊话一次性执行，并启动 5 分钟远程警报等待窗（白天仅核心越界触发）。"
+    description: "灯光+喊话一次性执行，并启动 5 分钟远程警报等待窗（白天仅核心越界或例外闸门触发）。"
   - id: A3
     name: "A3 人员出动"
     description: "通知安保到场（非公安），同一事件仅一次。"
@@ -69,11 +69,21 @@ fRules:
     cooldown: "PT1M"
     actionImpact: "直接贡献 +60，昼夜均可触发远程警报闸门"
 gRules:
-  - id: G1
-    name: "远程警报闸门"
-    trigger: "夜间：core_human 或 P≥P2 且（mid_persist/near_core/link_f1_f2）；白天：仅 core_human"
+  - id: G1-N
+    name: "G1 夜间远程警报"
+    trigger: "夜间：core_human 成立，或 P≥P2 且满足 mid_persist / near_core_10_20m / link_f1_f2"
     action: "A2"
-    notes: "A2 每事件仅一次，远程警报等待窗 T=5min"
+    notes: "夜间命中后立即执行远程警报，并进入 5 分钟等待窗"
+  - id: G1-D
+    name: "G1 白天核心越界"
+    trigger: "白天：core_human 成立（核心摄像头识别人形越界）"
+    action: "A2"
+    notes: "白天核心越界仍需执行远程警报，但不升级 A3"
+  - id: G1-D-X
+    name: "G1 白天例外闸门"
+    trigger: "白天：无 F3，且 P≥70，并满足雷达持续≥10s + 近域10–20m + 向内逼近，并出现 IMSI 重现 / F1→F2 链路 / 未知 IMSI≥2 任一"
+    action: "A2"
+    notes: "解决白天高分仍停留 A1 的缺口，同一事件 A2 仅一次"
   - id: G2
     name: "等待窗失败升级"
     trigger: "夜间且 A2 远程警报后等待窗到期仍异常（核心见人或雷达持续逼近）"
@@ -81,9 +91,9 @@ gRules:
     notes: "仅夜间允许 A3，白名单不影响判定，等待窗与 IMSI 再识别周期对齐"
   - id: G3
     name: "白天取证闸门"
-    trigger: "白天且未命中 G1（无核心越界）"
+    trigger: "白天且未命中 G1-N/G1-D/G1-D-X（无核心越界及例外闸门）"
     action: "A1"
-    notes: "白天仅取证，不执行 A2/A3"
+    notes: "白天仅取证，不执行 A3；A2 需满足核心越界或例外组合"
 stateMachine:
   states:
     - id: IDLE

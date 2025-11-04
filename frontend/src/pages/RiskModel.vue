@@ -881,13 +881,14 @@ onUnmounted(() => {
     </section>
 
     <section class="model-doc">
-      <h2>风控模型规则（v0.5｜10–150 m 版）</h2>
+      <h2>风控模型规则（v0.51｜三圈层统一版）</h2>
       <p>
-        本版将雷达物理能力收紧为 <strong>10–150 m</strong>（&lt;10 m 盲区），核心摄像头有效 <strong>1–40 m</strong>，并将 A2 全面改名为
-        <strong>“远程警报”</strong>。模型仅保留 IMSI / 雷达 / 摄像头三类设备，强调夜间远程警报→人员出动的闭环。
+        v0.51 版在现有三圈层与分值体系上统一了关键常量：<strong>摄像头 1–40 m</strong>、<strong>雷达 10–150 m（&lt;10 m 物理盲区）</strong>、
+        <strong>IMSI ≈500 m</strong>，并将 A2 全面改名为 <strong>“远程警报”</strong>。新增白天例外闸门 G1‑D‑X，用于解决白天高分仍停留 A1 的矛盾。
       </p>
       <p>
-        关键原则：<strong>白天仅核心越界可触发远程警报</strong>；<strong>夜间核心入侵绝不豁免</strong>，远程警报窗口（T=300 s）到期仍异常必须升级 A3。
+        核心原则：<strong>白天仅核心越界或严苛例外组合可触发远程警报</strong>；<strong>夜间核心入侵绝不豁免</strong>，远程警报等待窗（T=300 s）
+        到期仍异常必须升级 A3；<strong>白名单 IMSI 仅用于 F1 降噪</strong>。
       </p>
 
       <h3>0）几何与时序常量（统一参数）</h3>
@@ -1017,7 +1018,7 @@ onUnmounted(() => {
           </tr>
         </tbody>
       </table>
-      <p class="doc-note">F2 仅统计 10–150 m 有效回波；近域加权与持续/逼近可叠加。</p>
+      <p class="doc-note">F2 仅统计 10–150 m 有效回波，含 10.0 与 20.0 边界；<strong>&lt;10 m 仅靠摄像头佐证</strong>，近域加权与持续/逼近可叠加。</p>
 
       <h4>F3 核心区 / 摄像头（1–40 m 有效）</h4>
       <table class="model-table">
@@ -1118,7 +1119,7 @@ onUnmounted(() => {
           <tr>
             <td>A2 – 远程警报</td>
             <td>灯光 / 语音 / 警笛一次性触发</td>
-            <td>命中 G1（夜：P≥P2 且满足条件；昼：仅 F3）</td>
+            <td>命中 G1‑N / G1‑D / G1‑D‑X 任一闸门</td>
             <td>每事件 1 次，启动等待窗 T=300 s</td>
           </tr>
           <tr>
@@ -1130,46 +1131,59 @@ onUnmounted(() => {
         </tbody>
       </table>
 
-      <h3>5）G 闸门（昼/夜分流）</h3>
+      <h3>5）G 闸门（昼/夜分流，含白天例外）</h3>
       <ul class="doc-list">
         <li>
-          <strong>G1 夜间（G1‑N）：</strong>核心摄像头见人，或 P≥P2 且满足 mid_persist / near_core_10_20m / link_f1_f2 → 执行 A2 远程警报。
+          <strong>G1 夜间（G1‑N）：</strong>核心摄像头见人，或 P≥P2 且满足 mid_persist / near_core_10_20m / link_f1_f2 任一 → 执行 A2。
         </li>
         <li>
-          <strong>G1 白天（G1‑D）：</strong>仅核心越界（F3）可触发远程警报，其他线索仅取证。
+          <strong>G1 白天（G1‑D）：</strong>仅核心越界（F3）可触发远程警报，其他线索默认仅 A1 取证。
+        </li>
+        <li>
+          <strong>G1 白天例外（G1‑D‑X）：</strong>白天无 F3，且同时满足① P≥70；② 雷达 mid_persist & near_core_10_20m & approach_core；③ outer_repeat / link_f1_f2 / outer_unknown_cnt≥2 任一 → 执行 A2。
         </li>
         <li>
           <strong>G2：</strong>夜间且远程警报等待窗到期仍异常（核心见人或雷达持续逼近）→ 执行 A3。
         </li>
         <li>
-          <strong>G3：</strong>白天未命中 G1，仅执行 A1 取证。
+          <strong>G3：</strong>白天未命中 G1‑N/G1‑D/G1‑D‑X，仅执行 A1 取证。
         </li>
       </ul>
 
-      <h3>6）典型算例（与新距离模型一致）</h3>
+      <h3>6）事件生命周期与去重</h3>
+      <ul class="doc-list">
+        <li><strong>事件归并键：</strong>{站点、扇区/相机 ID、时间桶（mergeWindow=300 s）}。</li>
+        <li><strong>A2/A3 去重：</strong>每事件 A2 最多 1 次（T=300 s 内不重复），A3 仅夜间且最多 1 次。</li>
+        <li><strong>结案与冷却：</strong>T 内或 mergeWindow 后无续发，且核心/雷达均无异常 → 自动结案。</li>
+        <li><strong>白天 A2 限骚扰（推荐执行层参数）：</strong>A2_day_burst_sec=8，A2_day_cooldown_sec=600。</li>
+      </ul>
+
+      <h3>7）边界一致性校验（验收清单）</h3>
+      <ul class="doc-list">
+        <li><strong>雷达 &lt;10 m：</strong>F2=0；10.0/20.0/150.0 视为有效边界值；&gt;150 m 无效。</li>
+        <li><strong>摄像头 1.0–40.0 m：</strong>越界有效；&gt;40 m 视为无效。</li>
+        <li><strong>白天无 F3：</strong>仅命中 G1‑D‑X 的严苛组合可 A2；否则无论得分多高仅 A1。</li>
+        <li><strong>A3 永远仅夜间：</strong>白天即使等待窗到期仍异常也不派员。</li>
+      </ul>
+
+      <h3>8）数值示例（3 条）</h3>
       <ol class="doc-list">
         <li>
-          <strong>夜间：雷达在 12 m 停留 12 s。</strong> F2=mid_persist 20 + near_core_10_20m 20 ⇒ 40 → 夜乘子 ⇒ <strong>60 分 (P2)</strong> → 触发 G1‑N，执行 A2；等待窗到期仍异常则升级 A3。
+          <strong>白天·例外触发 A2（无 F3）：</strong>F2=mid_persist 20 + near_core_10_20m 20 + approach_core 8 = 48；F1：outer_unknown_cnt=2 ⇒ 20；协同 ×1.2 ⇒ 81.6 → P1 → G1‑D‑X 命中 → A2。
         </li>
         <li>
-          <strong>夜间：雷达 40 m 处持续 10 s 且明显逼近。</strong> F2=mid_persist 20 + approach_core 8 ⇒ 28 → 夜乘子 ⇒ <strong>42 分 (P2)</strong> → 触发 G1‑N，执行 A2。
+          <strong>白天·仅 F2（近域持续）但证据不足：</strong>F2=40 → P2；无 F1 佐证、无 F3 → 仅 A1，不触发 G1‑D‑X。
         </li>
         <li>
-          <strong>夜间：F1→F2 链路（F1=1，Δt=180 s 内 F2 短暂 + 逼近）。</strong> F1 10 + F2 18 ⇒ 28 → 协同 ×1.2 → 夜 ×1.5 ⇒ <strong>50.4 分 (P2)</strong> → 触发 G1‑N，执行 A2。
-        </li>
-        <li>
-          <strong>白天：核心越界人形。</strong> F3=60 → 白天乘子 ⇒ <strong>60 分 (P2)</strong> → 触发 G1‑D，执行远程警报但不升级 A3。
+          <strong>夜间·雷达 12 m 持续：</strong>F2=40 → 夜乘子 ⇒ 60（P2） → G1‑N → A2；等待窗到期仍异常 → G2 → A3。
         </li>
       </ol>
 
-      <h3>7）自查与冲突修复说明</h3>
-      <ol class="doc-list">
-        <li>雷达近域判定改为 <strong>10–20 m</strong>，彻底消除“≤10 m”与物理盲区的冲突。</li>
-        <li>A2 全面改名 <strong>远程警报</strong>，相关文案、闸门与动作说明保持一致。</li>
-        <li>G1/G2 触发语句已同步：夜间 P≥P2 且满足持续/近域/链路即可远程警报；等待窗到期仍异常立即派员。</li>
-        <li>白天策略维持克制：除核心越界外一律仅取证，避免对周边居民造成骚扰。</li>
-        <li>明确 10–40 m 为雷达与摄像头协同带，利于判定可靠度；模型不假设超出传感器能力的探测。</li>
-      </ol>
+      <h3>9）白名单定位（不变）</h3>
+      <ul class="doc-list">
+        <li>白名单 IMSI 仅影响 F1：记 0 分且不参与协同；F2/F3 与所有 G 闸门不受影响。</li>
+        <li>夜间核心入侵即便白名单在场，仍按闸门执行 A2/A3。</li>
+      </ul>
     </section>
 
 
