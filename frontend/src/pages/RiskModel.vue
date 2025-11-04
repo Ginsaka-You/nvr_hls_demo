@@ -39,113 +39,125 @@ const resetLoading = ref(false)
 
 const scenarioButtons: ScenarioButton[] = [
   {
-    id: 'F1-BASE',
-    name: 'F1 一般区人形出现',
-    description: '注入一次普通防区的人形检测，验证 F1 触发 P3 并执行 A1。',
-    group: 'F规则验证',
+    id: 'A1',
+    name: '夜间-核心人形直击（仅F3）',
+    description: '夜间 22:00 核心摄像头单独识别人形，期望 90 分 / P1 并触发 A2。',
+    group: '夜间入闸与评分验证',
   },
   {
-    id: 'F2-FIRST',
-    name: 'F2 未知 IMSI 首现',
-    description: '创建一个非白名单 IMSI 首次出现的记录，验证 5 分钟内只触发一次。',
-    group: 'F规则验证',
+    id: 'A2',
+    name: '夜间-雷达≥10s且≤10m且逼近（仅F2）',
+    description: '夜间 23:30 雷达持续 ≥10s 且进入 10m 内逼近，期望 72 分 / P1 → A2。',
+    group: '夜间入闸与评分验证',
   },
   {
-    id: 'F3-REAPPEAR',
-    name: 'F3 IMSI 再现/久留',
-    description: '模拟同一设备在 30 分钟内再现并由摄像头佐证，验证升级至 P2 并触发 A2。',
-    group: 'F规则验证',
+    id: 'A3',
+    name: '夜间-外圈2未知IMSI（仅F1）',
+    description: '夜间 02:00 出现 2 个未知 IMSI，期望 30 分 / P3，仅执行 A1。',
+    group: '夜间入闸与评分验证',
   },
   {
-    id: 'F4-CORELINE',
-    name: 'F4 虚拟警戒线越界',
-    description: '注入核心区越界数据，验证直接评为 P1 并进入 G1 出警路径。',
-    group: 'F规则验证',
+    id: 'A4',
+    name: '夜间-F1→F2短暂+逼近',
+    description: '夜间 01:10 F1 与 F2 在 3 分钟内联动且逼近，期望 50.4 分 / P2 → A2。',
+    group: '夜间入闸与评分验证',
   },
   {
-    id: 'A1-ONLY',
-    name: 'A1 静默记录闭环',
-    description: '构造弱证据事件，仅触发 A1，确认不会误升至 A2/A3。',
-    group: 'A动作路径',
+    id: 'A5',
+    name: '夜间-雷达仅持续=11s',
+    description: '夜间 21:40 雷达仅满足持续 ≥10s，期望 30 分 / P3，仅取证。',
+    group: '夜间入闸与评分验证',
   },
   {
-    id: 'A2-SUCCEED',
-    name: 'A2 挑战有效',
-    description: '模拟 A2 后目标离场的情形，验证事件在挑战窗口内收束。',
-    group: 'A动作路径',
+    id: 'A6',
+    name: '夜间-雷达≥10s且≤10m',
+    description: '夜间 23:05 雷达持续并进入近域，期望 60 分 / P2 → A2。',
+    group: '夜间入闸与评分验证',
   },
   {
-    id: 'A2-FAIL-G2',
-    name: 'A2 挑战无效→G2',
-    description: '目标无视远程警告持续存在，验证 G2 在挑战窗口后触发 A3。',
-    group: 'A动作路径',
+    id: 'A7',
+    name: '夜间-三源协同（F1×2+F2≥10s+F3）',
+    description: '夜间 00:20 三源同时成立，期望 194.4 分 / P1 → A2。',
+    group: '夜间入闸与评分验证',
   },
   {
-    id: 'G1-P1-A3',
-    name: 'G1 P1 即刻出警',
-    description: '通过核心区越界与外围佐证，验证 P1 优先触发 G1 且忽略低级规则。',
-    group: 'G派警逻辑',
+    id: 'A8',
+    name: '夜间-雷达短暂单点',
+    description: '夜间 03:00 雷达短暂单点，期望 15 分 / P4，仅 A1。',
+    group: '夜间入闸与评分验证',
   },
   {
-    id: 'G2-CHALLENGE',
-    name: 'G2 挑战窗口对齐',
-    description: '在挑战窗口内外分别注入 IMSI，再现挑战无效升级与新事件分界。',
-    group: 'G派警逻辑',
+    id: 'A9',
+    name: '夜间-同IMSI重现（30min内）',
+    description: '夜间 04:10 同一 IMSI 30 分钟内再现，期望 27 分 / P3，仅取证。',
+    group: '夜间入闸与评分验证',
   },
   {
-    id: 'G3-REPEAT',
-    name: 'G3 重复侵扰巡查',
-    description: '注入 24 小时内多次 P2/P3 事件，验证触发预防性巡查。',
-    group: 'G派警逻辑',
+    id: 'A10',
+    name: '夜间-白名单在场+核心人形',
+    description: '夜间 22:45 核心见人且白名单设备在场，期望 90 分 / P1 → A2。',
+    group: '夜间入闸与评分验证',
   },
   {
-    id: 'FX-MERGE-UP',
-    name: '融合多源上调',
-    description: '联合摄像头、IMSI、雷达注入，检查融合引擎合并并提升优先级。',
-    group: '融合与状态机',
+    id: 'B1',
+    name: 'A2后T到仍见核心人形（A3验证）',
+    description: '夜间挑战窗已满且核心仍有人形，期望触发 G2 → A3=是。',
+    group: '挑战窗口 A3 校验',
   },
   {
-    id: 'SM-ONE-A3',
-    name: '状态机单次出警',
-    description: '模拟同一事件多次触发出警条件，验证状态机仅执行一次 A3。',
-    group: '融合与状态机',
+    id: 'B2',
+    name: 'A2后T到雷达仍人形/逼近（A3验证）',
+    description: '夜间挑战窗已满且雷达仍逼近，期望触发 G2 → A3=是。',
+    group: '挑战窗口 A3 校验',
   },
   {
-    id: 'SM-CLOSE',
-    name: '状态机干净收尾',
-    description: '构造目标离场且双倍挑战窗无再现的记录，验证事件转入已恢复状态。',
-    group: '融合与状态机',
+    id: 'B3',
+    name: 'A2后未到T（A3不应触发）',
+    description: '夜间挑战窗尚未到期，期望 G2 不满足 → A3=否。',
+    group: '挑战窗口 A3 校验',
   },
   {
-    id: 'NEW-INCIDENT',
-    name: '挑战窗后新事件',
-    description: '在挑战窗口结束后重新注入同一 IMSI，验证被视为全新事件。',
-    group: '融合与状态机',
+    id: 'B4',
+    name: 'A2后T到但已恢复（A3不应触发）',
+    description: '夜间挑战窗已满但异常消失，期望 A3=否。',
+    group: '挑战窗口 A3 校验',
   },
   {
-    id: 'SYNC-T-REID',
-    name: '挑战窗口同步',
-    description: '制造 T−ε 与 T+ε 两种再识别，验证挑战窗口与再识别窗口完全一致。',
-    group: '同步与冷却',
+    id: 'C1',
+    name: '白天-核心人形',
+    description: '白天 10:00 核心摄像头见人，期望 60 分 / P2，仅执行 A1。',
+    group: '昼夜抑制与链路验证',
   },
   {
-    id: 'CD-F1',
-    name: 'F1 30 秒冷却',
-    description: '在 30 秒内多次注入同一目标 F1，验证冷却抑制重复触发。',
-    group: '同步与冷却',
+    id: 'C2',
+    name: '白天-F1×2+F2持续',
+    description: '白天 15:30 多源高分仍仅取证，期望 48 分 / P2，A2/A3 均为否。',
+    group: '昼夜抑制与链路验证',
   },
   {
-    id: 'CD-F2',
-    name: 'F2 5 分钟冷却',
-    description: '对同一 IMSI 在 5 分钟内重复注入，验证只记录第一次出现。',
-    group: '同步与冷却',
+    id: 'C3',
+    name: '夜间-F1→F2短暂（P不足）',
+    description: '夜间 01:40 链路成立但得分 36 分 / P3，A2 不触发。',
+    group: '昼夜抑制与链路验证',
   },
   {
-    id: 'CD-F4',
-    name: 'F4 越界防抖',
-    description: '连续越界抖动的模拟数据，验证一次事件只触发一次 F4/G1。',
-    group: '同步与冷却',
+    id: 'C4',
+    name: '夜间-F1→F2持续（链路）',
+    description: '夜间 02:50 链路+持续达标，期望 54 分 / P2 → A2。',
+    group: '昼夜抑制与链路验证',
   },
+  {
+    id: 'C5',
+    name: '白名单F1',
+    description: '白名单 IMSI 单独出现应被抑制，期望 0 分 / P4，仅 A1。',
+    group: '昼夜抑制与链路验证',
+  },
+  {
+    id: 'C6',
+    name: '雷达非人形',
+    description: '注入雷达噪声/非人形目标应被忽略，期望 0 分 / P4，仅 A1。',
+    group: '昼夜抑制与链路验证',
+  }
 ]
 
 const scenarioGroups = computed<ScenarioGroup[]>(() => {
@@ -1035,19 +1047,6 @@ onUnmounted(() => {
         <li>结案：若在 T 内或 mergeWindow 后无任何续发，且核心/雷达均无异常，则自动结案并进入冷却。</li>
       </ul>
 
-      <h3>自查与修复要点（本版相对上版的冲突消解）</h3>
-      <ol class="doc-list">
-        <li>去掉“圈层互不重叠”的旧表述：允许多传感器在核心边缘同时感知，通过归并+协同加权处理。</li>
-        <li>IMSI 不再作为 A3 的独立充分条件：避免“手机在附近但人已不在”的误派警。</li>
-        <li>F2 双阈值收紧：持续阈 τ=10 s、近域接近 ≤ 10 m（雷达量测，无需摄像头测距）。</li>
-        <li>动作闸门“先 A2 后 A3”严格化：A3 只能由“夜间 + 挑战失败”触发；P 级永不直接派警。</li>
-        <li>白天策略统一：白天固定不做 A2/A3，只执行 A1 取证。</li>
-        <li>参数对齐：挑战窗口 T=5 min 与 IMSI 再识别周期统一；各时间窗互不矛盾。</li>
-        <li>术语澄清：核心区距警戒线 ≤ 10 m 由雷达测距；摄像头只做越界人形识别。</li>
-      </ol>
-      <p class="doc-note">
-        以上版本以数值固定、触发明确、顺序刚性的形式提供：加分 → 协同 → 昼/夜乘子 → P 级 → G 闸门 → A 动作，可直接用于工程侧规则实现与联调验收。
-      </p>
     </section>
 
   </div>
@@ -1118,6 +1117,11 @@ onUnmounted(() => {
 
 .scenario-card :deep(.ant-card-head) {
   border-bottom-color: rgba(255, 255, 255, 0.12);
+}
+
+.scenario-card :deep(.ant-card-head-title) {
+  white-space: normal;
+  word-break: break-word;
 }
 
 .scenario-desc {

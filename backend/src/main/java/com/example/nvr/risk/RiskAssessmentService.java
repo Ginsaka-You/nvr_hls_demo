@@ -108,7 +108,13 @@ public class RiskAssessmentService {
 
     @Transactional
     public void recomputeAll() {
-        evaluateSiteWindow(Instant.now());
+        recomputeAt(Instant.now());
+    }
+
+    @Transactional
+    public void recomputeAt(Instant reference) {
+        Instant now = reference != null ? reference : Instant.now();
+        evaluateSiteWindow(now);
     }
 
     private void evaluateSiteWindow(Instant now) {

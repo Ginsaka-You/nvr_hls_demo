@@ -13,12 +13,14 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.Supplier;
 
 @Service
 public class RiskScenarioService {
@@ -31,12 +33,14 @@ public class RiskScenarioService {
             DateTimeFormatter.ofPattern("yyyyMMdd").withZone(DEFAULT_ZONE);
     private static final DateTimeFormatter REPORT_TIME_FORMAT =
             DateTimeFormatter.ofPattern("HHmmss").withZone(DEFAULT_ZONE);
+    private static final String SCENARIO_WHITELIST_IMSI = "460000000000001";
 
     private final CameraAlarmRepository cameraAlarmRepository;
     private final ImsiRecordRepository imsiRecordRepository;
     private final RadarTargetRepository radarTargetRepository;
     private final RiskAssessmentRepository riskAssessmentRepository;
     private final RiskAssessmentService riskAssessmentService;
+    private final Map<String, ScenarioDefinition> scenarioDefinitions;
 
     public RiskScenarioService(CameraAlarmRepository cameraAlarmRepository,
                                ImsiRecordRepository imsiRecordRepository,
@@ -48,93 +52,352 @@ public class RiskScenarioService {
         this.radarTargetRepository = radarTargetRepository;
         this.riskAssessmentRepository = riskAssessmentRepository;
         this.riskAssessmentService = riskAssessmentService;
+        this.scenarioDefinitions = buildScenarioDefinitions();
     }
 
     @Transactional
     public ScenarioResult runScenario(String scenarioId) {
         cleanupScenarioArtifacts();
-        Instant now = Instant.now();
         Map<String, Integer> created = new LinkedHashMap<>();
         String normalized = normalizeScenarioId(scenarioId);
-        String message;
-        switch (normalized) {
-            case "F1-BASE":
-                simulateF1Base(now, created);
-                message = "已注入 F1 一般区域闯入的基础验证数据";
-                break;
-            case "F2-FIRST":
-                simulateF2First(now, created);
-                message = "已注入 F2 未知 IMSI 首次出现的数据";
-                break;
-            case "F3-REAPPEAR":
-                simulateF3Reappear(now, created);
-                message = "已注入 F3 再现/久留并触发 A2 的数据";
-                break;
-            case "F4-CORELINE":
-                simulateF4Coreline(now, created);
-                message = "已注入 F4 虚拟警戒线越界直接触发 P1 的数据";
-                break;
-            case "A1-ONLY":
-                simulateA1Only(now, created);
-                message = "已注入仅触发 A1 监控记录的低级事件数据";
-                break;
-            case "A2-SUCCEED":
-                simulateA2Succeed(now, created);
-                message = "已注入 A2 挑战有效后事件收束的数据";
-                break;
-            case "A2-FAIL-G2":
-                simulateA2FailG2(now, created);
-                message = "已注入 A2 挑战无效由 G2 出警的数据";
-                break;
-            case "G1-P1-A3":
-                simulateG1P1A3(now, created);
-                message = "已注入 P1 立即触发 G1 出警的数据";
-                break;
-            case "G2-CHALLENGE":
-                simulateG2Challenge(now, created);
-                message = "已注入挑战窗口与再识别窗口对齐的验证数据";
-                break;
-            case "G3-REPEAT":
-                simulateG3Repeat(now, created);
-                message = "已注入 24 小时内重复触发的巡查派警数据";
-                break;
-            case "FX-MERGE-UP":
-                simulateFusionMergeUp(now, created);
-                message = "已注入多源融合上调优先级的数据";
-                break;
-            case "SM-ONE-A3":
-                simulateStateMachineSingleDispatch(now, created);
-                message = "已注入一次事件仅出警一次的状态机测试数据";
-                break;
-            case "SM-CLOSE":
-                simulateStateMachineClose(now, created);
-                message = "已注入事件在双倍挑战窗后自然收束的数据";
-                break;
-            case "NEW-INCIDENT":
-                simulateNewIncident(now, created);
-                message = "已注入挑战窗口后重新出现被视为新事件的数据";
-                break;
-            case "SYNC-T-REID":
-                simulateSyncWindow(now, created);
-                message = "已注入挑战窗口与再识别窗口同步边界的数据";
-                break;
-            case "CD-F1":
-                simulateCooldownF1(now, created);
-                message = "已注入 F1 30 秒冷却防抖的数据";
-                break;
-            case "CD-F2":
-                simulateCooldownF2(now, created);
-                message = "已注入 F2 5 分钟去重冷却的数据";
-                break;
-            case "CD-F4":
-                simulateCooldownF4(now, created);
-                message = "已注入 F4 越界 1 分钟冷却防抖的数据";
-                break;
-            default:
-                throw new IllegalArgumentException("未知的场景标识: " + scenarioId);
+        ScenarioDefinition definition = scenarioDefinitions.get(normalized);
+        if (definition == null) {
+            throw new IllegalArgumentException("未知的场景标识: " + scenarioId);
         }
-        riskAssessmentService.recomputeAll();
-        return new ScenarioResult(true, normalized, created, message);
+        Instant reference = definition.resolveReference();
+        definition.execute(reference, created);
+        riskAssessmentService.recomputeAt(reference);
+        return new ScenarioResult(true, normalized, created, definition.getMessage());
+    }
+
+    private Map<String, ScenarioDefinition> buildScenarioDefinitions() {
+        Map<String, ScenarioDefinition> map = new LinkedHashMap<>();
+        map.put("A1", new ScenarioDefinition("A1",
+                "夜间核心人形直击场景已注入",
+                () -> alignToLocalTime(22, 0),
+                this::simulateNightCoreHuman));
+        map.put("A2", new ScenarioDefinition("A2",
+                "夜间雷达持续逼近场景已注入",
+                () -> alignToLocalTime(23, 30),
+                this::simulateNightRadarPersistNearApproach));
+        map.put("A3", new ScenarioDefinition("A3",
+                "夜间外围双未知 IMSI 场景已注入",
+                () -> alignToLocalTime(2, 0),
+                this::simulateNightTwoUnknownImsi));
+        map.put("A4", new ScenarioDefinition("A4",
+                "夜间 F1→F2 短暂链路场景已注入",
+                () -> alignToLocalTime(1, 10),
+                this::simulateNightLinkShortApproach));
+        map.put("A5", new ScenarioDefinition("A5",
+                "夜间雷达仅持续 11s 场景已注入",
+                () -> alignToLocalTime(21, 40),
+                this::simulateNightRadarPersistOnly));
+        map.put("A6", new ScenarioDefinition("A6",
+                "夜间雷达持续且进入近域场景已注入",
+                () -> alignToLocalTime(23, 5),
+                this::simulateNightRadarPersistNearCore));
+        map.put("A7", new ScenarioDefinition("A7",
+                "夜间三源协同场景已注入",
+                () -> alignToLocalTime(0, 20),
+                this::simulateNightMultiSourceFusion));
+        map.put("A8", new ScenarioDefinition("A8",
+                "夜间雷达短暂单点场景已注入",
+                () -> alignToLocalTime(3, 0),
+                this::simulateNightRadarShortOnly));
+        map.put("A9", new ScenarioDefinition("A9",
+                "夜间同一 IMSI 再现场景已注入",
+                () -> alignToLocalTime(4, 10),
+                this::simulateNightImsiRepeat));
+        map.put("A10", new ScenarioDefinition("A10",
+                "夜间核心见人且白名单在场场景已注入",
+                () -> alignToLocalTime(22, 45),
+                this::simulateNightCoreWithWhitelist));
+        map.put("B1", new ScenarioDefinition("B1",
+                "A2 后挑战到期核心仍见人场景已注入",
+                () -> alignToLocalTime(22, 50),
+                this::simulateChallengeCoreStillPresent));
+        map.put("B2", new ScenarioDefinition("B2",
+                "A2 后挑战到期雷达仍逼近场景已注入",
+                () -> alignToLocalTime(23, 10),
+                this::simulateChallengeRadarStillPresent));
+        map.put("B3", new ScenarioDefinition("B3",
+                "A2 后未到挑战窗口场景已注入",
+                () -> alignToLocalTime(0, 15),
+                this::simulateChallengeWindowNotReached));
+        map.put("B4", new ScenarioDefinition("B4",
+                "A2 后挑战到期目标离场场景已注入",
+                () -> alignToLocalTime(0, 30),
+                this::simulateChallengeRecovered));
+        map.put("C1", new ScenarioDefinition("C1",
+                "白天核心人形取证场景已注入",
+                () -> alignToLocalTime(10, 0),
+                this::simulateDayCoreHumanOnly));
+        map.put("C2", new ScenarioDefinition("C2",
+                "白天高分但仅取证场景已注入",
+                () -> alignToLocalTime(15, 30),
+                this::simulateDayHighScoreNoAction));
+        map.put("C3", new ScenarioDefinition("C3",
+                "夜间链路分值不足场景已注入",
+                () -> alignToLocalTime(1, 40),
+                this::simulateNightLinkLowScore));
+        map.put("C4", new ScenarioDefinition("C4",
+                "夜间链路持续入闸场景已注入",
+                () -> alignToLocalTime(2, 50),
+                this::simulateNightLinkPersist));
+        map.put("C5", new ScenarioDefinition("C5",
+                "白名单 IMSI 抑制场景已注入",
+                () -> alignToLocalTime(12, 0),
+                this::simulateWhitelistOnly));
+        map.put("C6", new ScenarioDefinition("C6",
+                "雷达噪声抑制场景已注入",
+                () -> alignToLocalTime(13, 0),
+                this::simulateRadarNoiseOnly));
+        return Collections.unmodifiableMap(map);
+    }
+
+    private Instant alignToLocalTime(int hour, int minute) {
+        ZonedDateTime base = ZonedDateTime.now(DEFAULT_ZONE).withSecond(0).withNano(0);
+        ZonedDateTime target = base.withHour(hour).withMinute(minute);
+        if (target.isAfter(base.plusHours(12))) {
+            target = target.minusDays(1);
+        } else if (target.isBefore(base.minusHours(12))) {
+            target = target.plusDays(1);
+        }
+        return target.toInstant();
+    }
+
+    private void simulateNightCoreHuman(Instant reference, Map<String, Integer> created) {
+        createCameraAlarm("a1-night-core", "core-01", reference.minusSeconds(15), true);
+        addCount(created, "camera", 1);
+    }
+
+    private void simulateNightRadarPersistNearApproach(Instant reference, Map<String, Integer> created) {
+        createRadarTrack("a2-night-radar", 2001, reference.minusSeconds(18), reference.minusSeconds(6),
+                16.0, 8.0, 4, created);
+    }
+
+    private void simulateNightTwoUnknownImsi(Instant reference, Map<String, Integer> created) {
+        createImsiRecord("a3-night-imsi", "46011" + randomDigits(5), reference.minusSeconds(180));
+        createImsiRecord("a3-night-imsi", "46012" + randomDigits(5), reference.minusSeconds(120));
+        addCount(created, "imsi", 2);
+    }
+
+    private void simulateNightLinkShortApproach(Instant reference, Map<String, Integer> created) {
+        createImsiRecord("a4-night-link", "46013" + randomDigits(5), reference.minusSeconds(180));
+        addCount(created, "imsi", 1);
+        createRadarTrack("a4-night-link", 2401, reference.minusSeconds(12), reference.minusSeconds(5),
+                18.0, 12.0, 3, created);
+    }
+
+    private void simulateNightRadarPersistOnly(Instant reference, Map<String, Integer> created) {
+        createRadarTrack("a5-night-persist", 2501, reference.minusSeconds(20), reference.minusSeconds(9),
+                18.0, 17.0, 4, created);
+    }
+
+    private void simulateNightRadarPersistNearCore(Instant reference, Map<String, Integer> created) {
+        createRadarTrack("a6-night-near", 2601, reference.minusSeconds(20), reference.minusSeconds(5),
+                11.2, 9.8, 5, created);
+    }
+
+    private void simulateNightMultiSourceFusion(Instant reference, Map<String, Integer> created) {
+        createImsiRecord("a7-night-fusion", "46014" + randomDigits(5), reference.minusSeconds(240));
+        createImsiRecord("a7-night-fusion", "46015" + randomDigits(5), reference.minusSeconds(210));
+        addCount(created, "imsi", 2);
+        createRadarTrack("a7-night-fusion", 2701, reference.minusSeconds(30), reference.minusSeconds(10),
+                14.0, 12.0, 5, created);
+        createCameraAlarm("a7-night-fusion", "core-02", reference.minusSeconds(15), true);
+        addCount(created, "camera", 1);
+    }
+
+    private void simulateNightRadarShortOnly(Instant reference, Map<String, Integer> created) {
+        createRadarTrack("a8-night-short", 2801, reference.minusSeconds(12), reference.minusSeconds(5),
+                16.0, 16.2, 2, created);
+    }
+
+    private void simulateNightImsiRepeat(Instant reference, Map<String, Integer> created) {
+        String imsi = "46016" + randomDigits(5);
+        createImsiRecord("a9-night-repeat", imsi, reference.minusSeconds(20 * 60));
+        createImsiRecord("a9-night-repeat", imsi, reference.minusSeconds(90));
+        addCount(created, "imsi", 2);
+    }
+
+    private void simulateNightCoreWithWhitelist(Instant reference, Map<String, Integer> created) {
+        createCameraAlarm("a10-night-whitelist", "core-03", reference.minusSeconds(20), true);
+        addCount(created, "camera", 1);
+        createImsiRecord("a10-night-whitelist", SCENARIO_WHITELIST_IMSI, reference.minusSeconds(80));
+        addCount(created, "imsi", 1);
+    }
+
+    private void simulateChallengeCoreStillPresent(Instant reference, Map<String, Integer> created) {
+        createCameraAlarm("b1-challenge-core", "core-04", reference.minusSeconds(310), true);
+        createCameraAlarm("b1-challenge-core", "core-04", reference.minusSeconds(10), true);
+        addCount(created, "camera", 2);
+    }
+
+    private void simulateChallengeRadarStillPresent(Instant reference, Map<String, Integer> created) {
+        createRadarTrack("b2-challenge-radar", 3201, reference.minusSeconds(310), reference.minusSeconds(5),
+                14.0, 8.5, 6, created);
+    }
+
+    private void simulateChallengeWindowNotReached(Instant reference, Map<String, Integer> created) {
+        createRadarTrack("b3-challenge-soon", 3301, reference.minusSeconds(9), reference.minusSeconds(2),
+                11.0, 9.2, 3, created);
+    }
+
+    private void simulateChallengeRecovered(Instant reference, Map<String, Integer> created) {
+        createRadarTrack("b4-challenge-clear", 3401, reference.minusSeconds(360), reference.minusSeconds(320),
+                14.0, 13.6, 3, created);
+    }
+
+    private void simulateDayCoreHumanOnly(Instant reference, Map<String, Integer> created) {
+        createCameraAlarm("c1-day-core", "core-05", reference.minusSeconds(20), true);
+        addCount(created, "camera", 1);
+    }
+
+    private void simulateDayHighScoreNoAction(Instant reference, Map<String, Integer> created) {
+        createImsiRecord("c2-day-high", "46017" + randomDigits(5), reference.minusSeconds(260));
+        createImsiRecord("c2-day-high", "46018" + randomDigits(5), reference.minusSeconds(210));
+        addCount(created, "imsi", 2);
+        createRadarTrack("c2-day-high", 3501, reference.minusSeconds(18), reference.minusSeconds(6),
+                15.0, 14.4, 4, created);
+    }
+
+    private void simulateNightLinkLowScore(Instant reference, Map<String, Integer> created) {
+        createImsiRecord("c3-night-low", "46019" + randomDigits(5), reference.minusSeconds(200));
+        addCount(created, "imsi", 1);
+        createRadarTrack("c3-night-low", 3601, reference.minusSeconds(9), reference.minusSeconds(3),
+                15.0, 14.4, 3, created);
+    }
+
+    private void simulateNightLinkPersist(Instant reference, Map<String, Integer> created) {
+        createImsiRecord("c4-night-link", "46020" + randomDigits(5), reference.minusSeconds(180));
+        addCount(created, "imsi", 1);
+        createRadarTrack("c4-night-link", 3701, reference.minusSeconds(18), reference.minusSeconds(6),
+                14.0, 13.0, 4, created);
+    }
+
+    private void simulateWhitelistOnly(Instant reference, Map<String, Integer> created) {
+        createImsiRecord("c5-whitelist", SCENARIO_WHITELIST_IMSI, reference.minusSeconds(60));
+        addCount(created, "imsi", 1);
+    }
+
+    private void simulateRadarNoiseOnly(Instant reference, Map<String, Integer> created) {
+        createRadarNoise("c6-noise", reference.minusSeconds(30));
+        addCount(created, "radar", 1);
+    }
+
+    private void createRadarTrack(String scenario,
+                                  int trackId,
+                                  Instant start,
+                                  Instant end,
+                                  double startRange,
+                                  double endRange,
+                                  int samples,
+                                  Map<String, Integer> created) {
+        if (samples < 2) {
+            samples = 2;
+        }
+        if (end.isBefore(start)) {
+            Instant tmp = start;
+            start = end;
+            end = tmp;
+            double rangeTmp = startRange;
+            startRange = endRange;
+            endRange = rangeTmp;
+        }
+        Duration total = Duration.between(start, end);
+        if (total.isZero()) {
+            total = Duration.ofSeconds(1);
+        }
+        Duration step = total.dividedBy(samples - 1);
+        double totalSeconds = Math.max(1.0, total.toMillis() / 1000.0);
+        double speed = (endRange - startRange) / totalSeconds;
+        for (int i = 0; i < samples; i++) {
+            Instant timestamp = i == samples - 1 ? end : start.plus(step.multipliedBy(i));
+            double fraction = (double) i / (samples - 1);
+            double range = startRange + (endRange - startRange) * fraction;
+            double longitudinal = range;
+            double lateral = 0.2 * i;
+            createRadarTarget(scenario, trackId, range, longitudinal, lateral, speed, timestamp);
+        }
+        addCount(created, "radar", samples);
+    }
+
+    private void createCameraAlarm(String scenario, String channel, Instant createdAt, boolean core) {
+        String id = SCENARIO_PREFIX + scenario + "-" + UUID.randomUUID();
+        String type = core ? "core-perimeter-breach" : "perimeter-watch";
+        String level = core ? "critical" : "minor";
+        CameraAlarmEntity entity = new CameraAlarmEntity(
+                id,
+                type,
+                channel,
+                level,
+                EVENT_TIME_FORMAT.format(createdAt)
+        );
+        entity.setCreatedAt(createdAt);
+        cameraAlarmRepository.save(entity);
+    }
+
+    private void createImsiRecord(String scenario, String imsi, Instant fetchedAt) {
+        String reportDate = REPORT_DATE_FORMAT.format(fetchedAt);
+        String reportTime = REPORT_TIME_FORMAT.format(fetchedAt);
+        ImsiRecordEntity entity = new ImsiRecordEntity(
+                scenario,
+                imsi,
+                "460",
+                "TERRITORY",
+                reportDate,
+                reportTime,
+                SCENARIO_PREFIX + scenario,
+                null,
+                "scenario-host",
+                9000,
+                "scenario",
+                "scenario injection",
+                5L,
+                fetchedAt
+        );
+        imsiRecordRepository.save(entity);
+    }
+
+    private void createRadarTarget(String scenario,
+                                   int trackId,
+                                   double range,
+                                   double longitudinal,
+                                   double lateral,
+                                   double speed,
+                                   Instant capturedAt) {
+        RadarTargetEntity entity = new RadarTargetEntity(
+                SCENARIO_PREFIX + scenario,
+                6100,
+                6200,
+                6201,
+                true,
+                200,
+                256,
+                1,
+                trackId,
+                longitudinal,
+                lateral,
+                speed,
+                range,
+                12.0,
+                120,
+                30,
+                15.0,
+                3,
+                2,
+                1,
+                0,
+                0,
+                0,
+                capturedAt
+        );
+        radarTargetRepository.save(entity);
+    }
+
+    private void createRadarNoise(String scenario, Instant timestamp) {
+        createRadarTarget(scenario, 9000, 250.0, 250.0, 0.0, 0.0, timestamp);
     }
 
     private String normalizeScenarioId(String scenarioId) {
@@ -179,6 +442,10 @@ public class RiskScenarioService {
         return new ScenarioResult(true, "reset-model", removed, message);
     }
 
+    private void addCount(Map<String, Integer> created, String key, int amount) {
+        created.merge(key, amount, Integer::sum);
+    }
+
     private int safeCount(long value) {
         if (value > Integer.MAX_VALUE) {
             return Integer.MAX_VALUE;
@@ -189,231 +456,6 @@ public class RiskScenarioService {
         return (int) value;
     }
 
-    private void simulateF1Base(Instant now, Map<String, Integer> created) {
-        createCameraAlarm("f1-base", "outer-01", now.minusSeconds(25), false);
-        addCount(created, "camera", 1);
-    }
-
-    private void simulateF2First(Instant now, Map<String, Integer> created) {
-        String imsi = "46010" + randomDigits(5);
-        createImsiRecord("f2-first", imsi, now.minus(Duration.ofMinutes(2)));
-        addCount(created, "imsi", 1);
-    }
-
-    private void simulateF3Reappear(Instant now, Map<String, Integer> created) {
-        String imsi = "46020" + randomDigits(5);
-        createImsiRecord("f3-reappear", imsi, now.minus(Duration.ofMinutes(26)));
-        createImsiRecord("f3-reappear", imsi, now.minus(Duration.ofMinutes(8)));
-        createImsiRecord("f3-reappear", imsi, now.minus(Duration.ofMinutes(2)));
-        createCameraAlarm("f3-reappear", "outer-02", now.minus(Duration.ofMinutes(2)), false);
-        addCount(created, "imsi", 3);
-        addCount(created, "camera", 1);
-    }
-
-    private void simulateF4Coreline(Instant now, Map<String, Integer> created) {
-        createCameraAlarm("f4-core", "core-01", now.minusSeconds(30), true);
-        addCount(created, "camera", 1);
-    }
-
-    private void simulateA1Only(Instant now, Map<String, Integer> created) {
-        createCameraAlarm("a1-only", "outer-03", now.minus(Duration.ofMinutes(4)), false);
-        String imsi = "46030" + randomDigits(5);
-        createImsiRecord("a1-only", imsi, now.minus(Duration.ofMinutes(5)));
-        addCount(created, "camera", 1);
-        addCount(created, "imsi", 1);
-    }
-
-    private void simulateA2Succeed(Instant now, Map<String, Integer> created) {
-        String imsi = "46040" + randomDigits(5);
-        createImsiRecord("a2-succeed", imsi, now.minus(Duration.ofMinutes(18)));
-        createImsiRecord("a2-succeed", imsi, now.minus(Duration.ofMinutes(6)));
-        createCameraAlarm("a2-succeed", "outer-04", now.minus(Duration.ofMinutes(6)), false);
-        addCount(created, "imsi", 2);
-        addCount(created, "camera", 1);
-    }
-
-    private void simulateA2FailG2(Instant now, Map<String, Integer> created) {
-        String imsi = "46050" + randomDigits(5);
-        createImsiRecord("a2-fail", imsi, now.minus(Duration.ofMinutes(16)));
-        createImsiRecord("a2-fail", imsi, now.minus(Duration.ofMinutes(4)));
-        createImsiRecord("a2-fail", imsi, now.minus(Duration.ofMinutes(2)));
-        createCameraAlarm("a2-fail", "outer-05", now.minus(Duration.ofMinutes(2)), false);
-        addCount(created, "imsi", 3);
-        addCount(created, "camera", 1);
-    }
-
-    private void simulateG1P1A3(Instant now, Map<String, Integer> created) {
-        createCameraAlarm("g1-p1", "core-02", now.minusSeconds(40), true);
-        createCameraAlarm("g1-p1", "outer-06", now.minusSeconds(55), false);
-        addCount(created, "camera", 2);
-    }
-
-    private void simulateG2Challenge(Instant now, Map<String, Integer> created) {
-        String imsi = "46060" + randomDigits(5);
-        createImsiRecord("g2-challenge", imsi, now.minus(Duration.ofMinutes(9)));
-        createImsiRecord("g2-challenge", imsi, now.minus(Duration.ofMinutes(4)).minusSeconds(30));
-        createCameraAlarm("g2-challenge", "outer-07", now.minus(Duration.ofMinutes(4)).minusSeconds(15), false);
-
-        String imsiNew = "46061" + randomDigits(5);
-        createImsiRecord("g2-challenge", imsiNew, now.minus(Duration.ofMinutes(9)));
-        createImsiRecord("g2-challenge", imsiNew, now.minusSeconds(30));
-
-        addCount(created, "imsi", 4);
-        addCount(created, "camera", 1);
-    }
-
-    private void simulateG3Repeat(Instant now, Map<String, Integer> created) {
-        createCameraAlarm("g3-repeat", "outer-08", now.minus(Duration.ofHours(20)), false);
-        createCameraAlarm("g3-repeat", "outer-08", now.minus(Duration.ofHours(2)), false);
-        String imsi = "46070" + randomDigits(5);
-        createImsiRecord("g3-repeat", imsi, now.minus(Duration.ofHours(21)));
-        createImsiRecord("g3-repeat", imsi, now.minus(Duration.ofHours(1)));
-        addCount(created, "camera", 2);
-        addCount(created, "imsi", 2);
-    }
-
-    private void simulateFusionMergeUp(Instant now, Map<String, Integer> created) {
-        createCameraAlarm("fx-merge", "outer-09", now.minus(Duration.ofMinutes(3)), false);
-        String imsi = "46080" + randomDigits(5);
-        createImsiRecord("fx-merge", imsi, now.minus(Duration.ofMinutes(2)));
-        createRadarTarget("fx-merge", now.minus(Duration.ofMinutes(2)));
-        addCount(created, "camera", 1);
-        addCount(created, "imsi", 1);
-        addCount(created, "radar", 1);
-    }
-
-    private void simulateStateMachineSingleDispatch(Instant now, Map<String, Integer> created) {
-        createCameraAlarm("sm-one", "core-03", now.minusSeconds(90), true);
-        createCameraAlarm("sm-one", "core-03", now.minusSeconds(45), true);
-        String imsi = "46090" + randomDigits(5);
-        createImsiRecord("sm-one", imsi, now.minus(Duration.ofMinutes(4)));
-        createImsiRecord("sm-one", imsi, now.minus(Duration.ofMinutes(3)));
-        addCount(created, "camera", 2);
-        addCount(created, "imsi", 2);
-    }
-
-    private void simulateStateMachineClose(Instant now, Map<String, Integer> created) {
-        String imsi = "46100" + randomDigits(5);
-        createImsiRecord("sm-close", imsi, now.minus(Duration.ofMinutes(18)));
-        createImsiRecord("sm-close", imsi, now.minus(Duration.ofMinutes(7)));
-        createCameraAlarm("sm-close", "outer-10", now.minus(Duration.ofMinutes(7)), false);
-        addCount(created, "imsi", 2);
-        addCount(created, "camera", 1);
-    }
-
-    private void simulateNewIncident(Instant now, Map<String, Integer> created) {
-        String imsi = "46110" + randomDigits(5);
-        createImsiRecord("new-incident", imsi, now.minus(Duration.ofMinutes(20)));
-        createImsiRecord("new-incident", imsi, now.minus(Duration.ofMinutes(13)));
-        createImsiRecord("new-incident", imsi, now.minus(Duration.ofMinutes(3)));
-        addCount(created, "imsi", 3);
-    }
-
-    private void simulateSyncWindow(Instant now, Map<String, Integer> created) {
-        String imsiWithin = "46120" + randomDigits(5);
-        createImsiRecord("sync-window", imsiWithin, now.minus(Duration.ofMinutes(6)));
-        createImsiRecord("sync-window", imsiWithin, now.minus(Duration.ofMinutes(1)).minusSeconds(10));
-
-        String imsiOutside = "46121" + randomDigits(5);
-        createImsiRecord("sync-window", imsiOutside, now.minus(Duration.ofMinutes(6)));
-        createImsiRecord("sync-window", imsiOutside, now.minusSeconds(40));
-
-        addCount(created, "imsi", 4);
-    }
-
-    private void simulateCooldownF1(Instant now, Map<String, Integer> created) {
-        createCameraAlarm("cd-f1", "outer-11", now.minusSeconds(25), false);
-        createCameraAlarm("cd-f1", "outer-11", now.minusSeconds(15), false);
-        createCameraAlarm("cd-f1", "outer-11", now.minusSeconds(5), false);
-        addCount(created, "camera", 3);
-    }
-
-    private void simulateCooldownF2(Instant now, Map<String, Integer> created) {
-        String imsi = "46130" + randomDigits(5);
-        createImsiRecord("cd-f2", imsi, now.minus(Duration.ofMinutes(4)));
-        createImsiRecord("cd-f2", imsi, now.minus(Duration.ofMinutes(2)));
-        createImsiRecord("cd-f2", imsi, now.minus(Duration.ofMinutes(1)));
-        addCount(created, "imsi", 3);
-    }
-
-    private void simulateCooldownF4(Instant now, Map<String, Integer> created) {
-        createCameraAlarm("cd-f4", "core-04", now.minusSeconds(50), true);
-        createCameraAlarm("cd-f4", "core-04", now.minusSeconds(30), true);
-        createCameraAlarm("cd-f4", "core-04", now.minusSeconds(10), true);
-        addCount(created, "camera", 3);
-    }
-
-    private void createCameraAlarm(String scenario, String channel, Instant createdAt, boolean core) {
-        String id = SCENARIO_PREFIX + scenario + "-" + UUID.randomUUID();
-        String type = core ? "core-perimeter-breach" : "perimeter-watch";
-        String level = core ? "critical" : "minor";
-        CameraAlarmEntity entity = new CameraAlarmEntity(
-                id,
-                type,
-                channel,
-                level,
-                EVENT_TIME_FORMAT.format(createdAt)
-        );
-        entity.setCreatedAt(createdAt);
-        cameraAlarmRepository.save(entity);
-    }
-
-    private void createImsiRecord(String scenario, String imsi, Instant fetchedAt) {
-        String reportDate = REPORT_DATE_FORMAT.format(fetchedAt);
-        String reportTime = REPORT_TIME_FORMAT.format(fetchedAt);
-        ImsiRecordEntity entity = new ImsiRecordEntity(
-                scenario,
-                imsi,
-                "460",
-                "TERRITORY",
-                reportDate,
-                reportTime,
-                SCENARIO_PREFIX + scenario,
-                null,
-                "scenario-host",
-                9000,
-                "scenario",
-                "scenario injection",
-                5L,
-                fetchedAt
-        );
-        imsiRecordRepository.save(entity);
-    }
-
-    private void createRadarTarget(String scenario, Instant capturedAt) {
-        RadarTargetEntity entity = new RadarTargetEntity(
-                SCENARIO_PREFIX + scenario,
-                6100,
-                6200,
-                6201,
-                true,
-                200,
-                256,
-                1,
-                77,
-                11.8,
-                2.4,
-                2.6,
-                0.5,
-                44.0,
-                118,
-                35,
-                21.5,
-                3,
-                2,
-                1,
-                0,
-                0,
-                0,
-                capturedAt
-        );
-        radarTargetRepository.save(entity);
-    }
-
-    private void addCount(Map<String, Integer> created, String key, int amount) {
-        created.merge(key, amount, Integer::sum);
-    }
-
     private String randomDigits(int length) {
         ThreadLocalRandom random = ThreadLocalRandom.current();
         StringBuilder builder = new StringBuilder(length);
@@ -421,6 +463,37 @@ public class RiskScenarioService {
             builder.append(random.nextInt(10));
         }
         return builder.toString();
+    }
+
+    private static class ScenarioDefinition {
+        private final String id;
+        private final String message;
+        private final Supplier<Instant> referenceSupplier;
+        private final ScenarioExecutor executor;
+
+        ScenarioDefinition(String id, String message, Supplier<Instant> referenceSupplier, ScenarioExecutor executor) {
+            this.id = id;
+            this.message = message;
+            this.referenceSupplier = referenceSupplier;
+            this.executor = executor;
+        }
+
+        String getMessage() {
+            return message;
+        }
+
+        Instant resolveReference() {
+            return referenceSupplier != null ? referenceSupplier.get() : Instant.now();
+        }
+
+        void execute(Instant reference, Map<String, Integer> created) {
+            executor.execute(reference, created);
+        }
+    }
+
+    @FunctionalInterface
+    private interface ScenarioExecutor {
+        void execute(Instant reference, Map<String, Integer> created);
     }
 
     public static class ScenarioResult {

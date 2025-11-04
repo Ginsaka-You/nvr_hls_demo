@@ -12,7 +12,8 @@ parameters:
   f1ToF2LinkWindow: PT4M
   radarPersistThreshold: PT10S
   radarNearCoreMeters: 10
-  imsiWhitelist: []
+  imsiWhitelist:
+    - "460000000000001"
 priorities:
   - id: P1
     name: "P1 最高优先级"
