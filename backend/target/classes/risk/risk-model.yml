@@ -1,4 +1,4 @@
-version: "2024Q4-RC2"
+version: "2024Q4-FINAL"
 parameters:
   timezone: "Asia/Shanghai"
   nightStartHour: 18
@@ -18,7 +18,7 @@ priorities:
   - id: P1
     name: "P1 最高优先级"
     description: "综合得分 ≥70，或核心摄像头直接见人，表明入侵已抵达警戒线内。"
-    guidance: "立即执行 A2 并进入 G1，挑战窗口到期仍异常时准备 A3。"
+    guidance: "立即执行 A2 并进入 G1；夜间挑战失败再准备 A3。"
   - id: P2
     name: "P2 高优先级"
     description: "综合得分 40–69，通常为雷达近域逼近或 IMSI+雷达协同。"
@@ -37,7 +37,7 @@ actions:
     description: "自动留痕并维持事件上下文，不主动干预。"
   - id: A2
     name: "A2 远程挑战"
-    description: "灯光+喊话一次性执行，并启动 5 分钟挑战窗口。"
+    description: "灯光+喊话一次性执行，并启动 5 分钟挑战窗口（白天仅核心越界触发）。"
   - id: A3
     name: "A3 人员出动"
     description: "通知安保到场（非公安），同一事件仅一次。"
@@ -49,7 +49,7 @@ fRules:
     window: "mergeWindow=300s 内去重统计"
     frequencyLimit: "同一 IMSI 5min 内仅记 1 次首次出现"
     cooldown: "PT5M"
-    actionImpact: "提供弱线索，得分受昼夜与协同乘子影响"
+    actionImpact: "提供弱线索，仅外圈降噪用白名单，得分受昼夜与协同乘子影响"
   - id: F2
     name: "雷达中圈逼近"
     trigger: "雷达检测人形 10–150m 内靠近核心，持续≥10s 计强信号"
@@ -65,21 +65,21 @@ fRules:
     window: "即时触发"
     frequencyLimit: "每次越界 1 次"
     cooldown: "PT1M"
-    actionImpact: "直接贡献 +60，夜间通常触及 P1 并触发 A2"
+    actionImpact: "直接贡献 +60，昼夜均可触发 G1 挑战"
 gRules:
   - id: G1
-    name: "夜间挑战闸门"
-    trigger: "夜间且满足 core_human 或 P≥P2 且（mid_persist/near_core/link_f1_f2）"
+    name: "挑战闸门"
+    trigger: "夜间：core_human 或 P≥P2 且（mid_persist/near_core/link_f1_f2）；白天：仅 core_human"
     action: "A2"
     notes: "A2 每事件仅一次，挑战窗口 T=5min"
   - id: G2
     name: "挑战失败升级"
     trigger: "夜间且 A2 后 T 到仍异常（核心见人或雷达持续逼近）"
     action: "A3"
-    notes: "仅夜间允许 A3，T 与 IMSI 再识别周期对齐"
+    notes: "仅夜间允许 A3，白名单不影响判定，T 与 IMSI 再识别周期对齐"
   - id: G3
     name: "白天取证闸门"
-    trigger: "06:00–18:00 任意得分"
+    trigger: "白天且未命中 G1（无核心越界）"
     action: "A1"
     notes: "白天仅取证，不执行 A2/A3"
 stateMachine:

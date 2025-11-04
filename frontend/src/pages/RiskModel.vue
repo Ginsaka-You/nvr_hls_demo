@@ -869,11 +869,15 @@ onUnmounted(() => {
     </section>
 
     <section class="model-doc">
-      <h2>风控模型规则（2024Q3 修订）</h2>
+      <h2>风控模型规则（v0.4）</h2>
       <p>
-        下面是逐条自查并修复后的最终版规则表。仅保留三类设备（IMSI 外圈≈500 m、雷达中圈10–150 m、摄像头核心区30–50 m），仅夜间允许 A3（人员出动），
-        A2 必须先于 A3 并以挑战窗口 T=5 min 为闸门，不做设备调参。对上版存在的模糊或冲突点已修复并在文末列出更正要点。
+        最终版规则保留三类感知设备（IMSI 外圈≈500 m、雷达中圈10–150 m、核心摄像头30–50 m），并落实“白天仅对核心入侵喊话、夜间
+        A2→A3 闭环”与“白名单只削噪外圈 IMSI”两项关键修订。
       </p>
+      <ol class="doc-list">
+        <li><strong>白天允许触发 A2</strong>，但仅当 <code>F3=core_human</code>（核心越界人形）。</li>
+        <li><strong>夜间核心入侵绝不豁免</strong>：即使出现白名单 IMSI，只要核心或雷达仍异常，照常执行 A2→A3。</li>
+      </ol>
 
       <hr />
 
@@ -890,7 +894,7 @@ onUnmounted(() => {
           <tr>
             <td>夜间时段</td>
             <td class="numeric">18:00–06:00</td>
-            <td>仅夜间允许 A3（人员出动）；白天不执行 A2/A3（只取证）</td>
+            <td>仅夜间允许 A3（人员出动）；白天可 A2，但仅限 F3 核心入侵</td>
           </tr>
           <tr>
             <td>融合归并窗 mergeWindow</td>
@@ -905,7 +909,7 @@ onUnmounted(() => {
           <tr>
             <td>F2 持续阈值 τ</td>
             <td class="numeric">10 s</td>
-            <td>雷达人形“持续”判定阈值（由 40 s 下调）</td>
+            <td>雷达人形“持续”判定阈值</td>
           </tr>
           <tr>
             <td>F1→F2 链路窗 Δt</td>
@@ -923,22 +927,18 @@ onUnmounted(() => {
             <td>同一未知 IMSI 30 min 内再次出现计“重复出现”</td>
           </tr>
           <tr>
-            <td>F2 近域接近阈值（距核心警戒线）</td>
+            <td>F2 近域接近阈值</td>
             <td class="numeric">≤ 10 m</td>
-            <td>由 150 m 收紧，使用雷达量测到核心警戒线外侧的距离</td>
+            <td>雷达量测到核心警戒线外侧的距离</td>
           </tr>
         </tbody>
       </table>
-      <p class="doc-note">
-        注：圈层可物理重叠（例如核心边缘同时被雷达与摄像覆盖）；融合通过时间窗/扇区归并处理，不再宣称“互不重叠”。
-      </p>
+      <p class="doc-note">圈层可物理重叠；融合以“时间窗+扇区”归并协同。</p>
 
       <h3>1）F 规则：前端触发与逐项加分</h3>
-      <p>
-        先累加 F1/F2/F3 的子项分，再按 §2 的协同 ×1.2 与昼/夜乘子（夜 ×1.5 / 昼 ×1.0）依次应用得到综合得分。
-      </p>
+      <p>先累加 F1/F2/F3 子项分，再按 §2 的协同 ×1.2 与昼/夜乘子（夜 ×1.5 / 昼 ×1.0）依次应用得到综合得分。</p>
 
-      <h4>F1 外圈 / IMSI（≈500 m，覆盖村庄；白名单仅影响 F1）</h4>
+      <h4>F1 外圈 / IMSI（≈500 m；白名单仅影响 F1）</h4>
       <table class="model-table">
         <thead>
           <tr>
@@ -950,26 +950,24 @@ onUnmounted(() => {
         <tbody>
           <tr>
             <td>outer_unknown_cnt</td>
-            <td>同一扇区内出现非白名单 IMSI 的去重计数</td>
+            <td>同一扇区出现非白名单 IMSI 的去重计数</td>
             <td class="numeric">+10 × min(计数, 2)（最多 +20）</td>
           </tr>
           <tr>
             <td>outer_repeat</td>
-            <td>同一非白名单 IMSI 在 IMSI 重现窗（30 min）内再次出现</td>
+            <td>同一非白名单 IMSI 在 30 min 内再次出现</td>
             <td class="numeric">+8</td>
           </tr>
           <tr>
             <td>whitelist_suppress</td>
-            <td>IMSI 在白名单</td>
-            <td class="numeric">0 分（该 IMSI 在本窗内不计分）</td>
+            <td>IMSI 在白名单 → 当窗不计分、亦不计入协同</td>
+            <td class="numeric">0</td>
           </tr>
         </tbody>
       </table>
-      <p class="doc-note">
-        设计意图：外圈覆盖村庄，F1 单独是弱线索；夜间通过乘子放大，或与 F2/F3 形成链路后意义增大。
-      </p>
+      <p class="doc-note">白名单仅用于外圈降噪，不影响 F2/F3 判定，也不干预任何闸门。</p>
 
-      <h4>F2 中圈 / 雷达（10–150 m；阈值收紧：距离 ≤ 10 m，持续 ≥ 10 s）</h4>
+      <h4>F2 中圈 / 雷达（10–150 m；阈值收紧）</h4>
       <table class="model-table">
         <thead>
           <tr>
@@ -981,31 +979,28 @@ onUnmounted(() => {
         <tbody>
           <tr>
             <td>mid_short</td>
-            <td>目标为人形/类人形，但持续 &lt; τ=10 s</td>
+            <td>人形/类人形，持续 &lt; 10 s</td>
             <td class="numeric">+10</td>
           </tr>
           <tr>
             <td>mid_persist</td>
-            <td>人形/类人形 且 持续 ≥ τ=10 s</td>
+            <td>人形/类人形，持续 ≥ 10 s</td>
             <td class="numeric">+20</td>
           </tr>
           <tr>
             <td>approach_core</td>
-            <td>目标轨迹向核心逼近（雷达量测半径单调递减/速度落差接近）</td>
+            <td>轨迹向核心逼近（半径单调递减/速度落差接近）</td>
             <td class="numeric">+8（可叠加）</td>
           </tr>
           <tr>
             <td>near_core_10m</td>
-            <td>目标进入距核心警戒线 ≤ 10 m 的近域接近</td>
-            <td class="numeric">+20（可与上叠加）</td>
+            <td>进入距核心警戒线 ≤ 10 m 的近域</td>
+            <td class="numeric">+20（可叠加）</td>
           </tr>
         </tbody>
       </table>
-      <p class="doc-note">
-        约束：务农/动物由人形分类与速度/尺寸门限抑制。变更：τ 由 40 s → 10 s，“近域接近”由 150 m 收紧为 ≤ 10 m 并单列加分。
-      </p>
 
-      <h4>F3 核心区 / 摄像头（30–50 m；核心区=警戒线内）</h4>
+      <h4>F3 核心区 / 摄像头（30–50 m）</h4>
       <table class="model-table">
         <thead>
           <tr>
@@ -1017,16 +1012,13 @@ onUnmounted(() => {
         <tbody>
           <tr>
             <td>core_human</td>
-            <td>识别人形跨越核心区警戒线（昼/夜均计分）</td>
+            <td>识别人形跨越核心警戒线（昼/夜均计分）</td>
             <td class="numeric">+60</td>
           </tr>
         </tbody>
       </table>
-      <p class="doc-note">
-        白天只取证；夜间命中闸门先 A2，挑战窗口失败再 A3。
-      </p>
 
-      <h3>2）协同与昼/夜乘子（应用顺序固定）</h3>
+      <h3>2）协同与昼/夜乘子（顺序固定）</h3>
       <table class="model-table">
         <thead>
           <tr>
@@ -1039,7 +1031,7 @@ onUnmounted(() => {
         <tbody>
           <tr>
             <td>多源协同</td>
-            <td>mergeWindow 内 ≥2 类设备成立（任意 F1/F2/F3 组合）</td>
+            <td>mergeWindow 内 ≥2 类设备成立（白名单 IMSI 不计入）</td>
             <td class="numeric">× 1.2</td>
             <td>先应用</td>
           </tr>
@@ -1058,38 +1050,36 @@ onUnmounted(() => {
         </tbody>
       </table>
 
-      <h3>3）P 等级阈值（P1 最高；仅做强度表述与闸门前置条件）</h3>
+      <h3>3）P 等级阈值（仅用于强度与闸门前置）</h3>
       <table class="model-table">
         <thead>
           <tr>
             <th>P 等级</th>
-            <th>综合得分区间（含协同/昼夜加权后）</th>
+            <th class="numeric">综合得分区间</th>
           </tr>
         </thead>
         <tbody>
           <tr>
             <td>P1</td>
-            <td>≥ 70</td>
+            <td class="numeric">≥ 70</td>
           </tr>
           <tr>
             <td>P2</td>
-            <td>40–69</td>
+            <td class="numeric">40–69</td>
           </tr>
           <tr>
             <td>P3</td>
-            <td>15–39</td>
+            <td class="numeric">15–39</td>
           </tr>
           <tr>
             <td>P4</td>
-            <td>&lt; 15</td>
+            <td class="numeric">&lt; 15</td>
           </tr>
         </tbody>
       </table>
-      <p class="doc-note">
-        P 仅用于强度表达与入闸门判断，绝不直接触发 A3（修复了“以 P 直接派警”的潜在歧义）。
-      </p>
+      <p class="doc-note">P 仅作强度表达与闸门前置，不直接派警。</p>
 
-      <h3>4）A 类动作（动作定义、触发时机、去重）</h3>
+      <h3>4）A 类动作（内容、时机、去重）</h3>
       <table class="model-table">
         <thead>
           <tr>
@@ -1102,100 +1092,71 @@ onUnmounted(() => {
         <tbody>
           <tr>
             <td>A1 – 取证记录</td>
-            <td>系统标注与录像留存（纯逻辑，不改设备）</td>
-            <td>任一 F 事件成立即进入事件周期时</td>
-            <td>每事件自动进行</td>
+            <td>系统标注与录像留存（不改动硬件）</td>
+            <td>任一 F 事件成立</td>
+            <td>每事件自动执行</td>
           </tr>
           <tr>
             <td>A2 – 远程挑战</td>
-            <td>灯光 + 语音喊话（一次性）</td>
-            <td>命中 G1 闸门时立即执行</td>
-            <td>每事件仅 1 次，并启动 T=300 s</td>
+            <td>灯光 + 语音喊话一次性执行</td>
+            <td>命中 G1 即刻执行（昼夜共用 T=300 s）</td>
+            <td>每事件 1 次，并启动挑战窗口</td>
           </tr>
           <tr>
             <td>A3 – 人员出动</td>
             <td>通知安保到场（非公安）</td>
-            <td>命中 G2 闸门（A2 后 T 到且仍异常），且仅夜间</td>
-            <td>每事件仅 1 次</td>
+            <td>命中 G2，且仅夜间生效</td>
+            <td>每事件 1 次</td>
           </tr>
         </tbody>
       </table>
-      <p class="doc-note">
-        执行顺序固定：A1 →（必要时）A2 →（T 失败且夜间）A3；白天禁止 A2/A3。
-      </p>
+      <p class="doc-note">执行顺序固定：A1 →（命中 G1）A2 →（夜间且挑战失败）A3。</p>
 
-      <h3>5）G 闸门（与 A 动作绑定；修复了 IMSI 单独升级的歧义）</h3>
-      <p class="doc-note">
-        记：link_f1_f2 = 同扇区内 F1 未知 IMSI 在先，Δt=240 s 内出现 F2。
-      </p>
-      <table class="model-table">
-        <thead>
-          <tr>
-            <th>闸门</th>
-            <th>命中条件</th>
-            <th>时段</th>
-            <th>动作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>G1（入 A2）</td>
-            <td>夜间且满足任一：① core_human；② P ≥ P2 且（mid_persist 或 near_core_10m 或 link_f1_f2）</td>
-            <td>夜</td>
-            <td>执行 A2 一次并启动 T=300 s</td>
-          </tr>
-          <tr>
-            <td>G2（入 A3）</td>
-            <td>夜间且 T 到且仍满足任一：① 核心仍见人形；② 雷达仍人形/仍向核心逼近</td>
-            <td>夜</td>
-            <td>执行 A3 一次（通知安保到场）</td>
-          </tr>
-          <tr>
-            <td>G3（白天仅取证）</td>
-            <td>任意 P 等级</td>
-            <td>昼</td>
-            <td>只执行 A1（不做 A2/A3）</td>
-          </tr>
-        </tbody>
-      </table>
-      <p class="doc-note">
-        修复点：移除了“仅凭 IMSI 仍在近域就可 A3”的表述——IMSI 只能作为弱佐证，不作为 G2 的单独充分条件。
-      </p>
+      <h3>5）G 闸门（按昼夜拆解）</h3>
+      <p class="doc-note">记：link_f1_f2 = 同扇区 F1 未知 IMSI 在先，Δt=240 s 内出现 F2。</p>
+      <h4>G1 – 进入 A2</h4>
+      <ul class="doc-list">
+        <li><strong>夜间 G1-N：</strong>夜间且满足任一：① core_human；② P ≥ P2 且（mid_persist / near_core_10m / link_f1_f2）。</li>
+        <li><strong>白天 G1-D：</strong>白天且 core_human 成立。F1/F2 单独或协同均不得触发白天 A2。</li>
+      </ul>
+      <h4>G2 – 进入 A3</h4>
+      <p>仅夜间；A2 执行后等待 T=300 s，若核心仍见人形或雷达仍持续逼近，则执行 A3。白名单 IMSI 不影响此判定。</p>
+      <h4>G3 – 仅取证</h4>
+      <p>白天且未命中 G1（即核心未越界）时，仅执行 A1 取证，不触发 A2/A3。</p>
 
-      <h3>6）典型情景 → 计算示例（便于验收/联调）</h3>
-      <p>公式：综合得分 = (ΣF 子项加分 × 协同 1.2（若触发）) × 昼/夜乘子</p>
+      <h3>6）典型场景检验（与新规则对齐）</h3>
       <ol class="doc-list">
         <li>
-          <strong>夜间核心摄像头见人（仅 F3）</strong><br />
-          F3：core_human = +60 → 协同无 → 夜 × 1.5 → 总分 90 = P1。命中 G1 → A2；T=300 s 后若核心仍见人/雷达仍见人形 → G2 → A3。
+          <strong>白天核心入侵（F3）</strong>：F3 +60 → 昼 ×1.0 = 60 = P2 → 命中 G1-D 执行 A2；白天永不触发 A3。
         </li>
         <li>
-          <strong>夜间雷达人形持续 12 s，且距核心 ≤ 10 m（仅 F2）</strong><br />
-          F2：mid_persist +20、near_core_10m +20（若还有 approach_core +8）→ 小计 40（或 48）；协同无 → 夜 × 1.5 → 60（或 72）→ P2（或触及 P1）。
-          满足 G1 → A2；T 失败 → A3。
+          <strong>白天仅 F1+F2（非核心）</strong>：得分再高也不触发 A2，归入 G3，仅执行 A1。
         </li>
         <li>
-          <strong>夜间 F1 未知 IMSI，3 min 内同扇区出现 F2 短暂人形（链路成立）</strong><br />
-          F1：+10；F2：mid_short +10 → 小计 20 → 协同 × 1.2 = 24 → 夜 × 1.5 = 36 = P3 高位。
-          若叠加 approach_core +8 → 小计 28 → ×1.2 = 33.6 → 夜 × 1.5 = 50.4 = P2 → 命中 G1 → A2。
+          <strong>夜间核心入侵 + 白名单在场</strong>：F3 +60 → 夜 ×1.5 = 90 = P1 → G1-N → A2；T 到仍异常 → G2 → A3，白名单不干预。
         </li>
         <li>
-          <strong>白天核心见人（仅 F3）</strong><br />
-          F3：+60 → 昼 × 1.0 → 60 = P2。G3：白天仅 A1（取证），不 A2/A3。
+          <strong>夜间 F2 ≥10 s 且 ≤10 m（无 F3）</strong>：F2 至少 +40 → 夜 ×1.5 = 60 = P2 → G1-N → A2；T 到仍异常 → A3。
         </li>
         <li>
-          <strong>夜间多未知 IMSI（2 个，F1=+20）+ F2 短暂人形 + 逼近</strong><br />
-          F1：+20；F2：mid_short +10、approach_core +8 → 小计 38 → 协同 × 1.2 = 45.6 → 夜 × 1.5 = 68.4 ≈ P2 高位。命中 G1 → A2；T 失败 → A3。
+          <strong>夜间 F1→F2 短暂链路</strong>：F1 +10、F2 +10 → 协同 ×1.2 → 夜 ×1.5 = 36 = P3；若叠加 approach_core +8 → P2 → G1-N → A2。
         </li>
       </ol>
 
-      <h3>7）去重 / 归并 / 冷却（最小生命周期语义，仅逻辑）</h3>
+      <h3>7）为何保留白名单</h3>
       <ul class="doc-list">
-        <li>归并键：{站点、扇区/相机 ID、时间桶（mergeWindow=300 s）}；同窗内 F1/F2/F3 归并为一事件。</li>
-        <li>A2/A3 去重：每事件 A2 仅 1 次；若 A2 已执行，T 内不再重复；A3 亦仅 1 次。</li>
-        <li>结案：若在 T 内或 mergeWindow 后无任何续发，且核心/雷达均无异常，则自动结案并进入冷却。</li>
+        <li><strong>作用域限定：</strong>白名单仅抑制外圈 F1 噪声，不影响 F2/F3 判定与得分。</li>
+        <li><strong>零干预核心/出警：</strong>白天核心越界照常 G1-D；夜间核心或雷达异常照常 G1-N / G2。</li>
+        <li><strong>精度收益：</strong>在有人村庄场景显著降低伪协同，令 A2/A3 更聚焦真实威胁。</li>
       </ul>
 
+      <h3>本版显式变更清单</h3>
+      <ol class="doc-list">
+        <li>新增白天 A2（仅限 F3 核心越界），补充 G1-D。</li>
+        <li>强调夜间核心入侵白名单不豁免，A2/A3 判定照旧。</li>
+        <li>明确白天 F1/F2 任意组合仅取证，防止扰民。</li>
+        <li>其余评分、阈值、协同、T 窗口保持不变。</li>
+      </ol>
     </section>
 
   </div>

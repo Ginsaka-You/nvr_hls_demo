@@ -129,7 +129,7 @@ public class RiskScenarioService {
                 () -> alignToLocalTime(0, 30),
                 this::simulateChallengeRecovered));
         map.put("C1", new ScenarioDefinition("C1",
-                "白天核心人形取证场景已注入",
+                "白天核心越界挑战场景已注入",
                 () -> alignToLocalTime(10, 0),
                 this::simulateDayCoreHumanOnly));
         map.put("C2", new ScenarioDefinition("C2",

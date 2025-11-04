@@ -499,17 +499,22 @@ public class RiskAssessmentService {
         List<GRuleStatus> statuses = new ArrayList<>();
         boolean highPriority = priority != null
                 && ("P1".equalsIgnoreCase(priority.getId()) || "P2".equalsIgnoreCase(priority.getId()));
-        boolean g1 = night && (context.hasCoreHuman
-                || (highPriority && (context.hasRadarPersist || context.hasRadarNearCore || context.linkF1F2)));
+        boolean g1;
         String g1Reason;
-        if (!night) {
-            g1Reason = "仅夜间触发";
-        } else if (context.hasCoreHuman) {
-            g1Reason = "核心摄像头见人，进入挑战";
-        } else if (highPriority && (context.hasRadarPersist || context.hasRadarNearCore || context.linkF1F2)) {
-            g1Reason = "P≥P2 且雷达/IMSI 形成链路";
+        if (night) {
+            boolean nightCore = context.hasCoreHuman;
+            boolean nightLink = highPriority && (context.hasRadarPersist || context.hasRadarNearCore || context.linkF1F2);
+            g1 = nightCore || nightLink;
+            if (nightCore) {
+                g1Reason = "核心摄像头见人，进入挑战";
+            } else if (nightLink) {
+                g1Reason = "P≥P2 且雷达/IMSI 形成链路";
+            } else {
+                g1Reason = "夜间未满足触发条件";
+            }
         } else {
-            g1Reason = "未满足触发条件";
+            g1 = context.hasCoreHuman;
+            g1Reason = g1 ? "白天核心越界，执行远程挑战" : "白天仅核心越界可挑战";
         }
         statuses.add(new GRuleStatus("G1", g1, g1Reason));
 
@@ -528,8 +533,19 @@ public class RiskAssessmentService {
         }
         statuses.add(new GRuleStatus("G2", g2, g2Reason));
 
-        boolean g3 = !night && scores.getBaseScore() > 0.0;
-        statuses.add(new GRuleStatus("G3", g3, g3 ? "白天仅取证" : "夜间或未触发"));
+        boolean hasScore = scores.getBaseScore() > 0.0;
+        boolean g3 = !night && hasScore && !context.hasCoreHuman;
+        String g3Reason;
+        if (night) {
+            g3Reason = "夜间或未触发";
+        } else if (!hasScore) {
+            g3Reason = "白天无得分";
+        } else if (context.hasCoreHuman) {
+            g3Reason = "白天核心越界已执行挑战";
+        } else {
+            g3Reason = "白天非核心线索，仅取证";
+        }
+        statuses.add(new GRuleStatus("G3", g3, g3Reason));
         return statuses;
     }
 
@@ -543,9 +559,13 @@ public class RiskAssessmentService {
                 anyScore ? "F 规则得分，执行取证" : "未触发 F 规则", now));
 
         boolean g1 = gStatuses.stream().anyMatch(rule -> "G1".equals(rule.getId()) && rule.isTriggered());
-        actions.add(ActionStatus.create("A2", g1, g1,
-                g1 ? "夜间挑战已执行" : (night ? "未命中 G1" : "白天不执行 A2"),
-                g1 ? now : null));
+        String a2Message;
+        if (g1) {
+            a2Message = night ? "夜间挑战已执行" : "白天核心越界，挑战已执行";
+        } else {
+            a2Message = night ? "未命中 G1" : "白天未命中核心越界";
+        }
+        actions.add(ActionStatus.create("A2", g1, g1, a2Message, g1 ? now : null));
 
         boolean g2 = gStatuses.stream().anyMatch(rule -> "G2".equals(rule.getId()) && rule.isTriggered());
         actions.add(ActionStatus.create("A3", g2, g2,
