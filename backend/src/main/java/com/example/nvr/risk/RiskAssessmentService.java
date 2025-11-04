@@ -514,7 +514,7 @@ public class RiskAssessmentService {
         statuses.add(new GRuleStatus("G1", g1, g1Reason));
 
         boolean challengePersists = (context.coreBeforeChallenge && context.coreAfterChallenge)
-                || ((context.radarBeforeChallenge || context.hasRadarPersist) && context.radarAfterChallenge);
+                || (context.radarBeforeChallenge && context.radarAfterChallenge);
         boolean g2 = night && g1 && challengePersists;
         String g2Reason;
         if (!night) {
