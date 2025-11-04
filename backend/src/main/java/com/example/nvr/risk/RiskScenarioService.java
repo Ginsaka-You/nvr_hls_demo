@@ -113,27 +113,27 @@ public class RiskScenarioService {
                 () -> alignToLocalTime(22, 45),
                 this::simulateNightCoreWithWhitelist));
         map.put("B1", new ScenarioDefinition("B1",
-                "A2 后挑战到期核心仍见人场景已注入",
+                "A2 远程警报等待窗到期核心仍见人场景已注入",
                 () -> alignToLocalTime(22, 50),
                 this::simulateChallengeCoreStillPresent));
         map.put("B2", new ScenarioDefinition("B2",
-                "A2 后挑战到期雷达仍逼近场景已注入",
+                "A2 远程警报等待窗到期雷达仍逼近场景已注入",
                 () -> alignToLocalTime(23, 10),
                 this::simulateChallengeRadarStillPresent));
         map.put("B3", new ScenarioDefinition("B3",
-                "A2 后未到挑战窗口场景已注入",
+                "A2 远程警报等待窗未到场景已注入",
                 () -> alignToLocalTime(0, 15),
                 this::simulateChallengeWindowNotReached));
         map.put("B4", new ScenarioDefinition("B4",
-                "A2 后挑战到期目标离场场景已注入",
+                "A2 远程警报等待窗到期目标离场场景已注入",
                 () -> alignToLocalTime(0, 30),
                 this::simulateChallengeRecovered));
         map.put("B5", new ScenarioDefinition("B5",
-                "白天挑战到期仍异常场景已注入",
+                "白天远程警报等待窗到期仍异常场景已注入",
                 () -> alignToLocalTime(11, 0),
                 this::simulateDayChallengeStillPresent));
         map.put("C1", new ScenarioDefinition("C1",
-                "白天核心越界挑战场景已注入",
+                "白天核心越界远程警报场景已注入",
                 () -> alignToLocalTime(10, 0),
                 this::simulateDayCoreHumanOnly));
         map.put("C2", new ScenarioDefinition("C2",

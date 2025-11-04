@@ -154,7 +154,9 @@ public class RiskModelConfig {
         private Duration imsiDedupWindow = Duration.ofMinutes(5);
         private Duration f1ToF2LinkWindow = Duration.ofMinutes(4);
         private Duration radarPersistThreshold = Duration.ofSeconds(10);
-        private double radarNearCoreMeters = 10.0;
+        private double radarMinRangeMeters = 10.0;
+        private double radarMaxRangeMeters = 150.0;
+        private double radarNearCoreMeters = 20.0;
         private List<String> imsiWhitelist = new ArrayList<>();
 
         public String getTimezone() {
@@ -245,6 +247,22 @@ public class RiskModelConfig {
             this.radarPersistThreshold = radarPersistThreshold;
         }
 
+        public double getRadarMinRangeMeters() {
+            return radarMinRangeMeters;
+        }
+
+        public void setRadarMinRangeMeters(double radarMinRangeMeters) {
+            this.radarMinRangeMeters = radarMinRangeMeters;
+        }
+
+        public double getRadarMaxRangeMeters() {
+            return radarMaxRangeMeters;
+        }
+
+        public void setRadarMaxRangeMeters(double radarMaxRangeMeters) {
+            this.radarMaxRangeMeters = radarMaxRangeMeters;
+        }
+
         public double getRadarNearCoreMeters() {
             return radarNearCoreMeters;
         }
@@ -274,6 +292,8 @@ public class RiskModelConfig {
             meta.put("imsiDedupWindow", imsiDedupWindow);
             meta.put("f1ToF2LinkWindow", f1ToF2LinkWindow);
             meta.put("radarPersistThreshold", radarPersistThreshold);
+            meta.put("radarMinRangeMeters", radarMinRangeMeters);
+            meta.put("radarMaxRangeMeters", radarMaxRangeMeters);
             meta.put("radarNearCoreMeters", radarNearCoreMeters);
             meta.put("imsiWhitelist", imsiWhitelist);
             return meta;

@@ -310,7 +310,7 @@ public class RiskAssessmentService {
                                         Parameters params,
                                         EvaluationContext context) {
         if (window.isEmpty()) {
-            registerRadarHistory(history, challengeStart, context);
+            registerRadarHistory(history, challengeStart, params, context);
             return FRuleEvaluation.notTriggered("F2");
         }
 
@@ -318,10 +318,11 @@ public class RiskAssessmentService {
                 .filter(target -> target.getCapturedAt() != null)
                 .collect(Collectors.groupingBy(this::radarTrackKey));
         if (grouped.isEmpty()) {
-            registerRadarHistory(history, challengeStart, context);
+            registerRadarHistory(history, challengeStart, params, context);
             return FRuleEvaluation.notTriggered("F2");
         }
 
+        int trackCount = 0;
         int shortCount = 0;
         int persistCount = 0;
         int approachCount = 0;
@@ -337,40 +338,69 @@ public class RiskAssessmentService {
             if (sorted.isEmpty()) {
                 continue;
             }
-            Instant trackFirst = sorted.get(0).getCapturedAt();
-            Instant trackLast = sorted.get(sorted.size() - 1).getCapturedAt();
+
+            List<RadarTargetEntity> effective = sorted.stream()
+                    .filter(target -> isWithinRadarRange(distanceMeters(target), params))
+                    .collect(Collectors.toList());
+            if (effective.isEmpty()) {
+                continue;
+            }
+
+            Instant trackFirst = effective.stream()
+                    .map(RadarTargetEntity::getCapturedAt)
+                    .filter(Objects::nonNull)
+                    .findFirst()
+                    .orElse(null);
+            Instant trackLast = effective.stream()
+                    .map(RadarTargetEntity::getCapturedAt)
+                    .filter(Objects::nonNull)
+                    .reduce((prev, curr) -> curr)
+                    .orElse(trackFirst);
+            if (trackFirst == null || trackLast == null) {
+                continue;
+            }
+
+            trackCount++;
             first = first == null || trackFirst.isBefore(first) ? trackFirst : first;
             last = last == null || trackLast.isAfter(last) ? trackLast : last;
             context.registerRadarTrack(trackFirst, trackLast);
 
             Duration duration = Duration.between(trackFirst, trackLast);
             boolean persist = duration.compareTo(params.getRadarPersistThreshold()) >= 0;
-            boolean nearCore = sorted.stream()
-                    .mapToDouble(this::distanceMeters)
-                    .filter(d -> !Double.isNaN(d) && !Double.isInfinite(d))
-                    .anyMatch(d -> d <= params.getRadarNearCoreMeters());
-            double firstDistance = distanceMeters(sorted.get(0));
-            double lastDistance = distanceMeters(sorted.get(sorted.size() - 1));
-            boolean approach = !Double.isNaN(firstDistance) && !Double.isNaN(lastDistance)
-                    && firstDistance - lastDistance >= APPROACH_THRESHOLD_METERS;
-
             if (persist) {
                 persistCount++;
                 context.setRadarPersist(true);
             } else {
                 shortCount++;
             }
+
+            List<Double> effectiveDistances = effective.stream()
+                    .map(this::distanceMeters)
+                    .filter(d -> !Double.isNaN(d) && !Double.isInfinite(d))
+                    .collect(Collectors.toList());
+            boolean nearCore = effectiveDistances.stream()
+                    .anyMatch(distance -> isWithinNearCoreBand(distance, params));
             if (nearCore) {
                 nearCoreCount++;
                 context.setRadarNearCore(true);
             }
-            if (approach) {
-                approachCount++;
-                context.setRadarApproach(true);
+
+            if (!effectiveDistances.isEmpty()) {
+                double firstDistance = effectiveDistances.get(0);
+                double lastDistance = effectiveDistances.get(effectiveDistances.size() - 1);
+                boolean approach = firstDistance - lastDistance >= APPROACH_THRESHOLD_METERS;
+                if (approach) {
+                    approachCount++;
+                    context.setRadarApproach(true);
+                }
             }
         }
 
-        registerRadarHistory(history, challengeStart, context);
+        registerRadarHistory(history, challengeStart, params, context);
+
+        if (trackCount == 0) {
+            return FRuleEvaluation.notTriggered("F2");
+        }
 
         double score = shortCount * 10.0 + persistCount * 20.0 + approachCount * 8.0 + nearCoreCount * 20.0;
         if (score <= 0) {
@@ -394,26 +424,27 @@ public class RiskAssessmentService {
                     String.format(Locale.CHINA, "逼近核心轨迹 %d 条", approachCount)));
         }
         if (nearCoreCount > 0) {
-            contributions.add(new ScoreContribution("near_core_10m",
+            contributions.add(new ScoreContribution("near_core_10_20m",
                     nearCoreCount * 20.0,
-                    String.format(Locale.CHINA, "进入 ≤10m 轨迹 %d 条", nearCoreCount)));
+                    String.format(Locale.CHINA, "进入 10–20m 轨迹 %d 条", nearCoreCount)));
         }
 
         Map<String, Object> metrics = new LinkedHashMap<>();
-        metrics.put("tracks", grouped.size());
+        metrics.put("tracks", trackCount);
         metrics.put("persist", persistCount);
         metrics.put("short", shortCount);
         metrics.put("approach", approachCount);
         metrics.put("nearCore", nearCoreCount);
 
         String reason = String.format(Locale.CHINA,
-                "雷达轨迹：持续 %d，短暂 %d，逼近 %d，近域 %d",
+                "雷达轨迹：持续 %d，短暂 %d，逼近 %d，近域(10–20m) %d",
                 persistCount, shortCount, approachCount, nearCoreCount);
-        return new FRuleEvaluation("F2", true, grouped.size(), first, last, reason, metrics, contributions, null, score);
+        return new FRuleEvaluation("F2", true, trackCount, first, last, reason, metrics, contributions, null, score);
     }
 
     private void registerRadarHistory(List<RadarTargetEntity> history,
                                       Instant challengeStart,
+                                      Parameters params,
                                       EvaluationContext context) {
         for (RadarTargetEntity target : history) {
             Instant ts = target.getCapturedAt();
@@ -421,7 +452,7 @@ public class RiskAssessmentService {
                 continue;
             }
             double distance = distanceMeters(target);
-            if (Double.isNaN(distance) || Double.isInfinite(distance) || distance > 200.0) {
+            if (!isWithinRadarRange(distance, params)) {
                 continue;
             }
             if (ts.isBefore(challengeStart)) {
@@ -506,15 +537,15 @@ public class RiskAssessmentService {
             boolean nightLink = highPriority && (context.hasRadarPersist || context.hasRadarNearCore || context.linkF1F2);
             g1 = nightCore || nightLink;
             if (nightCore) {
-                g1Reason = "核心摄像头见人，进入挑战";
+                g1Reason = "核心摄像头见人，执行远程警报";
             } else if (nightLink) {
-                g1Reason = "P≥P2 且雷达/IMSI 形成链路";
+                g1Reason = "P≥P2 且雷达/IMSI 形成链路，执行远程警报";
             } else {
-                g1Reason = "夜间未满足触发条件";
+                g1Reason = "夜间未满足远程警报条件";
             }
         } else {
             g1 = context.hasCoreHuman;
-            g1Reason = g1 ? "白天核心越界，执行远程挑战" : "白天仅核心越界可挑战";
+            g1Reason = g1 ? "白天核心越界，执行远程警报" : "白天仅核心越界可远程警报";
         }
         statuses.add(new GRuleStatus("G1", g1, g1Reason));
 
@@ -525,11 +556,11 @@ public class RiskAssessmentService {
         if (!night) {
             g2Reason = "仅夜间允许 A3";
         } else if (!g1) {
-            g2Reason = "尚未执行 A2";
+            g2Reason = "尚未执行远程警报";
         } else if (challengePersists) {
-            g2Reason = "挑战窗口到期仍有异常";
+            g2Reason = "远程警报等待窗到期仍有异常";
         } else {
-            g2Reason = "挑战窗口内已消失";
+            g2Reason = "等待窗内已消失";
         }
         statuses.add(new GRuleStatus("G2", g2, g2Reason));
 
@@ -541,7 +572,7 @@ public class RiskAssessmentService {
         } else if (!hasScore) {
             g3Reason = "白天无得分";
         } else if (context.hasCoreHuman) {
-            g3Reason = "白天核心越界已执行挑战";
+            g3Reason = "白天核心越界已执行远程警报";
         } else {
             g3Reason = "白天非核心线索，仅取证";
         }
@@ -561,15 +592,15 @@ public class RiskAssessmentService {
         boolean g1 = gStatuses.stream().anyMatch(rule -> "G1".equals(rule.getId()) && rule.isTriggered());
         String a2Message;
         if (g1) {
-            a2Message = night ? "夜间挑战已执行" : "白天核心越界，挑战已执行";
+            a2Message = night ? "夜间远程警报已执行" : "白天核心越界，远程警报已执行";
         } else {
-            a2Message = night ? "未命中 G1" : "白天未命中核心越界";
+            a2Message = night ? "夜间未命中远程警报条件" : "白天未命中核心越界";
         }
         actions.add(ActionStatus.create("A2", g1, g1, a2Message, g1 ? now : null));
 
         boolean g2 = gStatuses.stream().anyMatch(rule -> "G2".equals(rule.getId()) && rule.isTriggered());
         actions.add(ActionStatus.create("A3", g2, g2,
-                g2 ? "挑战失败，已通知安保" : (night ? "未触发 G2" : "白天禁用 A3"),
+                g2 ? "警报无效，已通知安保" : (night ? "未触发 G2" : "白天禁用 A3"),
                 g2 ? now : null));
         return actions;
     }
@@ -588,7 +619,7 @@ public class RiskAssessmentService {
             segments.add(String.format(Locale.CHINA, "未知 IMSI %d", context.newImsi.size()));
         }
         if (context.hasRadarNearCore) {
-            segments.add("雷达近域接近");
+            segments.add("雷达近域(10–20m)");
         }
         if (context.hasRadarApproach) {
             segments.add("雷达向核心逼近");
@@ -599,7 +630,7 @@ public class RiskAssessmentService {
         if (gStatuses.stream().anyMatch(rule -> "G2".equals(rule.getId()) && rule.isTriggered())) {
             segments.add("已派安保出动");
         } else if (gStatuses.stream().anyMatch(rule -> "G1".equals(rule.getId()) && rule.isTriggered())) {
-            segments.add("已执行远程挑战");
+            segments.add("已执行远程警报");
         } else if (actions.stream().anyMatch(action -> "A1".equals(action.getId()) && action.isTriggered())) {
             segments.add("已记录取证");
         }
@@ -698,6 +729,28 @@ public class RiskAssessmentService {
             return Double.NaN;
         }
         return Math.hypot(longitudinal, lateral);
+    }
+
+    private boolean isWithinRadarRange(double distance, Parameters params) {
+        if (Double.isNaN(distance) || Double.isInfinite(distance)) {
+            return false;
+        }
+        double min = params != null ? Math.max(0.0, params.getRadarMinRangeMeters()) : 10.0;
+        double max = params != null && params.getRadarMaxRangeMeters() > 0.0
+                ? Math.max(params.getRadarMaxRangeMeters(), min)
+                : 150.0;
+        return distance >= min && distance <= max;
+    }
+
+    private boolean isWithinNearCoreBand(double distance, Parameters params) {
+        if (!isWithinRadarRange(distance, params)) {
+            return false;
+        }
+        double lower = params != null ? Math.max(0.0, params.getRadarMinRangeMeters()) : 10.0;
+        double upper = params != null && params.getRadarNearCoreMeters() > 0.0
+                ? Math.max(params.getRadarNearCoreMeters(), lower)
+                : Math.max(20.0, lower);
+        return distance >= lower && distance <= upper;
     }
 
     private boolean isCoreCameraEvent(CameraAlarmEntity alarm) {
