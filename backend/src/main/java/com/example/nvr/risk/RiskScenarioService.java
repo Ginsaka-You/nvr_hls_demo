@@ -128,6 +128,10 @@ public class RiskScenarioService {
                 "A2 后挑战到期目标离场场景已注入",
                 () -> alignToLocalTime(0, 30),
                 this::simulateChallengeRecovered));
+        map.put("B5", new ScenarioDefinition("B5",
+                "白天挑战到期仍异常场景已注入",
+                () -> alignToLocalTime(11, 0),
+                this::simulateDayChallengeStillPresent));
         map.put("C1", new ScenarioDefinition("C1",
                 "白天核心越界挑战场景已注入",
                 () -> alignToLocalTime(10, 0),
@@ -152,6 +156,10 @@ public class RiskScenarioService {
                 "雷达噪声抑制场景已注入",
                 () -> alignToLocalTime(13, 0),
                 this::simulateRadarNoiseOnly));
+        map.put("C7", new ScenarioDefinition("C7",
+                "白天核心越界伴随白名单场景已注入",
+                () -> alignToLocalTime(11, 20),
+                this::simulateDayCoreWithWhitelist));
         return Collections.unmodifiableMap(map);
     }
 
@@ -249,6 +257,12 @@ public class RiskScenarioService {
                 14.0, 13.6, 3, created);
     }
 
+    private void simulateDayChallengeStillPresent(Instant reference, Map<String, Integer> created) {
+        createCameraAlarm("b5-day-challenge", "core-06", reference.minusSeconds(320), true);
+        createCameraAlarm("b5-day-challenge", "core-06", reference.minusSeconds(12), true);
+        addCount(created, "camera", 2);
+    }
+
     private void simulateDayCoreHumanOnly(Instant reference, Map<String, Integer> created) {
         createCameraAlarm("c1-day-core", "core-05", reference.minusSeconds(20), true);
         addCount(created, "camera", 1);
@@ -284,6 +298,13 @@ public class RiskScenarioService {
     private void simulateRadarNoiseOnly(Instant reference, Map<String, Integer> created) {
         createRadarNoise("c6-noise", reference.minusSeconds(30));
         addCount(created, "radar", 1);
+    }
+
+    private void simulateDayCoreWithWhitelist(Instant reference, Map<String, Integer> created) {
+        createCameraAlarm("c7-day-whitelist", "core-07", reference.minusSeconds(18), true);
+        addCount(created, "camera", 1);
+        createImsiRecord("c7-day-whitelist", SCENARIO_WHITELIST_IMSI, reference.minusSeconds(90));
+        addCount(created, "imsi", 1);
     }
 
     private void createRadarTrack(String scenario,

@@ -58,7 +58,7 @@ const scenarioButtons: ScenarioButton[] = [
   },
   {
     id: 'A4',
-    name: '夜间-F1→F2短暂+逼近',
+    name: '夜间-F1→F2短暂+逼近（链路）',
     description: '夜间 01:10 F1 与 F2 在 3 分钟内联动且逼近，期望 50.4 分 / P2 → A2。',
     group: '夜间入闸与评分验证',
   },
@@ -123,9 +123,15 @@ const scenarioButtons: ScenarioButton[] = [
     group: '挑战窗口 A3 校验',
   },
   {
+    id: 'B5',
+    name: '白天-A2后T到仍异常（不应A3）',
+    description: '白天挑战窗已满且核心仍异常，期望 G2 不命中 → A3=否。',
+    group: '挑战窗口 A3 校验',
+  },
+  {
     id: 'C1',
-    name: '白天-核心人形',
-    description: '白天 10:00 核心摄像头见人，期望 60 分 / P2，仅执行 A1。',
+    name: '白天-核心人形（允许A2）',
+    description: '白天 10:00 核心摄像头见人，期望 60 分 / P2 → A2，A3=否。',
     group: '昼夜抑制与链路验证',
   },
   {
@@ -156,6 +162,12 @@ const scenarioButtons: ScenarioButton[] = [
     id: 'C6',
     name: '雷达非人形',
     description: '注入雷达噪声/非人形目标应被忽略，期望 0 分 / P4，仅 A1。',
+    group: '昼夜抑制与链路验证',
+  },
+  {
+    id: 'C7',
+    name: '白天-白名单在场+核心人形（允许A2）',
+    description: '白天 11:20 核心摄像头见人且白名单在场，期望 60 分 / P2 → A2。',
     group: '昼夜抑制与链路验证',
   }
 ]
@@ -1157,6 +1169,282 @@ onUnmounted(() => {
         <li>明确白天 F1/F2 任意组合仅取证，防止扰民。</li>
         <li>其余评分、阈值、协同、T 窗口保持不变。</li>
       </ol>
+
+      <h3>虚拟测试场景（按钮）校验清单</h3>
+      <p>
+        下列场景已按新版模型（白天核心可 A2、夜间白名单不豁免）重新梳理，按钮点击即注入同名事件并断言期望
+        P/G/A 结果。计分顺序为：F 子项 → 协同 ×1.2（≥2 类） → 昼/夜乘子（夜 ×1.5 / 昼 ×1.0）。
+      </p>
+
+      <div class="scenario-block">
+        <h4>A 组｜夜间 A2 入闸与 P 分级校验</h4>
+        <ol class="doc-list scenario-list">
+          <li>
+            <strong>A1｜夜间核心直击（仅F3）</strong>
+            <div class="scenario-line"><span class="scenario-label">输入：</span>F3 core_human=是；时间=22:00。</div>
+            <div class="scenario-line"><span class="scenario-label">计分：</span>F3=+60 → 协同×1.0 → 夜×1.5 ⇒ <strong>90</strong>。</div>
+            <div class="scenario-line"><span class="scenario-label">结果：</span><strong>P1</strong>；<strong>G1‑N 命中 → A2=是</strong>。</div>
+          </li>
+          <li>
+            <strong>A2｜夜间雷达≥10s 且 ≤10m 且逼近（仅F2）</strong>
+            <div class="scenario-line"><span class="scenario-label">输入：</span>F2 mid_persist=是，near_core_10m=是，approach_core=是；时间=23:30。</div>
+            <div class="scenario-line"><span class="scenario-label">计分：</span>20+20+8=48 → 协同×1.0 → 夜×1.5 ⇒ <strong>72</strong>。</div>
+            <div class="scenario-line"><span class="scenario-label">结果：</span><strong>P1</strong>；<strong>G1‑N 命中 → A2=是</strong>。</div>
+          </li>
+          <li>
+            <strong>A3｜夜间外圈 2 个未知 IMSI（仅F1）</strong>
+            <div class="scenario-line"><span class="scenario-label">输入：</span>F1 outer_unknown_cnt=2（白名单=否）；时间=02:00。</div>
+            <div class="scenario-line"><span class="scenario-label">计分：</span>+10×min(2,2)=20 → 协同×1.0 → 夜×1.5 ⇒ <strong>30</strong>。</div>
+            <div class="scenario-line"><span class="scenario-label">结果：</span><strong>P3</strong>；仅 A1。</div>
+          </li>
+          <li>
+            <strong>A4｜夜间 F1(1) + F2 短暂(<10s) + 逼近</strong>
+            <div class="scenario-line"><span class="scenario-label">输入：</span>F1=1；F2 mid_short=是，approach_core=是；链路 Δt=180s；时间=01:10。</div>
+            <div class="scenario-line"><span class="scenario-label">计分：</span>10 + (10+8) = 28 → 协同×1.2 ⇒ 33.6 → 夜×1.5 ⇒ <strong>50.4</strong>。</div>
+            <div class="scenario-line"><span class="scenario-label">结果：</span><strong>P2</strong>；满足链路 → <strong>G1‑N 命中 → A2=是</strong>。</div>
+          </li>
+          <li>
+            <strong>A5｜夜间 F2 持续=11s（无 ≤10m）</strong>
+            <div class="scenario-line"><span class="scenario-label">输入：</span>F2 mid_persist=是；near_core_10m=否；时间=21:40。</div>
+            <div class="scenario-line"><span class="scenario-label">计分：</span>20 → 协同×1.0 → 夜×1.5 ⇒ <strong>30</strong>。</div>
+            <div class="scenario-line"><span class="scenario-label">结果：</span><strong>P3</strong>；仅 A1。</div>
+          </li>
+          <li>
+            <strong>A6｜夜间 F2 ≥10s + ≤10m（无逼近标记）</strong>
+            <div class="scenario-line"><span class="scenario-label">输入：</span>F2 mid_persist=是，near_core_10m=是；时间=23:05。</div>
+            <div class="scenario-line"><span class="scenario-label">计分：</span>20+20=40 → 协同×1.0 → 夜×1.5 ⇒ <strong>60</strong>。</div>
+            <div class="scenario-line"><span class="scenario-label">结果：</span><strong>P2</strong>；<strong>G1‑N 命中 → A2=是</strong>。</div>
+          </li>
+          <li>
+            <strong>A7｜夜间三源协同（F1×2 + F2≥10s+逼近 + F3）</strong>
+            <div class="scenario-line"><span class="scenario-label">输入：</span>F1=2；F2 mid_persist=是、approach_core=是；F3 core_human=是；时间=00:20。</div>
+            <div class="scenario-line"><span class="scenario-label">计分：</span>20 + (20+8) + 60 = 108 → 协同×1.2 ⇒ 129.6 → 夜×1.5 ⇒ <strong>194.4</strong>。</div>
+            <div class="scenario-line"><span class="scenario-label">结果：</span><strong>P1</strong>；<strong>G1‑N 命中 → A2=是</strong>。</div>
+          </li>
+          <li>
+            <strong>A8｜夜间 F2 短暂单点</strong>
+            <div class="scenario-line"><span class="scenario-label">输入：</span>F2 mid_short=是；时间=03:00。</div>
+            <div class="scenario-line"><span class="scenario-label">计分：</span>10 → 协同×1.0 → 夜×1.5 ⇒ <strong>15</strong>。</div>
+            <div class="scenario-line"><span class="scenario-label">结果：</span><strong>P4</strong>；仅 A1。</div>
+          </li>
+          <li>
+            <strong>A9｜夜间 F1 重现（同一未知 IMSI 30min 内）</strong>
+            <div class="scenario-line"><span class="scenario-label">输入：</span>F1 outer_unknown_cnt=1，outer_repeat=是；时间=04:10。</div>
+            <div class="scenario-line"><span class="scenario-label">计分：</span>10 + 8 = 18 → 协同×1.0 → 夜×1.5 ⇒ <strong>27</strong>。</div>
+            <div class="scenario-line"><span class="scenario-label">结果：</span><strong>P3</strong>；仅 A1。</div>
+          </li>
+          <li>
+            <strong>A10｜夜间白名单在场 + 核心见人（F3）</strong>
+            <div class="scenario-line"><span class="scenario-label">输入：</span>白名单 IMSI 若干（不计分/不计协同），F3 core_human=是；时间=22:45。</div>
+            <div class="scenario-line"><span class="scenario-label">计分：</span>F3=+60 → 协同×1.0 → 夜×1.5 ⇒ <strong>90</strong>。</div>
+            <div class="scenario-line"><span class="scenario-label">结果：</span><strong>P1</strong>；白名单不豁免核心 → <strong>G1‑N 命中 → A2=是</strong>。</div>
+          </li>
+        </ol>
+      </div>
+
+      <div class="scenario-block">
+        <h4>B 组｜A3 闸门（挑战窗口 T=300s）校验</h4>
+        <ol class="doc-list scenario-list">
+          <li>
+            <strong>B1｜核心直击 → A2 → T 到仍见人</strong>
+            <div class="scenario-line"><span class="scenario-label">上下文：</span>lastA2At = now−310s；核心仍见人形=真。</div>
+            <div class="scenario-line"><span class="scenario-label">期望：</span><strong>夜间命中 G2 → A3=是</strong>。</div>
+          </li>
+          <li>
+            <strong>B2｜雷达近域 → A2 → T 到仍逼近</strong>
+            <div class="scenario-line"><span class="scenario-label">上下文：</span>lastA2At = now−305s；雷达仍人形/逼近=真。</div>
+            <div class="scenario-line"><span class="scenario-label">期望：</span><strong>夜间命中 G2 → A3=是</strong>。</div>
+          </li>
+          <li>
+            <strong>B3｜A2 后仅过 2 分钟</strong>
+            <div class="scenario-line"><span class="scenario-label">上下文：</span>lastA2At = now−120s；仍异常任意。</div>
+            <div class="scenario-line"><span class="scenario-label">期望：</span>挑战窗未到 → <strong>A3=否</strong>。</div>
+          </li>
+          <li>
+            <strong>B4｜A2 后 T 到但已恢复</strong>
+            <div class="scenario-line"><span class="scenario-label">上下文：</span>lastA2At = now−305s；核心=假，雷达=假。</div>
+            <div class="scenario-line"><span class="scenario-label">期望：</span>异常已消失 → <strong>A3=否</strong>。</div>
+          </li>
+          <li>
+            <strong>B5｜白天 A2 后 T 到仍异常</strong>
+            <div class="scenario-line"><span class="scenario-label">上下文：</span>lastA2At = now−320s；核心仍见人或雷达仍逼近=真。</div>
+            <div class="scenario-line"><span class="scenario-label">期望：</span>白天永不触发 G2 → <strong>A3=否</strong>。</div>
+          </li>
+        </ol>
+      </div>
+
+      <div class="scenario-block">
+        <h4>C 组｜白天策略与链路边界</h4>
+        <ol class="doc-list scenario-list">
+          <li>
+            <strong>C1｜白天核心人形（允许 A2）</strong>
+            <div class="scenario-line"><span class="scenario-label">输入：</span>F3 core_human=是；时间=10:00。</div>
+            <div class="scenario-line"><span class="scenario-label">计分：</span>60 → 协同×1.0 → 昼×1.0 ⇒ <strong>60</strong>。</div>
+            <div class="scenario-line"><span class="scenario-label">结果：</span><strong>P2</strong>；<strong>命中 G1‑D → A2=是</strong>；A3=否。</div>
+          </li>
+          <li>
+            <strong>C2｜白天 F1×2 + F2 持续（非核心）</strong>
+            <div class="scenario-line"><span class="scenario-label">输入：</span>F1=2；F2 mid_persist=是；时间=15:30。</div>
+            <div class="scenario-line"><span class="scenario-label">计分：</span>20 + 20 = 40 → 协同×1.2 ⇒ 48 → 昼×1.0 ⇒ <strong>48</strong>。</div>
+            <div class="scenario-line"><span class="scenario-label">结果：</span><strong>P2</strong>；白天无 F3 → 仅 A1。</div>
+          </li>
+          <li>
+            <strong>C3｜夜间 F1→F2 短暂（链路但 P 不足）</strong>
+            <div class="scenario-line"><span class="scenario-label">输入：</span>F1=1；F2 mid_short=是；Δt=200s；时间=01:40。</div>
+            <div class="scenario-line"><span class="scenario-label">计分：</span>10 + 10 = 20 → 协同×1.2 ⇒ 24 → 夜×1.5 ⇒ <strong>36</strong>。</div>
+            <div class="scenario-line"><span class="scenario-label">结果：</span><strong>P3</strong>；A2 不触发。</div>
+          </li>
+          <li>
+            <strong>C4｜夜间 F1→F2 持续（链路+持续）</strong>
+            <div class="scenario-line"><span class="scenario-label">输入：</span>F1=1；F2 mid_persist=是；Δt=120s；时间=02:50。</div>
+            <div class="scenario-line"><span class="scenario-label">计分：</span>10 + 20 = 30 → 协同×1.2 ⇒ 36 → 夜×1.5 ⇒ <strong>54</strong>。</div>
+            <div class="scenario-line"><span class="scenario-label">结果：</span><strong>P2</strong>；<strong>G1‑N 命中 → A2=是</strong>。</div>
+          </li>
+          <li>
+            <strong>C5｜白名单 IMSI 单独出现</strong>
+            <div class="scenario-line"><span class="scenario-label">输入：</span>白名单多条；时间任意。</div>
+            <div class="scenario-line"><span class="scenario-label">计分：</span>0 → <strong>P4</strong>。</div>
+            <div class="scenario-line"><span class="scenario-label">结果：</span>白名单仅削噪 → 仅 A1。</div>
+          </li>
+          <li>
+            <strong>C6｜雷达非人形/噪声</strong>
+            <div class="scenario-line"><span class="scenario-label">输入：</span>雷达目标非人形；时间任意。</div>
+            <div class="scenario-line"><span class="scenario-label">计分：</span>0 → <strong>P4</strong>。</div>
+            <div class="scenario-line"><span class="scenario-label">结果：</span>仅 A1。</div>
+          </li>
+          <li>
+            <strong>C7｜白天白名单在场 + 核心人形</strong>
+            <div class="scenario-line"><span class="scenario-label">输入：</span>白名单 IMSI 若干，F3 core_human=是；时间=11:20。</div>
+            <div class="scenario-line"><span class="scenario-label">计分：</span>F3=+60 → 协同×1.0 → 昼×1.0 ⇒ <strong>60</strong>。</div>
+            <div class="scenario-line"><span class="scenario-label">结果：</span><strong>P2</strong>；白名单不影响核心处置 → <strong>G1‑D 命中 → A2=是</strong>。</div>
+          </li>
+        </ol>
+      </div>
+
+      <div class="scenario-block">
+        <h4>D 组｜按钮清单速查</h4>
+        <table class="model-table scenario-table">
+          <thead>
+            <tr>
+              <th>按钮 ID</th>
+              <th>场景名称</th>
+              <th>期望结果</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>A1</td>
+              <td>夜间-核心人形直击（仅F3）</td>
+              <td><strong>P1 → A2</strong></td>
+            </tr>
+            <tr>
+              <td>A2</td>
+              <td>夜间-雷达≥10s且≤10m且逼近（仅F2）</td>
+              <td><strong>P1 → A2</strong></td>
+            </tr>
+            <tr>
+              <td>A3</td>
+              <td>夜间-外圈2未知IMSI（仅F1）</td>
+              <td><strong>P3 → 仅A1</strong></td>
+            </tr>
+            <tr>
+              <td>A4</td>
+              <td>夜间-F1→F2短暂+逼近（链路）</td>
+              <td><strong>P2 → A2</strong></td>
+            </tr>
+            <tr>
+              <td>A5</td>
+              <td>夜间-雷达仅持续=11s</td>
+              <td><strong>P3 → 仅A1</strong></td>
+            </tr>
+            <tr>
+              <td>A6</td>
+              <td>夜间-雷达≥10s且≤10m</td>
+              <td><strong>P2 → A2</strong></td>
+            </tr>
+            <tr>
+              <td>A7</td>
+              <td>夜间-三源协同（F1×2+F2≥10s+F3）</td>
+              <td><strong>P1 → A2</strong></td>
+            </tr>
+            <tr>
+              <td>A8</td>
+              <td>夜间-雷达短暂单点</td>
+              <td><strong>P4 → 仅A1</strong></td>
+            </tr>
+            <tr>
+              <td>A9</td>
+              <td>夜间-同IMSI重现（30min内）</td>
+              <td><strong>P3 → 仅A1</strong></td>
+            </tr>
+            <tr>
+              <td>A10</td>
+              <td>夜间-白名单在场+核心人形</td>
+              <td><strong>P1 → A2</strong></td>
+            </tr>
+            <tr>
+              <td>B1</td>
+              <td>A2后T到仍见核心人形（A3验证）</td>
+              <td><strong>A3=是</strong></td>
+            </tr>
+            <tr>
+              <td>B2</td>
+              <td>A2后T到雷达仍人形/逼近（A3验证）</td>
+              <td><strong>A3=是</strong></td>
+            </tr>
+            <tr>
+              <td>B3</td>
+              <td>A2后未到T（A3不应触发）</td>
+              <td><strong>A3=否</strong></td>
+            </tr>
+            <tr>
+              <td>B4</td>
+              <td>A2后T到但已恢复（A3不应触发）</td>
+              <td><strong>A3=否</strong></td>
+            </tr>
+            <tr>
+              <td>B5</td>
+              <td>白天-A2后T到仍异常（不应A3）</td>
+              <td><strong>A3=否</strong></td>
+            </tr>
+            <tr>
+              <td>C1</td>
+              <td>白天-核心人形（允许A2）</td>
+              <td><strong>P2 → A2</strong></td>
+            </tr>
+            <tr>
+              <td>C2</td>
+              <td>白天-F1×2+F2持续（非核心）</td>
+              <td><strong>P2 → 仅A1</strong></td>
+            </tr>
+            <tr>
+              <td>C3</td>
+              <td>夜间-F1→F2短暂（P不足）</td>
+              <td><strong>P3 → 仅A1</strong></td>
+            </tr>
+            <tr>
+              <td>C4</td>
+              <td>夜间-F1→F2持续（链路）</td>
+              <td><strong>P2 → A2</strong></td>
+            </tr>
+            <tr>
+              <td>C5</td>
+              <td>白名单F1</td>
+              <td><strong>P4 → 仅A1</strong></td>
+            </tr>
+            <tr>
+              <td>C6</td>
+              <td>雷达非人形</td>
+              <td><strong>P4 → 仅A1</strong></td>
+            </tr>
+            <tr>
+              <td>C7</td>
+              <td>白天-白名单在场+核心人形（允许A2）</td>
+              <td><strong>P2 → A2</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
   </div>
@@ -1246,6 +1534,50 @@ section {
 .live-section .section-note {
   margin-top: 0;
   color: rgba(255, 255, 255, 0.65);
+}
+
+.scenario-block {
+  margin-top: 24px;
+}
+
+.scenario-block:first-of-type {
+  margin-top: 16px;
+}
+
+.scenario-block h4 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.scenario-list {
+  margin-top: 12px;
+  padding-left: 20px;
+}
+
+.scenario-list > li {
+  margin-bottom: 12px;
+}
+
+.scenario-line {
+  margin-top: 4px;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.scenario-label {
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+  margin-right: 4px;
+}
+
+.scenario-table th,
+.scenario-table td {
+  text-align: left;
+}
+
+.scenario-table td strong {
+  color: #ffd666;
 }
 
 .state-banner {
