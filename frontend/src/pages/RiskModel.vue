@@ -336,7 +336,7 @@ function formatPriority(item: RiskAssessment): string {
 }
 
 function formatStateLabel(state: RiskState | null): string {
-  if (!state) return '状态未知'
+  if (!state) return '总分'
   const meta = stateMeta[state]
   return meta ? meta.label : state
 }
@@ -351,22 +351,52 @@ function stateDescription(state: RiskState | null): string {
   return meta ? meta.description : `当前状态：${state}`
 }
 
-function formatUpdatedLabel(item: RiskAssessment): string {
-  if (!item.updatedAt) return '更新时间：—'
-  return `更新时间：${formatTime(item.updatedAt)}`
-}
-
 function formatIsoDuration(value: any): string {
   if (typeof value !== 'string' || !value.startsWith('P')) return ''
-  const match = value.match(/^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/)
-  if (!match) return value
-  const [, d, h, m, s] = match
+  const upper = value.toUpperCase()
+  const timeIndex = upper.indexOf('T')
+  const dateSection = timeIndex === -1 ? upper.slice(1) : upper.slice(1, timeIndex)
+  const timeSection = timeIndex === -1 ? '' : upper.slice(timeIndex + 1)
   const parts: string[] = []
-  if (d) parts.push(`${Number(d)} 天`)
-  if (h) parts.push(`${Number(h)} 小时`)
-  if (m) parts.push(`${Number(m)} 分钟`)
-  if (s) parts.push(`${Number(s)} 秒`)
-  return parts.join('') || value
+
+  const dateMap: Record<string, string> = {
+    Y: '年',
+    M: '个月',
+    W: '周',
+    D: '天',
+  }
+  const timeMap: Record<string, string> = {
+    H: '小时',
+    M: '分钟',
+    S: '秒',
+  }
+
+  const numberPattern = /(\d+(?:\.\d+)?)([A-Z])/g
+
+  let match
+  if (dateSection) {
+    while ((match = numberPattern.exec(dateSection)) !== null) {
+      const [, num, unit] = match
+      const label = dateMap[unit]
+      if (label) {
+        const formatted = Number(num)
+        parts.push(`${formatted % 1 === 0 ? formatted.toString().replace(/\.0$/, '') : num} ${label}`)
+      }
+    }
+  }
+
+  if (timeSection) {
+    while ((match = numberPattern.exec(timeSection)) !== null) {
+      const [, num, unit] = match
+      const label = timeMap[unit]
+      if (label) {
+        const formatted = Number(num)
+        parts.push(`${formatted % 1 === 0 ? formatted.toString().replace(/\.0$/, '') : num} ${label}`)
+      }
+    }
+  }
+
+  return parts.join(' ') || value
 }
 
 function summarizeMetrics(metrics: any): string | null {
@@ -386,7 +416,59 @@ function summarizeMetrics(metrics: any): string | null {
   return null
 }
 
-function extractFRuleBreakdown(item: RiskAssessment): Array<{ id: string; text: string }> {
+function formatScoreValue(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(Number(value))) {
+    return '0'
+  }
+  const fixed = Number(value).toFixed(1)
+  return fixed.endsWith('.0') ? fixed.slice(0, -2) : fixed
+}
+
+function formatScoreLabel(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(Number(value))) {
+    return '—'
+  }
+  return `${formatScoreValue(value)} 分`
+}
+
+function priorityClassName(classification: Classification): string {
+  const key = classification ? classification.toLowerCase() : 'info'
+  return `priority-pill priority-${key}`
+}
+
+function formatMultiplier(value: number): string {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric === 0) {
+    return '×1.0'
+  }
+  const formatted = numeric % 1 === 0 ? numeric.toFixed(1) : numeric.toFixed(2)
+  return `×${formatted.replace(/0+$/g, '').replace(/\.$/, '')}`
+}
+
+type ActionSummary = {
+  id: string
+  label: string
+  status: 'executed' | 'pending' | 'idle'
+  detail: string
+}
+
+type RuleContribution = { id: string; text: string }
+type RuleBreakdown = {
+  id: string
+  text: string
+  score: string | null
+  contributions: RuleContribution[]
+}
+
+type ScoreSummaryView = {
+  base: number
+  multiSourceMultiplier: number
+  afterMulti: number
+  timeMultiplier: number
+  total: number
+}
+
+function extractFRuleBreakdown(item: RiskAssessment): RuleBreakdown[] {
   const details: any = item.details
   const fRules = Array.isArray(details?.fRules) ? details.fRules : []
   return fRules
@@ -398,58 +480,72 @@ function extractFRuleBreakdown(item: RiskAssessment): Array<{ id: string; text: 
       const occurrences = Number(rule?.occurrences ?? 0)
       const occText = occurrences > 1 ? `触发 ${occurrences} 次` : null
       const duration = formatIsoDuration(rule?.duration)
-      const durationText = duration ? `持续 ${duration}` : null
+      const durationText = duration ? `持续时长：${duration}` : null
+      const score = typeof rule?.score === 'number' ? Number(rule.score) : null
+      const scoreText = score !== null ? `得分 +${formatScoreValue(score)} 分` : null
+      const contributions = Array.isArray(rule?.contributions) ? rule.contributions : []
+      const contributionRows =
+        contributions.length > 0
+          ? contributions.map((entry: any, idx: number) => {
+              const value = typeof entry?.value === 'number' ? Number(entry.value) : null
+              const desc = typeof entry?.description === 'string' && entry.description ? entry.description : ''
+              const scoreLabel = value !== null ? `${formatScoreValue(value)} 分` : ''
+              return { id: `${id}-contrib-${idx}`, text: desc ? `${scoreLabel}（${desc}）` : scoreLabel }
+            })
+          : []
       const metricsText = summarizeMetrics(rule?.metrics)
-      const parts = [reason, occText, metricsText, durationText].filter(Boolean)
-      return { id, text: parts.join(' ｜ ') }
+      const baseParts = [reason, occText, metricsText, durationText].filter(Boolean)
+      return {
+        id,
+        text: baseParts.join(' ｜ '),
+        score: scoreText,
+        contributions: contributionRows,
+      }
     })
 }
 
-function extractFlags(item: RiskAssessment): Array<{ label: string; color: string }> {
-  const details: any = item.details
-  const flags: Array<{ label: string; color: string }> = []
-  const fRules = Array.isArray(details?.fRules) ? details.fRules : []
-  const actions = Array.isArray(details?.actions) ? details.actions : []
-  const gRules = Array.isArray(details?.gRules) ? details.gRules : []
-  const has = (predicate: (entry: any) => boolean) => fRules.some(predicate)
-  const seen = new Set<string>()
-  if (gRules.some((rule: any) => rule?.triggered)) {
-    seen.add('DISPATCH')
-    flags.push({ label: '派警执行', color: 'error' })
+function extractScoreSummary(item: RiskAssessment): ScoreSummaryView | null {
+  const raw: any = item.details?.scores
+  if (!raw || typeof raw !== 'object') {
+    return null
   }
-  if (actions.some((action: any) => action?.id === 'A2' && action.triggered)) {
-    seen.add('A2')
-    flags.push({ label: '远程挑战', color: 'orange' })
+  const base = Number(raw.base ?? raw.baseScore ?? 0)
+  const afterMulti = Number(raw.afterMultiSource ?? raw.afterMulti ?? base)
+  const multiSourceApplied = Boolean(raw.multiSourceApplied)
+  const multiSourceMultiplier = multiSourceApplied ? 1.2 : afterMulti === base ? 1.0 : afterMulti / (base || 1)
+  const timeMultiplier = Number(raw.timeMultiplier ?? 1)
+  const total = Number(raw.total ?? raw.totalScore ?? item.score ?? afterMulti * timeMultiplier)
+  return {
+    base,
+    multiSourceMultiplier,
+    afterMulti,
+    timeMultiplier,
+    total,
   }
-  if (has((rule: any) => rule?.id === 'F4' && rule.triggered) && !seen.has('F4')) {
-    seen.add('F4')
-    flags.push({ label: '核心越界', color: 'magenta' })
-  }
-  if (has((rule: any) => rule?.id === 'F3' && rule.triggered) && !seen.has('F3')) {
-    seen.add('F3')
-    flags.push({ label: 'IMSI 重返', color: 'volcano' })
-  }
-  if (has((rule: any) => rule?.id === 'F2' && rule.triggered) && !seen.has('F2')) {
-    seen.add('F2')
-    flags.push({ label: '未知 IMSI', color: 'geekblue' })
-  }
-  if (has((rule: any) => rule?.id === 'F1' && rule.triggered) && !seen.has('F1')) {
-    seen.add('F1')
-    flags.push({ label: '外围闯入', color: 'cyan' })
-  }
-  return flags
 }
 
-function extractActionSummaries(item: RiskAssessment): Array<{ id: string; text: string }> {
+function extractActionSummaries(item: RiskAssessment): ActionSummary[] {
   const details: any = item.details
   const actions = Array.isArray(details?.actions) ? details.actions : []
   return actions.map((action: any, index: number) => {
     const id = typeof action?.id === 'string' && action.id ? action.id : `action-${index}`
-    const name = typeof action?.definition?.name === 'string' ? action.definition.name : id
-    const status = action?.triggered ? '已执行' : action?.recommended ? '建议执行' : '不执行'
+    const label = typeof action?.definition?.name === 'string' && action.definition.name ? action.definition.name : id
+    const triggered = Boolean(action?.triggered)
+    const recommended = Boolean(action?.recommended)
+    const status: ActionSummary['status'] = triggered ? 'executed' : recommended ? 'pending' : 'idle'
     const rationale = typeof action?.rationale === 'string' && action.rationale ? action.rationale : ''
-    const parts = [name, status, rationale].filter(Boolean)
-    return { id, text: parts.join(' ｜ ') }
+    const decidedAt = action?.decidedAt ? formatTime(action.decidedAt) : ''
+    const parts = [
+      triggered ? '已执行' : recommended ? '待执行' : '未触发',
+      rationale,
+      decidedAt ? `时间：${decidedAt}` : '',
+    ].filter(Boolean)
+    return {
+      id,
+      label,
+      status,
+      detail: parts.join(' ｜ '),
+    }
   })
 }
 
@@ -600,7 +696,16 @@ onUnmounted(() => {
     </section>
 
     <section class="live-section">
-      <h2>实时风险态势</h2>
+      <h2 class="live-title">
+        实时风险态势
+        <span
+          v-if="latestAssessment"
+          class="live-score"
+          :class="priorityClassName(latestAssessment.classification)"
+        >
+          {{ formatPriority(latestAssessment) }} · {{ formatScoreLabel(latestAssessment.score) }}
+        </span>
+      </h2>
       <p class="section-note">基于最近 90 分钟内的 IMSI / 摄像头 / 雷达数据实时评分与名单判定。</p>
       <div v-if="currentState" class="state-banner">
         <span class="state-label">当前站点状态机</span>
@@ -641,39 +746,83 @@ onUnmounted(() => {
                   <a-list-item class="risk-list-item">
                     <div class="risk-item">
                       <div class="risk-item-header">
-                        <div class="risk-item-context">
-                          <span class="risk-item-state" :class="`state-${(item.state || 'unknown').toLowerCase()}`">
-                            {{ formatStateLabel(item.state) }}
-                          </span>
-                          <span class="risk-item-updated">{{ formatUpdatedLabel(item) }}</span>
-                        </div>
-                        <a-tag :color="classificationMeta[item.classification]?.tag" class="risk-item-priority">
-                          {{ formatPriority(item) }}
-                        </a-tag>
-                      </div>
-                      <div v-if="item.summary" class="risk-item-summary">{{ item.summary }}</div>
-                      <div v-if="extractFlags(item).length" class="risk-item-flags">
-                        <a-tag
-                          v-for="flag in extractFlags(item)"
-                          :key="flag.label"
-                          :color="flag.color"
+                        <span
+                          class="risk-item-title"
+                          :class="priorityClassName(item.classification)"
                         >
-                          {{ flag.label }}
-                        </a-tag>
+                          {{ formatPriority(item) }} · {{ formatScoreLabel(item.score) }}
+                        </span>
+                        <span
+                          v-if="item.state"
+                          class="risk-item-state"
+                          :class="`state-${(item.state || 'unknown').toLowerCase()}`"
+                        >
+                          {{ formatStateLabel(item.state) }}
+                        </span>
                       </div>
-                      <div v-if="extractFRuleBreakdown(item).length" class="risk-item-breakdown">
-                        <ul>
-                          <li v-for="hit in extractFRuleBreakdown(item)" :key="hit.id">
-                            <span class="rule-desc">{{ hit.text }}</span>
-                          </li>
-                        </ul>
+                      <div v-if="item.summary || extractFRuleBreakdown(item).length" class="risk-score-card">
+                        <div class="score-card-header">评分详情</div>
+                        <div v-if="item.summary" class="score-card-summary">{{ item.summary }}</div>
+                        <div v-if="extractScoreSummary(item)" class="score-summary-grid">
+                          <div class="score-summary-row">
+                            <span>基础得分</span>
+                            <span>{{ formatScoreValue(extractScoreSummary(item)?.base ?? 0) }}</span>
+                          </div>
+                          <div class="score-summary-row">
+                            <span>协同系数</span>
+                            <span>{{ formatMultiplier(extractScoreSummary(item)?.multiSourceMultiplier ?? 1) }}</span>
+                          </div>
+                          <div class="score-summary-row">
+                            <span>协同后</span>
+                            <span>{{ formatScoreValue(extractScoreSummary(item)?.afterMulti ?? 0) }}</span>
+                          </div>
+                          <div class="score-summary-row">
+                            <span>昼夜系数</span>
+                            <span>{{ formatMultiplier(extractScoreSummary(item)?.timeMultiplier ?? 1) }}</span>
+                          </div>
+                          <div class="score-summary-row">
+                            <span>综合得分</span>
+                            <span>{{ formatScoreValue(extractScoreSummary(item)?.total ?? 0) }}</span>
+                          </div>
+                        </div>
+                        <div v-if="extractFRuleBreakdown(item).length" class="score-card-body">
+                          <div
+                            v-for="hit in extractFRuleBreakdown(item)"
+                            :key="hit.id"
+                            class="score-card-block"
+                          >
+                            <div class="score-block-title">
+                              <span class="score-row-label">{{ hit.id }}</span>
+                              <span class="score-row-text">{{ hit.text }}</span>
+                            </div>
+                            <div v-if="hit.score" class="score-block-score">{{ hit.score }}</div>
+                            <div v-if="hit.contributions && hit.contributions.length" class="score-block-contrib">
+                              <div
+                                v-for="contrib in hit.contributions"
+                                :key="contrib.id"
+                                class="score-contrib-row"
+                              >
+                                {{ contrib.text }}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
                       </div>
                       <div v-if="extractActionSummaries(item).length" class="risk-item-actions">
-                        <ul>
-                          <li v-for="action in extractActionSummaries(item)" :key="action.id">
-                            <span class="rule-desc">{{ action.text }}</span>
-                          </li>
-                        </ul>
+                        <div
+                          v-for="action in extractActionSummaries(item)"
+                          :key="action.id"
+                          class="risk-action"
+                          :class="`risk-action-${action.status}`"
+                        >
+                          <span class="action-badge" :class="`action-badge-${action.id.toLowerCase()}`">
+                            {{ action.id }}
+                          </span>
+                          <div class="action-body">
+                            <span class="action-label">{{ action.label }}</span>
+                            <span class="action-detail">{{ action.detail }}</span>
+                          </div>
+                        </div>
                       </div>
                       <div class="risk-item-footer">
                         <span>更新时间：{{ formatTime(item.updatedAt) }}</span>
@@ -1218,27 +1367,66 @@ section {
 
 .risk-item {
   display: grid;
-  gap: 8px;
+  gap: 12px;
 }
 
 .risk-item-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
-.risk-item-context {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  word-break: break-word;
+.risk-item-title {
+  font-size: 16px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.priority-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 12px;
+  border-radius: 999px;
+  font-size: 14px;
+}
+
+.priority-p1 {
+  background: rgba(255, 77, 79, 0.18);
+  border: 1px solid rgba(255, 77, 79, 0.6);
+  color: #ff7875;
+}
+
+.priority-p2 {
+  background: rgba(250, 173, 20, 0.16);
+  border: 1px solid rgba(250, 173, 20, 0.5);
+  color: #ffc069;
+}
+
+.priority-p3 {
+  background: rgba(19, 194, 194, 0.15);
+  border: 1px solid rgba(19, 194, 194, 0.45);
+  color: #87e8de;
+}
+
+.priority-p4 {
+  background: rgba(82, 196, 26, 0.15);
+  border: 1px solid rgba(82, 196, 26, 0.45);
+  color: #95de64;
+}
+
+.priority-info {
+  background: rgba(120, 120, 120, 0.15);
+  border: 1px solid rgba(140, 140, 140, 0.45);
+  color: #d9d9d9;
 }
 
 .risk-item-state {
   font-weight: 600;
-  color: var(--text-color);
+  color: rgba(255, 255, 255, 0.85);
   text-transform: none;
 }
 
@@ -1258,23 +1446,152 @@ section {
   color: #52c41a;
 }
 
-.risk-item-updated {
+.risk-score-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  background: rgba(12, 24, 36, 0.45);
+  border-radius: 10px;
+  border: 1px solid rgba(64, 169, 255, 0.28);
+}
+
+.score-card-header {
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.score-card-summary {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.score-card-body {
+  display: grid;
+  gap: 6px;
+}
+
+.score-summary-grid {
+  display: grid;
+  gap: 4px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.65);
-}
-
-.risk-item-priority {
-  font-weight: 600;
-}
-
-.risk-item-summary {
   color: rgba(255, 255, 255, 0.8);
 }
 
-.risk-item-flags {
+.score-summary-row {
   display: flex;
-  flex-wrap: wrap;
+  justify-content: space-between;
+}
+
+.score-card-block {
+  display: grid;
   gap: 6px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+}
+
+.score-block-title {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.score-row-label {
+  font-weight: 600;
+  color: rgba(64, 169, 255, 0.9);
+}
+
+.score-row-text {
+  color: rgba(255, 255, 255, 0.8);
+  word-break: break-word;
+}
+
+.score-block-score {
+  font-size: 13px;
+  color: rgba(255, 214, 102, 0.95);
+}
+
+.score-block-contrib {
+  display: grid;
+  gap: 4px;
+  padding-left: 12px;
+  border-left: 2px dotted rgba(64, 169, 255, 0.3);
+}
+
+.score-contrib-row {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.risk-item-actions {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+}
+
+.risk-action {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  line-height: 1.4;
+}
+
+.action-badge {
+  min-width: 32px;
+  text-align: center;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.action-badge-a1 {
+  color: #69c0ff;
+  border-color: rgba(105, 192, 255, 0.6);
+}
+
+.action-badge-a2 {
+  color: #faad14;
+  border-color: rgba(250, 173, 20, 0.6);
+}
+
+.action-badge-a3 {
+  color: #ff4d4f;
+  border-color: rgba(255, 77, 79, 0.6);
+}
+
+.action-body {
+  display: grid;
+  gap: 2px;
+}
+
+.action-label {
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.action-detail {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.risk-action-executed .action-label {
+  color: #ffd666;
+}
+
+.risk-action-pending .action-label {
+  color: #69c0ff;
+}
+
+.risk-action-idle .action-label {
+  color: rgba(255, 255, 255, 0.65);
 }
 
 .risk-item-footer {
@@ -1372,6 +1689,17 @@ section {
   color: rgba(255, 255, 255, 0.85);
 }
 
+.live-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.live-score {
+  font-size: 18px;
+}
+
 .mb12 {
   margin-bottom: 12px;
 }
@@ -1405,80 +1733,9 @@ h2 {
   color: rgba(255, 255, 255, 0.85);
 }
 
-.risk-item-breakdown .rule-desc,
-.risk-item-actions .rule-desc {
+.risk-item-breakdown .rule-desc {
   display: block;
   word-break: break-all;
-}
-
-.risk-item-actions {
-  padding: 8px 10px;
-  background: rgba(0, 0, 0, 0.18);
-  border-radius: 6px;
-}
-
-.risk-item-actions ul {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.risk-item-actions li {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.75);
-}
-
-.priority-grid .ant-card,
-.action-grid .ant-card {
-  background: rgba(0, 0, 0, 0.25);
-}
-
-.timeline-list {
-  padding-left: 18px;
-  display: grid;
-  gap: 8px;
-  color: rgba(255, 255, 255, 0.85);
-}
-
-.card-stack {
-  display: grid;
-  gap: 16px;
-}
-
-.intro-block {
-  padding: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.25);
-  display: grid;
-  gap: 12px;
-  color: rgba(255, 255, 255, 0.85);
-}
-
-.intro-block p {
-  margin: 0;
-}
-
-.bullet-list {
-  padding-left: 18px;
-  margin: 0;
-  display: grid;
-  gap: 8px;
-}
-
-.bullet-list li {
-  line-height: 1.6;
-}
-
-.compact-table {
-  margin-top: 16px;
-  background: rgba(0, 0, 0, 0.2);
-}
-
-.nested-table {
-  margin-top: 8px;
 }
 
 .card-note {
