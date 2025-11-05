@@ -677,7 +677,8 @@ public class RiskAssessmentService {
         boolean cameraPersists = context.coreBeforeChallenge && context.hasRecentStrongCamera(now, CAMERA_STILL_POSITIVE_WINDOW)
                 && !context.hasCameraLeaveWithin(now, CAMERA_STILL_POSITIVE_WINDOW);
         boolean radarPersists = context.hasRecentRadarPersistOrApproach(now, RADAR_STILL_POSITIVE_WINDOW);
-        boolean g2 = night && g1NightTriggered && (cameraPersists || radarPersists);
+        boolean hasPreChallengeSignal = context.coreBeforeChallenge || context.radarBeforeChallenge;
+        boolean g2 = night && g1NightTriggered && hasPreChallengeSignal && (cameraPersists || radarPersists);
         String g2Reason;
         if (!night) {
             g2Reason = "仅夜间允许 A3";

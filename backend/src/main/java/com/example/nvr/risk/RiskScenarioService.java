@@ -435,8 +435,9 @@ public class RiskScenarioService {
     }
 
     private void simulateRadarNearZone(Instant reference, Map<String, Integer> created) {
+        // 近域持续但不逼近：保持距离稳定以避免触发 approach
         createRadarTrack("f2-near", 5401, reference.minusSeconds(20), reference.minusSeconds(2),
-                14.0, 12.0, 6, created);
+                12.5, 12.4, 6, created);
     }
 
     private void simulateG2CameraStillAbnormal(Instant reference, Map<String, Integer> created) {
