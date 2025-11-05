@@ -19,6 +19,7 @@ type TableRow = ImsiRecord & {
   key: string
   operatorLabel: string
   timestampDisplay: string
+  sortKey: number
 }
 
 const loading = ref(false)
@@ -74,8 +75,38 @@ function formatDateTime(date: string, time: string) {
   return parts.join(' ') || '—'
 }
 
+function normalizeDateForSort(date: string) {
+  const digits = (date || '').replace(/\D/g, '')
+  if (digits.length >= 8) return digits.slice(0, 8)
+  if (digits.length === 6) return `20${digits}`
+  if (digits.length === 0) return '00000000'
+  return digits.padStart(8, '0')
+}
+
+function normalizeTimeForSort(time: string) {
+  const digits = (time || '').replace(/\D/g, '')
+  if (!digits) return '000000'
+  return digits.padStart(6, '0').slice(0, 6)
+}
+
+function buildSortKey(date: string, time: string) {
+  const normalizedDate = normalizeDateForSort(date)
+  const normalizedTime = normalizeTimeForSort(time)
+  const combined = `${normalizedDate}${normalizedTime}`
+  const parsed = Number.parseInt(combined, 10)
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
 const tableColumns = [
-  { title: '时间', dataIndex: 'timestampDisplay', key: 'timestamp', width: 180 },
+  {
+    title: '时间',
+    dataIndex: 'timestampDisplay',
+    key: 'timestamp',
+    width: 180,
+    sorter: (a: TableRow, b: TableRow) => a.sortKey - b.sortKey,
+    defaultSortOrder: 'descend',
+    sortDirections: ['descend', 'ascend']
+  },
   { title: 'IMSI', dataIndex: 'imsi', key: 'imsi', width: 200 },
   { title: '运营商', dataIndex: 'operatorLabel', key: 'operator', width: 120 },
   { title: '区域', dataIndex: 'area', key: 'area', width: 140 },
@@ -94,11 +125,16 @@ const filteredRecords = computed(() => {
   })
 })
 
-const tableData = computed<TableRow[]>(() => filteredRecords.value.map((record, index) => ({
+const sortedRecords = computed(() => {
+  return [...filteredRecords.value].sort((a, b) => buildSortKey(b.rptDate, b.rptTime) - buildSortKey(a.rptDate, a.rptTime))
+})
+
+const tableData = computed<TableRow[]>(() => sortedRecords.value.map((record, index) => ({
   ...record,
   key: `${record.sourceFile || 'file'}-${record.lineNumber}-${index}`,
   operatorLabel: toOperatorLabel(record.operator),
-  timestampDisplay: formatDateTime(record.rptDate, record.rptTime)
+  timestampDisplay: formatDateTime(record.rptDate, record.rptTime),
+  sortKey: buildSortKey(record.rptDate, record.rptTime)
 })))
 
 const totalRecords = computed(() => filteredRecords.value.length)
