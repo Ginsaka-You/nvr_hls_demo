@@ -92,6 +92,15 @@ function mapEventType(et: string) {
   const s = et.toLowerCase()
   if (s.includes('field') || s.includes('intrusion')) return '区域入侵告警'
   if (s.includes('linedetection') || s.includes('tripwire')) return '越界侦测告警'
+  if ((s.includes('region') && (s.includes('entrance') || s.includes('enter'))) || s.includes('areaenter')) {
+    return '进入区域侦测告警'
+  }
+  if ((s.includes('region') && (s.includes('exit') || s.includes('leave') || s.includes('depart'))) || s.includes('areaexit')) {
+    return '离开区域侦测告警'
+  }
+  if (s.includes('loiter') || s.includes('linger') || s.includes('stay')) {
+    return '徘徊侦测告警'
+  }
   if (s.includes('vmd') || s.includes('motion')) return '移动侦测告警'
   return et
 }

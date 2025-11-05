@@ -177,6 +177,15 @@ function translateEventType(value: any): string | null {
   const lower = text.toLowerCase()
   if (lower === 'radar') return '检测到入侵'
   if (lower === 'fielddetection') return '检测到区域入侵'
+  if ((lower.includes('region') && (lower.includes('entrance') || lower.includes('enter'))) || lower.includes('areaenter')) {
+    return '进入区域侦测'
+  }
+  if ((lower.includes('region') && (lower.includes('exit') || lower.includes('leave') || lower.includes('depart'))) || lower.includes('areaexit')) {
+    return '离开区域侦测'
+  }
+  if (lower.includes('loiter') || lower.includes('linger') || lower.includes('stay')) {
+    return '徘徊侦测'
+  }
   return text
 }
 </script>
