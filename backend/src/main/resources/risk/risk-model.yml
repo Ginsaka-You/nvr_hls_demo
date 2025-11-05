@@ -1,4 +1,4 @@
-version: "2024Q4-REMOTE-ALARM-v0.51"
+version: "2024Q4-REMOTE-ALARM-v0.53"
 parameters:
   timezone: "Asia/Shanghai"
   nightStartHour: 18
@@ -39,7 +39,7 @@ actions:
     description: "自动留痕并维持事件上下文，不主动干预。"
   - id: A2
     name: "A2 远程警报"
-    description: "灯光+喊话一次性执行，并启动 5 分钟远程警报等待窗（白天仅核心越界或例外闸门触发）。"
+    description: "灯光+喊话一次性执行，输出 8s 并进入 600s 冷却（节流键 {site_id,channel_id}），同步启动 5 分钟等待窗。"
   - id: A3
     name: "A3 人员出动"
     description: "通知安保到场（非公安），同一事件仅一次。"
@@ -62,33 +62,33 @@ fRules:
     actionImpact: "得分可叠加（持续/逼近/10–20m 近域），与 F1/F3 协同强化"
   - id: F3
     name: "核心摄像头见人"
-    trigger: "核心区摄像头识别人形跨越警戒线"
+    trigger: "核心区摄像头事件在 12s 内经 S_cam 互补投票（entry / loiter / leave 组合）达到 ≥50"
     dataSource: "核心摄像头（有效 1–40m，跨越警戒线计入）"
-    window: "即时触发"
-    frequencyLimit: "每次越界 1 次"
+    window: "cam_vote_window=12s；entry≤3s 离开降权"
+    frequencyLimit: "互补取最大，不累加"
     cooldown: "PT1M"
-    actionImpact: "直接贡献 +60，昼夜均可触发远程警报闸门"
+    actionImpact: "S_cam ∈ {65,60,55,50,20,0}；≥50 视为核心阳性，可驱动远程警报"
 gRules:
   - id: G1-N
     name: "G1 夜间远程警报"
-    trigger: "夜间：core_human 成立，或 P≥P2 且满足 mid_persist / near_core_10_20m / link_f1_f2"
+    trigger: "夜间：S_cam ≥50，或 P≥P2 且满足 mid_persist / near_core_10_20m / link_f1_f2"
     action: "A2"
-    notes: "夜间命中后立即执行远程警报，并进入 5 分钟等待窗"
+    notes: "夜间命中后立即执行远程警报并启动 T=300s 复评窗口"
   - id: G1-D
     name: "G1 白天核心越界"
-    trigger: "白天：core_human 成立（核心摄像头识别人形越界）"
+    trigger: "白天：S_cam ≥50（核心摄像头识别人形越界/徘徊）"
     action: "A2"
-    notes: "白天核心越界仍需执行远程警报，但不升级 A3"
+    notes: "白天核心越界仍需执行远程警报，A2 受统一 600s 节流约束"
   - id: G1-D-X
     name: "G1 白天例外闸门"
     trigger: "白天：无 F3，且 P≥70，并满足雷达持续≥10s + 近域10–20m + 向内逼近，并出现 IMSI 重现 / F1→F2 链路 / 未知 IMSI≥2 任一"
     action: "A2"
-    notes: "解决白天高分仍停留 A1 的缺口，同一事件 A2 仅一次"
+    notes: "解决白天高分仍停留 A1 的缺口，输出同样遵循 8s/600s 节流"
   - id: G2
     name: "等待窗失败升级"
-    trigger: "夜间且 A2 远程警报后等待窗到期仍异常（核心见人或雷达持续逼近）"
+    trigger: "夜间且 A2 远程警报后 T=300s 到期仍异常（60s 内新 S_cam ≥50 且无 cam_leave，或 30s 内 mid_persist/approach_core）"
     action: "A3"
-    notes: "仅夜间允许 A3，白名单不影响判定，等待窗与 IMSI 再识别周期对齐"
+    notes: "仅夜间允许 A3；摄像侧需要强阳性且未被离开事件清空，雷达侧需持续/逼近仍存在"
   - id: G3
     name: "白天取证闸门"
     trigger: "白天且未命中 G1-N/G1-D/G1-D-X（无核心越界及例外闸门）"

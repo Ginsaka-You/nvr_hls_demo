@@ -28,6 +28,7 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -50,6 +51,10 @@ public class RiskAssessmentService {
     private static final double MULTI_SOURCE_MULTIPLIER = 1.2;
     private static final double NIGHT_MULTIPLIER = 1.5;
     private static final double APPROACH_THRESHOLD_METERS = 1.5;
+    private static final Duration CAMERA_VOTE_WINDOW = Duration.ofSeconds(12);
+    private static final Duration CAMERA_QUICK_LEAVE_WINDOW = Duration.ofSeconds(3);
+    private static final Duration CAMERA_STILL_POSITIVE_WINDOW = Duration.ofSeconds(60);
+    private static final Duration RADAR_STILL_POSITIVE_WINDOW = Duration.ofSeconds(30);
 
     private final RiskAssessmentRepository riskAssessmentRepository;
     private final ImsiRecordRepository imsiRecordRepository;
@@ -169,7 +174,7 @@ public class RiskAssessmentService {
         ScoreSummary scoreSummary = new ScoreSummary(baseScore, multiSource, afterMulti, timeMultiplier, finalScore);
 
         PriorityDefinition priority = determinePriority(finalScore, config);
-        List<GRuleStatus> gStatuses = evaluateGRules(priority, context, scoreSummary, night, config);
+        List<GRuleStatus> gStatuses = evaluateGRules(priority, context, scoreSummary, night, config, now);
         List<ActionStatus> actions = determineActions(scoreSummary, gStatuses, night, now);
 
         String summary = buildSummary(priority, scoreSummary, context, gStatuses, actions);
@@ -366,10 +371,20 @@ public class RiskAssessmentService {
             context.registerRadarTrack(trackFirst, trackLast);
 
             Duration duration = Duration.between(trackFirst, trackLast);
+            boolean beforeChallenge = challengeStart != null && trackFirst.isBefore(challengeStart);
+            boolean afterChallenge = challengeStart == null || !trackLast.isBefore(challengeStart);
+
             boolean persist = duration.compareTo(params.getRadarPersistThreshold()) >= 0;
             if (persist) {
                 persistCount++;
                 context.setRadarPersist(true);
+                if (beforeChallenge) {
+                    context.setRadarBeforeChallenge(true);
+                }
+                if (afterChallenge) {
+                    context.setRadarAfterChallenge(true);
+                }
+                context.registerRadarPersistEvent(trackLast);
             } else {
                 shortCount++;
             }
@@ -392,6 +407,13 @@ public class RiskAssessmentService {
                 if (approach) {
                     approachCount++;
                     context.setRadarApproach(true);
+                    if (beforeChallenge) {
+                        context.setRadarBeforeChallenge(true);
+                    }
+                    if (afterChallenge) {
+                        context.setRadarAfterChallenge(true);
+                    }
+                    context.registerRadarApproachEvent(trackLast);
                 }
             }
         }
@@ -467,13 +489,9 @@ public class RiskAssessmentService {
                                         List<CameraAlarmEntity> history,
                                         Instant challengeStart,
                                         EvaluationContext context) {
-        List<CameraAlarmEntity> coreWindow = window.stream()
-                .filter(this::isCoreCameraEvent)
-                .collect(Collectors.toList());
         List<CameraAlarmEntity> coreHistory = history.stream()
                 .filter(this::isCoreCameraEvent)
                 .collect(Collectors.toList());
-
         if (coreHistory.stream().anyMatch(event -> {
             Instant ts = event.getCreatedAt();
             return ts != null && ts.isBefore(challengeStart);
@@ -487,46 +505,94 @@ public class RiskAssessmentService {
             context.setCoreAfterChallenge(true);
         }
 
-        if (coreWindow.isEmpty()) {
+        List<CameraObservation> observations = window.stream()
+                .filter(this::isCoreCameraEvent)
+                .map(this::toCameraObservation)
+                .filter(Objects::nonNull)
+                .sorted(Comparator.comparing(CameraObservation::getTimestamp, Comparator.nullsLast(Comparator.naturalOrder())))
+                .collect(Collectors.toList());
+        if (observations.isEmpty()) {
+            context.updateCameraScore(0.0);
             return FRuleEvaluation.notTriggered("F3");
         }
 
-        context.setCoreHuman(true);
-        int occurrences = coreWindow.size();
-        Instant first = coreWindow.stream()
-                .map(CameraAlarmEntity::getCreatedAt)
+        long entryEvents = observations.stream().filter(obs -> obs.getType() == CameraEventType.ENTRY).count();
+        long loiterEvents = observations.stream().filter(obs -> obs.getType() == CameraEventType.LOITER).count();
+        long leaveEvents = observations.stream().filter(obs -> obs.getType() == CameraEventType.LEAVE).count();
+        observations.stream()
+                .filter(obs -> obs.getType() == CameraEventType.LEAVE)
+                .map(CameraObservation::getTimestamp)
                 .filter(Objects::nonNull)
-                .min(Comparator.naturalOrder())
-                .orElse(challengeStart);
-        Instant last = coreWindow.stream()
-                .map(CameraAlarmEntity::getCreatedAt)
-                .filter(Objects::nonNull)
-                .max(Comparator.naturalOrder())
-                .orElse(first);
+                .forEach(context::registerCameraLeave);
 
-        double score = 60.0 * occurrences;
-        List<ScoreContribution> contributions = List.of(new ScoreContribution("core_human", score,
-                occurrences > 1
-                        ? String.format(Locale.CHINA, "核心摄像头见人 %d 次", occurrences)
-                        : "核心摄像头见人"));
+        boolean radarStrong = context.hasRadarPersist() || context.hasRadarNearCore() || context.hasRadarApproach();
+        List<CameraCluster> clusters = buildCameraClusters(observations, radarStrong);
+        clusters.forEach(cluster -> {
+            context.updateCameraScore(cluster.getScore());
+            if (cluster.getScore() >= 50.0) {
+                context.setCoreHuman(true);
+                Instant start = cluster.getStart();
+                Instant end = cluster.getEnd();
+                if (start != null && start.isBefore(challengeStart)) {
+                    context.setCoreBeforeChallenge(true);
+                }
+                if (end != null && !end.isBefore(challengeStart)) {
+                    context.setCoreAfterChallenge(true);
+                }
+                if (end != null) {
+                    context.registerCameraStrongEvent(end);
+                }
+            }
+        });
+
+        CameraCluster bestCluster = clusters.stream()
+                .max(Comparator.comparingDouble(CameraCluster::getScore))
+                .orElse(null);
+        if (bestCluster == null || bestCluster.getScore() <= 0.0) {
+            return FRuleEvaluation.notTriggered("F3");
+        }
+
+        double score = bestCluster.getScore();
+        Instant first = Optional.ofNullable(bestCluster.getStart()).orElse(challengeStart);
+        Instant last = Optional.ofNullable(bestCluster.getEnd()).orElse(first);
+        List<ScoreContribution> contributions = List.of(new ScoreContribution(bestCluster.getRuleId(), score,
+                bestCluster.getDescription()));
+
+        List<Map<String, Object>> clusterMetrics = clusters.stream()
+                .map(cluster -> {
+                    Map<String, Object> info = new LinkedHashMap<>();
+                    info.put("rule", cluster.getRuleId());
+                    info.put("score", cluster.getScore());
+                    info.put("start", cluster.getStart());
+                    info.put("end", cluster.getEnd());
+                    info.put("events", cluster.getEvents().size());
+                    info.put("hasLeave", cluster.hasLeave());
+                    info.put("quickLeave", cluster.hasQuickLeave());
+                    return info;
+                })
+                .collect(Collectors.toList());
 
         Map<String, Object> metrics = new LinkedHashMap<>();
-        metrics.put("events", occurrences);
-        metrics.put("channels", coreWindow.stream()
-                .map(CameraAlarmEntity::getCamChannel)
-                .filter(Objects::nonNull)
-                .distinct()
-                .collect(Collectors.toList()));
+        metrics.put("totalEvents", observations.size());
+        metrics.put("entries", entryEvents);
+        metrics.put("loiters", loiterEvents);
+        metrics.put("leaves", leaveEvents);
+        metrics.put("clusters", clusterMetrics);
+        metrics.put("bestRule", bestCluster.getRuleId());
+        metrics.put("bestScore", bestCluster.getScore());
+        metrics.put("bestStart", bestCluster.getStart());
+        metrics.put("bestEnd", bestCluster.getEnd());
 
-        return new FRuleEvaluation("F3", true, occurrences, first, last,
-                "核心摄像头识别人形", metrics, contributions, null, score);
+        return new FRuleEvaluation("F3", true, bestCluster.getEvents().size(), first, last,
+                bestCluster.getDescription(), metrics, contributions, null, score);
     }
 
     private List<GRuleStatus> evaluateGRules(PriorityDefinition priority,
                                              EvaluationContext context,
                                              ScoreSummary scores,
                                              boolean night,
-                                             RiskModelConfig config) {
+                                             RiskModelConfig config,
+                                             Instant now) {
         List<GRuleStatus> statuses = new ArrayList<>();
         boolean highPriority = priority != null
                 && ("P1".equalsIgnoreCase(priority.getId()) || "P2".equalsIgnoreCase(priority.getId()));
@@ -588,18 +654,35 @@ public class RiskAssessmentService {
         }
         statuses.add(new GRuleStatus("G1-D-X", g1DayExceptionTriggered, g1DayExceptionReason));
 
-        boolean challengePersists = (context.coreBeforeChallenge && context.coreAfterChallenge)
-                || (context.radarBeforeChallenge && context.radarAfterChallenge);
-        boolean g2 = night && g1NightTriggered && challengePersists;
+        boolean cameraPersists = context.coreBeforeChallenge && context.hasRecentStrongCamera(now, CAMERA_STILL_POSITIVE_WINDOW)
+                && !context.hasCameraLeaveWithin(now, CAMERA_STILL_POSITIVE_WINDOW);
+        boolean radarPersists = context.radarBeforeChallenge
+                && context.hasRecentRadarPersistOrApproach(now, RADAR_STILL_POSITIVE_WINDOW);
+        boolean g2 = night && g1NightTriggered && (cameraPersists || radarPersists);
         String g2Reason;
         if (!night) {
             g2Reason = "仅夜间允许 A3";
         } else if (!g1NightTriggered) {
             g2Reason = "尚未执行夜间远程警报";
-        } else if (challengePersists) {
-            g2Reason = "远程警报等待窗到期仍有异常";
+        } else if (g2) {
+            g2Reason = "远程警报 300s 后仍异常，升级出警";
         } else {
-            g2Reason = "等待窗内已消失";
+            List<String> reasons = new ArrayList<>();
+            if (!context.coreBeforeChallenge && !context.radarBeforeChallenge) {
+                reasons.add("缺少等待窗内的初始异常");
+            }
+            if (context.coreBeforeChallenge && !context.hasRecentStrongCamera(now, CAMERA_STILL_POSITIVE_WINDOW)) {
+                reasons.add("摄像头近 60s 无强阳性");
+            } else if (context.coreBeforeChallenge && context.hasCameraLeaveWithin(now, CAMERA_STILL_POSITIVE_WINDOW)) {
+                reasons.add("摄像头 60s 内出现 cam_leave，视为清空");
+            }
+            if (context.radarBeforeChallenge && !context.hasRecentRadarPersistOrApproach(now, RADAR_STILL_POSITIVE_WINDOW)) {
+                reasons.add("雷达近 30s 无持续/逼近目标");
+            }
+            if (reasons.isEmpty()) {
+                reasons.add("等待窗内已消失");
+            }
+            g2Reason = String.join("；", reasons);
         }
         statuses.add(new GRuleStatus("G2", g2, g2Reason));
 
@@ -806,12 +889,256 @@ public class RiskAssessmentService {
                 || type.contains("越界") || level.contains("core") || level.contains("一级");
     }
 
+    private List<CameraCluster> buildCameraClusters(List<CameraObservation> observations, boolean radarStrong) {
+        List<CameraCluster> clusters = new ArrayList<>();
+        if (observations.isEmpty()) {
+            return clusters;
+        }
+        boolean[] consumed = new boolean[observations.size()];
+        for (int i = 0; i < observations.size(); i++) {
+            if (consumed[i]) {
+                continue;
+            }
+            CameraObservation anchor = observations.get(i);
+            Instant start = anchor.getTimestamp();
+            Instant cutoff = start != null ? start.plus(CAMERA_VOTE_WINDOW) : null;
+            List<CameraObservation> clusterEvents = new ArrayList<>();
+            for (int j = i; j < observations.size(); j++) {
+                if (consumed[j]) {
+                    continue;
+                }
+                CameraObservation candidate = observations.get(j);
+                Instant ts = candidate.getTimestamp();
+                if (start != null && ts != null && cutoff != null && ts.isAfter(cutoff)) {
+                    break;
+                }
+                if (start == null || ts == null || (!ts.isBefore(start) && (cutoff == null || !ts.isAfter(cutoff)))) {
+                    clusterEvents.add(candidate);
+                    consumed[j] = true;
+                }
+            }
+            clusters.add(scoreCameraCluster(clusterEvents, radarStrong));
+        }
+        return clusters;
+    }
+
+    private CameraCluster scoreCameraCluster(List<CameraObservation> events, boolean radarStrong) {
+        if (events == null || events.isEmpty()) {
+            return CameraCluster.empty();
+        }
+        List<CameraObservation> sorted = events.stream()
+                .sorted(Comparator.comparing(CameraObservation::getTimestamp, Comparator.nullsLast(Comparator.naturalOrder())))
+                .collect(Collectors.toList());
+        Instant start = sorted.stream()
+                .map(CameraObservation::getTimestamp)
+                .filter(Objects::nonNull)
+                .min(Comparator.naturalOrder())
+                .orElse(null);
+        Instant end = sorted.stream()
+                .map(CameraObservation::getTimestamp)
+                .filter(Objects::nonNull)
+                .max(Comparator.naturalOrder())
+                .orElse(start);
+        long entryCount = sorted.stream().filter(obs -> obs.getType() == CameraEventType.ENTRY).count();
+        long loiterCount = sorted.stream().filter(obs -> obs.getType() == CameraEventType.LOITER).count();
+        long leaveCount = sorted.stream().filter(obs -> obs.getType() == CameraEventType.LEAVE).count();
+        boolean hasLeave = leaveCount > 0;
+
+        Instant earliestEntry = sorted.stream()
+                .filter(obs -> obs.getType() == CameraEventType.ENTRY)
+                .map(CameraObservation::getTimestamp)
+                .filter(Objects::nonNull)
+                .min(Comparator.naturalOrder())
+                .orElse(null);
+        boolean quickLeave = false;
+        if (earliestEntry != null) {
+            quickLeave = sorted.stream()
+                    .filter(obs -> obs.getType() == CameraEventType.LEAVE)
+                    .map(CameraObservation::getTimestamp)
+                    .filter(Objects::nonNull)
+                    .filter(ts -> !ts.isBefore(earliestEntry))
+                    .anyMatch(ts -> Duration.between(earliestEntry, ts).compareTo(CAMERA_QUICK_LEAVE_WINDOW) <= 0);
+        }
+
+        boolean hasRadarStrong = radarStrong;
+        double score;
+        String rule;
+        String description;
+        if (entryCount > 0 && hasRadarStrong) {
+            score = 65.0;
+            rule = "C1";
+            description = "摄像头越界 + 雷达近域/持续/逼近协同";
+        } else if (entryCount > 0 && loiterCount > 0) {
+            score = 60.0;
+            rule = "C2";
+            description = "越界 + 徘徊 ≥10s";
+        } else if (entryCount >= 2) {
+            score = 60.0;
+            rule = "C3";
+            description = "12s 内越界 ≥2 次";
+        } else if (entryCount > 0 && quickLeave && !hasRadarStrong) {
+            score = 20.0;
+            rule = "C6";
+            description = "越界后 ≤3s 离开";
+        } else if (loiterCount > 0) {
+            score = 55.0;
+            rule = "C5";
+            description = "徘徊 ≥10s";
+        } else if (entryCount > 0) {
+            score = 50.0;
+            rule = "C4";
+            description = "单次越界";
+        } else {
+            score = 0.0;
+            rule = "C7";
+            description = "仅离开或无阳性";
+        }
+        return new CameraCluster(sorted, start, end, score, rule, description, hasLeave, quickLeave);
+    }
+
+    private CameraObservation toCameraObservation(CameraAlarmEntity alarm) {
+        if (alarm == null) {
+            return null;
+        }
+        Instant timestamp = alarm.getCreatedAt();
+        if (timestamp == null) {
+            return null;
+        }
+        CameraEventType type = classifyCameraEvent(alarm);
+        return new CameraObservation(timestamp, type);
+    }
+
+    private CameraEventType classifyCameraEvent(CameraAlarmEntity alarm) {
+        String normalized = (Optional.ofNullable(alarm.getEventType()).orElse("") + " "
+                + Optional.ofNullable(alarm.getLevel()).orElse("")).toLowerCase(Locale.ROOT);
+        if (containsKeyword(normalized, "leave", "离开", "离场", "离去", "退出", "exit")) {
+            return CameraEventType.LEAVE;
+        }
+        if (containsKeyword(normalized, "loiter", "徘徊", "滞留", "停留", "逗留", "linger", "stay")) {
+            return CameraEventType.LOITER;
+        }
+        if (containsKeyword(normalized, "entry", "enter", "intrusion", "越界", "闯入", "breach",
+                "跨线", "跨越", "入侵", "侵入", "进入", "cross")) {
+            return CameraEventType.ENTRY;
+        }
+        return CameraEventType.OTHER;
+    }
+
+    private boolean containsKeyword(String value, String... keywords) {
+        if (value == null || value.isEmpty()) {
+            return false;
+        }
+        for (String keyword : keywords) {
+            if (keyword != null && !keyword.isEmpty() && value.contains(keyword.toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private enum CameraEventType {
+        ENTRY,
+        LOITER,
+        LEAVE,
+        OTHER
+    }
+
+    private static final class CameraObservation {
+        private final Instant timestamp;
+        private final CameraEventType type;
+
+        private CameraObservation(Instant timestamp, CameraEventType type) {
+            this.timestamp = timestamp;
+            this.type = type;
+        }
+
+        private Instant getTimestamp() {
+            return timestamp;
+        }
+
+        private CameraEventType getType() {
+            return type;
+        }
+    }
+
+    private static final class CameraCluster {
+        private static final CameraCluster EMPTY = new CameraCluster(Collections.emptyList(), null, null, 0.0, "C7",
+                "仅离开或无阳性", false, false);
+
+        private final List<CameraObservation> events;
+        private final Instant start;
+        private final Instant end;
+        private final double score;
+        private final String ruleId;
+        private final String description;
+        private final boolean hasLeave;
+        private final boolean quickLeave;
+
+        private CameraCluster(List<CameraObservation> events,
+                               Instant start,
+                               Instant end,
+                               double score,
+                               String ruleId,
+                               String description,
+                               boolean hasLeave,
+                               boolean quickLeave) {
+            this.events = Collections.unmodifiableList(new ArrayList<>(events));
+            this.start = start;
+            this.end = end;
+            this.score = score;
+            this.ruleId = ruleId;
+            this.description = description;
+            this.hasLeave = hasLeave;
+            this.quickLeave = quickLeave;
+        }
+
+        private static CameraCluster empty() {
+            return EMPTY;
+        }
+
+        private List<CameraObservation> getEvents() {
+            return events;
+        }
+
+        private Instant getStart() {
+            return start;
+        }
+
+        private Instant getEnd() {
+            return end;
+        }
+
+        private double getScore() {
+            return score;
+        }
+
+        private String getRuleId() {
+            return ruleId;
+        }
+
+        private String getDescription() {
+            return description;
+        }
+
+        private boolean hasLeave() {
+            return hasLeave;
+        }
+
+        private boolean hasQuickLeave() {
+            return quickLeave;
+        }
+    }
+
     private static class EvaluationContext {
         private final Map<String, Instant> imsiFirstSeen = new HashMap<>();
         private final List<String> newImsi = new ArrayList<>();
         private final List<String> repeatedImsi = new ArrayList<>();
         private final List<Instant> radarFirstDetections = new ArrayList<>();
         private final List<Instant> radarLastDetections = new ArrayList<>();
+        private final List<Instant> cameraStrongEvents = new ArrayList<>();
+        private final List<Instant> cameraLeaves = new ArrayList<>();
+        private final List<Instant> radarPersistMoments = new ArrayList<>();
+        private final List<Instant> radarApproachMoments = new ArrayList<>();
         private boolean hasRadarPersist;
         private boolean hasRadarNearCore;
         private boolean hasRadarApproach;
@@ -821,6 +1148,7 @@ public class RiskAssessmentService {
         private boolean coreBeforeChallenge;
         private boolean coreAfterChallenge;
         private boolean linkF1F2;
+        private double cameraScore;
 
         void registerImsi(Map<String, Instant> first) {
             imsiFirstSeen.putAll(first);
@@ -836,6 +1164,18 @@ public class RiskAssessmentService {
         void registerRadarTrack(Instant first, Instant last) {
             radarFirstDetections.add(first);
             radarLastDetections.add(last);
+        }
+
+        void registerRadarPersistEvent(Instant time) {
+            if (time != null) {
+                radarPersistMoments.add(time);
+            }
+        }
+
+        void registerRadarApproachEvent(Instant time) {
+            if (time != null) {
+                radarApproachMoments.add(time);
+            }
         }
 
         void computeLinkF1F2(Parameters params) {
@@ -888,6 +1228,65 @@ public class RiskAssessmentService {
             coreAfterChallenge = coreAfterChallenge || value;
         }
 
+        void registerCameraStrongEvent(Instant time) {
+            if (time != null) {
+                cameraStrongEvents.add(time);
+            }
+        }
+
+        void registerCameraLeave(Instant time) {
+            if (time != null) {
+                cameraLeaves.add(time);
+            }
+        }
+
+        void updateCameraScore(double score) {
+            cameraScore = Math.max(cameraScore, score);
+        }
+
+        boolean hasRadarPersist() {
+            return hasRadarPersist;
+        }
+
+        boolean hasRadarNearCore() {
+            return hasRadarNearCore;
+        }
+
+        boolean hasRadarApproach() {
+            return hasRadarApproach;
+        }
+
+        double getCameraScore() {
+            return cameraScore;
+        }
+
+        boolean hasRecentStrongCamera(Instant now, Duration window) {
+            if (cameraStrongEvents.isEmpty()) {
+                return false;
+            }
+            return cameraStrongEvents.stream()
+                    .filter(Objects::nonNull)
+                    .anyMatch(ts -> !ts.isAfter(now) && Duration.between(ts, now).compareTo(window) <= 0);
+        }
+
+        boolean hasCameraLeaveWithin(Instant now, Duration window) {
+            if (cameraLeaves.isEmpty()) {
+                return false;
+            }
+            return cameraLeaves.stream()
+                    .filter(Objects::nonNull)
+                    .anyMatch(ts -> !ts.isAfter(now) && Duration.between(ts, now).compareTo(window) <= 0);
+        }
+
+        boolean hasRecentRadarPersistOrApproach(Instant now, Duration window) {
+            return radarPersistMoments.stream()
+                    .filter(Objects::nonNull)
+                    .anyMatch(ts -> !ts.isAfter(now) && Duration.between(ts, now).compareTo(window) <= 0)
+                    || radarApproachMoments.stream()
+                    .filter(Objects::nonNull)
+                    .anyMatch(ts -> !ts.isAfter(now) && Duration.between(ts, now).compareTo(window) <= 0);
+        }
+
         int getNewImsiCount() {
             return new LinkedHashSet<>(newImsi).size();
         }
@@ -905,6 +1304,11 @@ public class RiskAssessmentService {
             map.put("radarAfterChallenge", radarAfterChallenge);
             map.put("coreBeforeChallenge", coreBeforeChallenge);
             map.put("coreAfterChallenge", coreAfterChallenge);
+            map.put("cameraScore", cameraScore);
+            map.put("cameraStrongEvents", new ArrayList<>(cameraStrongEvents));
+            map.put("cameraLeaves", new ArrayList<>(cameraLeaves));
+            map.put("radarPersistMoments", new ArrayList<>(radarPersistMoments));
+            map.put("radarApproachMoments", new ArrayList<>(radarApproachMoments));
             return map;
         }
     }
