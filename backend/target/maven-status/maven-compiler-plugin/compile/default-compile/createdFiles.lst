@@ -16,6 +16,7 @@ com/example/nvr/RadarController$RadarTestAttempt.class
 com/example/nvr/WebRtcStreamerService$FailureRecord.class
 com/example/nvr/risk/RiskAssessmentService$ActionStatus.class
 com/example/nvr/imsi/dto/FtpTestRequest.class
+com/example/nvr/risk/RiskScenarioService$CameraEventKind.class
 com/example/nvr/IpcAudioAlarmController.class
 com/example/nvr/persistence/RiskAssessmentRepository.class
 com/example/nvr/risk/RiskScenarioService$ScenarioExecutor.class

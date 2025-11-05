@@ -17,6 +17,7 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
@@ -73,93 +74,132 @@ public class RiskScenarioService {
     private Map<String, ScenarioDefinition> buildScenarioDefinitions() {
         Map<String, ScenarioDefinition> map = new LinkedHashMap<>();
         map.put("A1", new ScenarioDefinition("A1",
-                "夜间核心人形直击场景已注入",
-                () -> alignToLocalTime(22, 0),
-                this::simulateNightCoreHuman));
-        map.put("A2", new ScenarioDefinition("A2",
-                "夜间雷达持续逼近场景已注入",
-                () -> alignToLocalTime(23, 30),
-                this::simulateNightRadarPersistNearApproach));
-        map.put("A3", new ScenarioDefinition("A3",
-                "夜间外围双未知 IMSI 场景已注入",
-                () -> alignToLocalTime(2, 0),
-                this::simulateNightTwoUnknownImsi));
-        map.put("A4", new ScenarioDefinition("A4",
-                "夜间 F1→F2 短暂链路场景已注入",
-                () -> alignToLocalTime(1, 10),
-                this::simulateNightLinkShortApproach));
-        map.put("A5", new ScenarioDefinition("A5",
-                "夜间雷达仅持续 11s 场景已注入",
-                () -> alignToLocalTime(21, 40),
-                this::simulateNightRadarPersistOnly));
-        map.put("A6", new ScenarioDefinition("A6",
-                "夜间雷达持续且进入近域场景已注入",
-                () -> alignToLocalTime(23, 5),
-                this::simulateNightRadarPersistNearCore));
-        map.put("A7", new ScenarioDefinition("A7",
-                "夜间三源协同场景已注入",
-                () -> alignToLocalTime(0, 20),
-                this::simulateNightMultiSourceFusion));
-        map.put("A8", new ScenarioDefinition("A8",
-                "夜间雷达短暂单点场景已注入",
-                () -> alignToLocalTime(3, 0),
-                this::simulateNightRadarShortOnly));
-        map.put("A9", new ScenarioDefinition("A9",
-                "夜间同一 IMSI 再现场景已注入",
-                () -> alignToLocalTime(4, 10),
-                this::simulateNightImsiRepeat));
-        map.put("A10", new ScenarioDefinition("A10",
-                "夜间核心见人且白名单在场场景已注入",
-                () -> alignToLocalTime(22, 45),
-                this::simulateNightCoreWithWhitelist));
-        map.put("B1", new ScenarioDefinition("B1",
-                "A2 远程警报等待窗到期核心仍见人场景已注入",
-                () -> alignToLocalTime(22, 50),
-                this::simulateChallengeCoreStillPresent));
-        map.put("B2", new ScenarioDefinition("B2",
-                "A2 远程警报等待窗到期雷达仍逼近场景已注入",
-                () -> alignToLocalTime(23, 10),
-                this::simulateChallengeRadarStillPresent));
-        map.put("B3", new ScenarioDefinition("B3",
-                "A2 远程警报等待窗未到场景已注入",
-                () -> alignToLocalTime(0, 15),
-                this::simulateChallengeWindowNotReached));
-        map.put("B4", new ScenarioDefinition("B4",
-                "A2 远程警报等待窗到期目标离场场景已注入",
-                () -> alignToLocalTime(0, 30),
-                this::simulateChallengeRecovered));
-        map.put("B5", new ScenarioDefinition("B5",
-                "白天远程警报等待窗到期仍异常场景已注入",
-                () -> alignToLocalTime(11, 0),
-                this::simulateDayChallengeStillPresent));
-        map.put("C1", new ScenarioDefinition("C1",
-                "白天核心越界远程警报场景已注入",
+                "昼间单次进入（C4）场景已注入",
                 () -> alignToLocalTime(10, 0),
-                this::simulateDayCoreHumanOnly));
-        map.put("C2", new ScenarioDefinition("C2",
-                "白天高分但仅取证场景已注入",
-                () -> alignToLocalTime(15, 30),
-                this::simulateDayHighScoreNoAction));
-        map.put("C3", new ScenarioDefinition("C3",
-                "夜间链路分值不足场景已注入",
-                () -> alignToLocalTime(1, 40),
-                this::simulateNightLinkLowScore));
-        map.put("C4", new ScenarioDefinition("C4",
-                "夜间链路持续入闸场景已注入",
-                () -> alignToLocalTime(2, 50),
-                this::simulateNightLinkPersist));
-        map.put("C5", new ScenarioDefinition("C5",
-                "白名单 IMSI 抑制场景已注入",
-                () -> alignToLocalTime(12, 0),
-                this::simulateWhitelistOnly));
-        map.put("C6", new ScenarioDefinition("C6",
-                "雷达噪声抑制场景已注入",
-                () -> alignToLocalTime(13, 0),
-                this::simulateRadarNoiseOnly));
-        map.put("C7", new ScenarioDefinition("C7",
-                "白天核心越界伴随白名单场景已注入",
+                this::simulateDaySingleEntry));
+        map.put("A2", new ScenarioDefinition("A2",
+                "昼间 12s 内重复进入（C3）场景已注入",
+                () -> alignToLocalTime(10, 5),
+                this::simulateDayRepeatEntry));
+        map.put("A3", new ScenarioDefinition("A3",
+                "昼间徘徊 ≥10s（C5）场景已注入",
+                () -> alignToLocalTime(10, 10),
+                this::simulateDayLoiterOnly));
+        map.put("A4", new ScenarioDefinition("A4",
+                "昼间越界后 3s 内离开（C6）场景已注入",
+                () -> alignToLocalTime(10, 15),
+                this::simulateDayQuickLeave));
+        map.put("A5", new ScenarioDefinition("A5",
+                "夜间越界 + 雷达协同（C1）场景已注入",
+                () -> alignToLocalTime(22, 0),
+                this::simulateNightEntryWithRadar));
+        map.put("A6", new ScenarioDefinition("A6",
+                "夜间越界 + 徘徊（C2）场景已注入",
+                () -> alignToLocalTime(22, 5),
+                this::simulateNightEntryLoiter));
+        map.put("A7", new ScenarioDefinition("A7",
+                "夜间秒退但雷达强信号（C1 覆盖 C6）场景已注入",
+                () -> alignToLocalTime(22, 10),
+                this::simulateNightQuickLeaveWithRadar));
+
+        map.put("B1A", new ScenarioDefinition("B1A",
+                "夜间 A2 远程警报起始场景已注入",
+                () -> alignToLocalTime(22, 20),
+                this::simulateNightChallengeStart));
+        map.put("B1B", new ScenarioDefinition("B1B",
+                "夜间等待窗 T 前 60s 摄像仍异常场景已注入",
+                () -> alignToLocalTime(22, 25),
+                this::simulateNightChallengeCameraPersist));
+        map.put("B1C", new ScenarioDefinition("B1C",
+                "夜间等待窗 T 前 30s 雷达仍异常场景已注入",
+                () -> alignToLocalTime(22, 30),
+                this::simulateNightChallengeRadarPersist));
+        map.put("B1D", new ScenarioDefinition("B1D",
+                "夜间等待窗到期前出现离场场景已注入",
+                () -> alignToLocalTime(22, 35),
+                this::simulateNightChallengeRecovered));
+
+        map.put("C1-X", new ScenarioDefinition("C1-X",
+                "昼间 F1×2 + F2 三强例外闸门场景已注入",
+                () -> alignToLocalTime(11, 0),
+                this::simulateDayExceptionUnknownPlusF2));
+        map.put("C2-X", new ScenarioDefinition("C2-X",
+                "昼间 F1 重现 + F2 三强例外闸门场景已注入",
+                () -> alignToLocalTime(11, 10),
+                this::simulateDayExceptionRepeatPlusF2));
+        map.put("C3-X", new ScenarioDefinition("C3-X",
+                "昼间链路 + F2 三强例外闸门场景已注入",
                 () -> alignToLocalTime(11, 20),
-                this::simulateDayCoreWithWhitelist));
+                this::simulateDayExceptionLinkPlusF2));
+
+        map.put("D1", new ScenarioDefinition("D1",
+                "昼间同 ROI 600s 内重复触发应节流场景已注入",
+                () -> alignToLocalTime(12, 0),
+                this::simulateDayThrottleSameRoi));
+        map.put("D2", new ScenarioDefinition("D2",
+                "昼间不同 ROI 互不节流场景已注入",
+                () -> alignToLocalTime(12, 5),
+                this::simulateDayThrottleDifferentRoi));
+        map.put("D3", new ScenarioDefinition("D3",
+                "昼间雷达扇区节流独立场景已注入",
+                () -> alignToLocalTime(12, 10),
+                this::simulateDayThrottleRadarIndependent));
+        map.put("D4", new ScenarioDefinition("D4",
+                "夜间远程警报不节流场景已注入",
+                () -> alignToLocalTime(22, 45),
+                this::simulateNightNoThrottle));
+
+        map.put("W1", new ScenarioDefinition("W1",
+                "白名单灰名单候选自动化场景已注入",
+                () -> alignToLocalTime(9, 0),
+                this::simulateWhitelistCandidate));
+        map.put("W2", new ScenarioDefinition("W2",
+                "白名单自动加白场景已注入",
+                () -> alignToLocalTime(9, 5),
+                this::simulateWhitelistPromote));
+        map.put("W3", new ScenarioDefinition("W3",
+                "白名单自动撤白进入观察场景已注入",
+                () -> alignToLocalTime(9, 10),
+                this::simulateWhitelistRevoke));
+        map.put("W4", new ScenarioDefinition("W4",
+                "撤白后再次异常 90 天封禁自动加白场景已注入",
+                () -> alignToLocalTime(9, 15),
+                this::simulateWhitelistBan));
+        map.put("W5", new ScenarioDefinition("W5",
+                "白名单当日上限 200 校验场景已注入",
+                () -> alignToLocalTime(9, 20),
+                this::simulateWhitelistCap));
+
+        map.put("E1", new ScenarioDefinition("E1",
+                "多源协同 ×1.2 乘子校验场景已注入",
+                () -> alignToLocalTime(22, 55),
+                this::simulateCooperationMultiplier));
+        map.put("E2", new ScenarioDefinition("E2",
+                "白名单 IMSI 不参与协同场景已注入",
+                () -> alignToLocalTime(10, 30),
+                this::simulateWhitelistNoCooperation));
+
+        map.put("F1", new ScenarioDefinition("F1",
+                "雷达 <10m 盲区仅记录场景已注入",
+                () -> alignToLocalTime(14, 0),
+                this::simulateRadarBlindZone));
+        map.put("F2", new ScenarioDefinition("F2",
+                "雷达 12m 近域持续场景已注入",
+                () -> alignToLocalTime(22, 15),
+                this::simulateRadarNearZone));
+
+        map.put("G2-1", new ScenarioDefinition("G2-1",
+                "夜间等待窗 T 内摄像仍异常 → 应升级 A3 场景已注入",
+                () -> alignToLocalTime(23, 5),
+                this::simulateG2CameraStillAbnormal));
+        map.put("G2-2", new ScenarioDefinition("G2-2",
+                "夜间等待窗 T 内仅离场 → 不升级 A3 场景已注入",
+                () -> alignToLocalTime(23, 10),
+                this::simulateG2CameraCleared));
+        map.put("G2-3", new ScenarioDefinition("G2-3",
+                "夜间等待窗 T 内雷达仍异常 → 应升级 A3 场景已注入",
+                () -> alignToLocalTime(23, 15),
+                this::simulateG2RadarStillAbnormal));
         return Collections.unmodifiableMap(map);
     }
 
@@ -174,137 +214,266 @@ public class RiskScenarioService {
         return target.toInstant();
     }
 
-    private void simulateNightCoreHuman(Instant reference, Map<String, Integer> created) {
-        createCameraAlarm("a1-night-core", "core-01", reference.minusSeconds(15), true);
+    private void simulateDaySingleEntry(Instant reference, Map<String, Integer> created) {
+        createCameraEvent("a1-day-single", "cam-roi-a", reference.minusSeconds(5), CameraEventKind.ENTRY, true);
         addCount(created, "camera", 1);
     }
 
-    private void simulateNightRadarPersistNearApproach(Instant reference, Map<String, Integer> created) {
-        createRadarTrack("a2-night-radar", 2001, reference.minusSeconds(18), reference.minusSeconds(6),
-                16.0, 8.0, 4, created);
-    }
-
-    private void simulateNightTwoUnknownImsi(Instant reference, Map<String, Integer> created) {
-        createImsiRecord("a3-night-imsi", "46011" + randomDigits(5), reference.minusSeconds(180));
-        createImsiRecord("a3-night-imsi", "46012" + randomDigits(5), reference.minusSeconds(120));
-        addCount(created, "imsi", 2);
-    }
-
-    private void simulateNightLinkShortApproach(Instant reference, Map<String, Integer> created) {
-        createImsiRecord("a4-night-link", "46013" + randomDigits(5), reference.minusSeconds(180));
-        addCount(created, "imsi", 1);
-        createRadarTrack("a4-night-link", 2401, reference.minusSeconds(12), reference.minusSeconds(5),
-                18.0, 12.0, 3, created);
-    }
-
-    private void simulateNightRadarPersistOnly(Instant reference, Map<String, Integer> created) {
-        createRadarTrack("a5-night-persist", 2501, reference.minusSeconds(20), reference.minusSeconds(9),
-                18.0, 17.0, 4, created);
-    }
-
-    private void simulateNightRadarPersistNearCore(Instant reference, Map<String, Integer> created) {
-        createRadarTrack("a6-night-near", 2601, reference.minusSeconds(20), reference.minusSeconds(5),
-                11.2, 9.8, 5, created);
-    }
-
-    private void simulateNightMultiSourceFusion(Instant reference, Map<String, Integer> created) {
-        createImsiRecord("a7-night-fusion", "46014" + randomDigits(5), reference.minusSeconds(240));
-        createImsiRecord("a7-night-fusion", "46015" + randomDigits(5), reference.minusSeconds(210));
-        addCount(created, "imsi", 2);
-        createRadarTrack("a7-night-fusion", 2701, reference.minusSeconds(30), reference.minusSeconds(10),
-                14.0, 12.0, 5, created);
-        createCameraAlarm("a7-night-fusion", "core-02", reference.minusSeconds(15), true);
-        addCount(created, "camera", 1);
-    }
-
-    private void simulateNightRadarShortOnly(Instant reference, Map<String, Integer> created) {
-        createRadarTrack("a8-night-short", 2801, reference.minusSeconds(12), reference.minusSeconds(5),
-                16.0, 16.2, 2, created);
-    }
-
-    private void simulateNightImsiRepeat(Instant reference, Map<String, Integer> created) {
-        String imsi = "46016" + randomDigits(5);
-        createImsiRecord("a9-night-repeat", imsi, reference.minusSeconds(20 * 60));
-        createImsiRecord("a9-night-repeat", imsi, reference.minusSeconds(90));
-        addCount(created, "imsi", 2);
-    }
-
-    private void simulateNightCoreWithWhitelist(Instant reference, Map<String, Integer> created) {
-        createCameraAlarm("a10-night-whitelist", "core-03", reference.minusSeconds(20), true);
-        addCount(created, "camera", 1);
-        createImsiRecord("a10-night-whitelist", SCENARIO_WHITELIST_IMSI, reference.minusSeconds(80));
-        addCount(created, "imsi", 1);
-    }
-
-    private void simulateChallengeCoreStillPresent(Instant reference, Map<String, Integer> created) {
-        createCameraAlarm("b1-challenge-core", "core-04", reference.minusSeconds(310), true);
-        createCameraAlarm("b1-challenge-core", "core-04", reference.minusSeconds(10), true);
+    private void simulateDayRepeatEntry(Instant reference, Map<String, Integer> created) {
+        createCameraEvent("a2-day-repeat", "cam-roi-a", reference.minusSeconds(10), CameraEventKind.ENTRY, true);
+        createCameraEvent("a2-day-repeat", "cam-roi-a", reference.minusSeconds(2), CameraEventKind.ENTRY, true);
         addCount(created, "camera", 2);
     }
 
-    private void simulateChallengeRadarStillPresent(Instant reference, Map<String, Integer> created) {
-        createRadarTrack("b2-challenge-radar", 3201, reference.minusSeconds(310), reference.minusSeconds(5),
-                14.0, 8.5, 6, created);
-    }
-
-    private void simulateChallengeWindowNotReached(Instant reference, Map<String, Integer> created) {
-        createRadarTrack("b3-challenge-soon", 3301, reference.minusSeconds(9), reference.minusSeconds(2),
-                11.0, 9.2, 3, created);
-    }
-
-    private void simulateChallengeRecovered(Instant reference, Map<String, Integer> created) {
-        createRadarTrack("b4-challenge-clear", 3401, reference.minusSeconds(360), reference.minusSeconds(320),
-                14.0, 13.6, 3, created);
-    }
-
-    private void simulateDayChallengeStillPresent(Instant reference, Map<String, Integer> created) {
-        createCameraAlarm("b5-day-challenge", "core-06", reference.minusSeconds(320), true);
-        createCameraAlarm("b5-day-challenge", "core-06", reference.minusSeconds(12), true);
-        addCount(created, "camera", 2);
-    }
-
-    private void simulateDayCoreHumanOnly(Instant reference, Map<String, Integer> created) {
-        createCameraAlarm("c1-day-core", "core-05", reference.minusSeconds(20), true);
+    private void simulateDayLoiterOnly(Instant reference, Map<String, Integer> created) {
+        createCameraEvent("a3-day-loiter", "cam-roi-a", reference.minusSeconds(6), CameraEventKind.LOITER, true);
         addCount(created, "camera", 1);
     }
 
-    private void simulateDayHighScoreNoAction(Instant reference, Map<String, Integer> created) {
-        createImsiRecord("c2-day-high", "46017" + randomDigits(5), reference.minusSeconds(260));
-        createImsiRecord("c2-day-high", "46018" + randomDigits(5), reference.minusSeconds(210));
+    private void simulateDayQuickLeave(Instant reference, Map<String, Integer> created) {
+        createCameraEvent("a4-day-quick", "cam-roi-a", reference.minusSeconds(5), CameraEventKind.ENTRY, true);
+        createCameraEvent("a4-day-quick", "cam-roi-a", reference.minusSeconds(3), CameraEventKind.LEAVE, true);
+        addCount(created, "camera", 2);
+    }
+
+    private void simulateNightEntryWithRadar(Instant reference, Map<String, Integer> created) {
+        createCameraEvent("a5-night-radar", "core-night-a5", reference.minusSeconds(10), CameraEventKind.ENTRY, true);
+        addCount(created, "camera", 1);
+        createRadarTrack("a5-night-radar", 5001, reference.minusSeconds(16), reference.minusSeconds(2),
+                18.0, 12.0, 6, created);
+    }
+
+    private void simulateNightEntryLoiter(Instant reference, Map<String, Integer> created) {
+        createCameraEvent("a6-night-loiter", "core-night-a6", reference.minusSeconds(9), CameraEventKind.ENTRY, true);
+        createCameraEvent("a6-night-loiter", "core-night-a6", reference.minusSeconds(2), CameraEventKind.LOITER, true);
+        addCount(created, "camera", 2);
+    }
+
+    private void simulateNightQuickLeaveWithRadar(Instant reference, Map<String, Integer> created) {
+        createCameraEvent("a7-night-quick", "core-night-a7", reference.minusSeconds(6), CameraEventKind.ENTRY, true);
+        createCameraEvent("a7-night-quick", "core-night-a7", reference.minusSeconds(4), CameraEventKind.LEAVE, true);
+        addCount(created, "camera", 2);
+        createRadarTrack("a7-night-quick", 5007, reference.minusSeconds(12), reference.minusSeconds(3),
+                17.0, 11.5, 5, created);
+    }
+
+    private void simulateNightChallengeStart(Instant reference, Map<String, Integer> created) {
+        createCameraEvent("b1a-night-start", "core-night-b1", reference.minusSeconds(8), CameraEventKind.ENTRY, true);
+        createCameraEvent("b1a-night-start", "core-night-b1", reference.minusSeconds(3), CameraEventKind.LOITER, true);
+        addCount(created, "camera", 2);
+    }
+
+    private void simulateNightChallengeCameraPersist(Instant reference, Map<String, Integer> created) {
+        Instant challengeStart = reference.minusSeconds(300);
+        createCameraEvent("b1b-night-base", "core-night-b1", challengeStart.minusSeconds(6), CameraEventKind.ENTRY, true);
+        createCameraEvent("b1b-night-base", "core-night-b1", challengeStart.minusSeconds(2), CameraEventKind.LOITER, true);
+        createCameraEvent("b1b-night-still", "core-night-b1", reference.minusSeconds(40), CameraEventKind.ENTRY, true);
+        createCameraEvent("b1b-night-still", "core-night-b1", reference.minusSeconds(25), CameraEventKind.LOITER, true);
+        addCount(created, "camera", 4);
+    }
+
+    private void simulateNightChallengeRadarPersist(Instant reference, Map<String, Integer> created) {
+        Instant challengeStart = reference.minusSeconds(300);
+        createCameraEvent("b1c-night-base", "core-night-b1", challengeStart.minusSeconds(6), CameraEventKind.ENTRY, true);
+        createCameraEvent("b1c-night-base", "core-night-b1", challengeStart.minusSeconds(2), CameraEventKind.LOITER, true);
+        addCount(created, "camera", 2);
+        createRadarTrack("b1c-night-radar", 5101, reference.minusSeconds(40), reference.minusSeconds(5),
+                16.0, 11.0, 6, created);
+    }
+
+    private void simulateNightChallengeRecovered(Instant reference, Map<String, Integer> created) {
+        Instant challengeStart = reference.minusSeconds(300);
+        createCameraEvent("b1d-night-base", "core-night-b1", challengeStart.minusSeconds(6), CameraEventKind.ENTRY, true);
+        createCameraEvent("b1d-night-base", "core-night-b1", challengeStart.minusSeconds(2), CameraEventKind.LOITER, true);
+        createCameraEvent("b1d-night-leave", "core-night-b1", reference.minusSeconds(15), CameraEventKind.LEAVE, true);
+        addCount(created, "camera", 3);
+    }
+
+    private void simulateDayExceptionUnknownPlusF2(Instant reference, Map<String, Integer> created) {
+        createImsiRecord("c1x-day-f1", "46031" + randomDigits(5), reference.minusSeconds(240));
+        createImsiRecord("c1x-day-f1", "46032" + randomDigits(5), reference.minusSeconds(180));
         addCount(created, "imsi", 2);
-        createRadarTrack("c2-day-high", 3501, reference.minusSeconds(18), reference.minusSeconds(6),
-                15.0, 14.4, 4, created);
+        createRadarTrack("c1x-day-radar", 5201, reference.minusSeconds(50), reference.minusSeconds(5),
+                19.0, 12.0, 7, created);
     }
 
-    private void simulateNightLinkLowScore(Instant reference, Map<String, Integer> created) {
-        createImsiRecord("c3-night-low", "46019" + randomDigits(5), reference.minusSeconds(200));
+    private void simulateDayExceptionRepeatPlusF2(Instant reference, Map<String, Integer> created) {
+        String repeat = "46033" + randomDigits(5);
+        createImsiRecord("c2x-day-repeat", repeat, reference.minusSeconds(1600));
+        createImsiRecord("c2x-day-repeat", repeat, reference.minusSeconds(120));
+        createImsiRecord("c2x-day-repeat", "46034" + randomDigits(5), reference.minusSeconds(90));
+        addCount(created, "imsi", 3);
+        createRadarTrack("c2x-day-radar", 5202, reference.minusSeconds(55), reference.minusSeconds(6),
+                18.5, 11.5, 7, created);
+    }
+
+    private void simulateDayExceptionLinkPlusF2(Instant reference, Map<String, Integer> created) {
+        String imsi = "46035" + randomDigits(5);
+        createImsiRecord("c3x-day-link", imsi, reference.minusSeconds(230));
+        createImsiRecord("c3x-day-link", "46036" + randomDigits(5), reference.minusSeconds(210));
+        createImsiRecord("c3x-day-link", imsi, reference.minusSeconds(30 * 60));
+        addCount(created, "imsi", 3);
+        createRadarTrack("c3x-day-radar", 5203, reference.minusSeconds(45), reference.minusSeconds(4),
+                19.5, 11.0, 7, created);
+    }
+
+    private void simulateDayThrottleSameRoi(Instant reference, Map<String, Integer> created) {
+        Instant firstCluster = reference.minusSeconds(420);
+        createCameraEvent("d1-day-throttle", "cam-roi-throttle", firstCluster.minusSeconds(6), CameraEventKind.ENTRY, true);
+        createCameraEvent("d1-day-throttle", "cam-roi-throttle", firstCluster.minusSeconds(2), CameraEventKind.LOITER, true);
+        createCameraEvent("d1-day-throttle", "cam-roi-throttle", reference.minusSeconds(8), CameraEventKind.ENTRY, true);
+        addCount(created, "camera", 3);
+    }
+
+    private void simulateDayThrottleDifferentRoi(Instant reference, Map<String, Integer> created) {
+        Instant earlier = reference.minusSeconds(480);
+        createCameraEvent("d2-day-roi-a", "cam-roi-a", earlier.minusSeconds(5), CameraEventKind.ENTRY, true);
+        createCameraEvent("d2-day-roi-a", "cam-roi-a", earlier.minusSeconds(1), CameraEventKind.LOITER, true);
+        createCameraEvent("d2-day-roi-b", "cam-roi-b", reference.minusSeconds(6), CameraEventKind.ENTRY, true);
+        addCount(created, "camera", 3);
+    }
+
+    private void simulateDayThrottleRadarIndependent(Instant reference, Map<String, Integer> created) {
+        Instant earlier = reference.minusSeconds(420);
+        createCameraEvent("d3-day-roi", "cam-roi-a", earlier.minusSeconds(5), CameraEventKind.ENTRY, true);
+        createCameraEvent("d3-day-roi", "cam-roi-a", earlier.minusSeconds(1), CameraEventKind.LOITER, true);
+        addCount(created, "camera", 2);
+        createRadarTrack("d3-day-radar", 5204, reference.minusSeconds(55), reference.minusSeconds(5),
+                18.0, 11.0, 6, created);
+    }
+
+    private void simulateNightNoThrottle(Instant reference, Map<String, Integer> created) {
+        createCameraEvent("d4-night-throttle", "core-night-d4", reference.minusSeconds(180), CameraEventKind.ENTRY, true);
+        createCameraEvent("d4-night-throttle", "core-night-d4", reference.minusSeconds(60), CameraEventKind.ENTRY, true);
+        addCount(created, "camera", 2);
+    }
+
+    private void simulateWhitelistCandidate(Instant reference, Map<String, Integer> created) {
+        String imsi = "46040" + randomDigits(5);
+        createImsiRecord("w1-candidate", imsi, reference.minus(Duration.ofDays(1)).minusSeconds(600));
+        createImsiRecord("w1-candidate", imsi, reference.minus(Duration.ofDays(3)).minusSeconds(600));
+        createImsiRecord("w1-candidate", imsi, reference.minus(Duration.ofDays(5)).minusSeconds(600));
+        createImsiRecord("w1-candidate", imsi, reference.minus(Duration.ofDays(7)).minusSeconds(600));
+        createImsiRecord("w1-candidate", imsi, reference.minus(Duration.ofDays(9)).minusSeconds(600));
+        addCount(created, "imsi", 5);
+    }
+
+    private void simulateWhitelistPromote(Instant reference, Map<String, Integer> created) {
+        String imsi = "46041" + randomDigits(5);
+        createImsiRecord("w2-promote", imsi, reference.minus(Duration.ofDays(14)).minusSeconds(600));
         addCount(created, "imsi", 1);
-        createRadarTrack("c3-night-low", 3601, reference.minusSeconds(9), reference.minusSeconds(3),
-                15.0, 14.4, 3, created);
     }
 
-    private void simulateNightLinkPersist(Instant reference, Map<String, Integer> created) {
-        createImsiRecord("c4-night-link", "46020" + randomDigits(5), reference.minusSeconds(180));
-        addCount(created, "imsi", 1);
-        createRadarTrack("c4-night-link", 3701, reference.minusSeconds(18), reference.minusSeconds(6),
-                14.0, 13.0, 4, created);
-    }
-
-    private void simulateWhitelistOnly(Instant reference, Map<String, Integer> created) {
-        createImsiRecord("c5-whitelist", SCENARIO_WHITELIST_IMSI, reference.minusSeconds(60));
+    private void simulateWhitelistRevoke(Instant reference, Map<String, Integer> created) {
+        String imsi = "46042" + randomDigits(5);
+        createImsiRecord("w3-revoke", imsi, reference.minusSeconds(3600));
+        createCameraEvent("w3-revoke", "core-night-w", reference.minusSeconds(120), CameraEventKind.ENTRY, true);
+        addCount(created, "camera", 1);
         addCount(created, "imsi", 1);
     }
 
-    private void simulateRadarNoiseOnly(Instant reference, Map<String, Integer> created) {
-        createRadarNoise("c6-noise", reference.minusSeconds(30));
+    private void simulateWhitelistBan(Instant reference, Map<String, Integer> created) {
+        String imsi = "46043" + randomDigits(5);
+        createImsiRecord("w4-ban", imsi, reference.minus(Duration.ofDays(2)).minusSeconds(600));
+        createCameraEvent("w4-ban", "core-night-w", reference.minusSeconds(90), CameraEventKind.ENTRY, true);
+        addCount(created, "camera", 1);
+        addCount(created, "imsi", 1);
+    }
+
+    private void simulateWhitelistCap(Instant reference, Map<String, Integer> created) {
+        for (int i = 0; i < 210; i++) {
+            createImsiRecord("w5-cap", "461" + String.format(Locale.ROOT, "%04d%04d", i / 100, i % 100),
+                    reference.minusSeconds(60 + i));
+        }
+        addCount(created, "imsi", 210);
+    }
+
+    private void simulateCooperationMultiplier(Instant reference, Map<String, Integer> created) {
+        createCameraEvent("e1-coop", "core-night-e1", reference.minusSeconds(10), CameraEventKind.ENTRY, true);
+        addCount(created, "camera", 1);
+        createRadarTrack("e1-coop", 5301, reference.minusSeconds(16), reference.minusSeconds(3),
+                17.0, 11.0, 6, created);
+    }
+
+    private void simulateWhitelistNoCooperation(Instant reference, Map<String, Integer> created) {
+        createImsiRecord("e2-no-coop", SCENARIO_WHITELIST_IMSI, reference.minusSeconds(120));
+        addCount(created, "imsi", 1);
+        createRadarTrack("e2-no-coop", 5302, reference.minusSeconds(40), reference.minusSeconds(5),
+                18.0, 18.0, 3, created);
+    }
+
+    private void simulateRadarBlindZone(Instant reference, Map<String, Integer> created) {
+        createRadarTarget("f1-blind", 9001, 8.0, 8.0, 0.0, 0.0, reference.minusSeconds(30));
         addCount(created, "radar", 1);
     }
 
-    private void simulateDayCoreWithWhitelist(Instant reference, Map<String, Integer> created) {
-        createCameraAlarm("c7-day-whitelist", "core-07", reference.minusSeconds(18), true);
-        addCount(created, "camera", 1);
-        createImsiRecord("c7-day-whitelist", SCENARIO_WHITELIST_IMSI, reference.minusSeconds(90));
-        addCount(created, "imsi", 1);
+    private void simulateRadarNearZone(Instant reference, Map<String, Integer> created) {
+        createRadarTrack("f2-near", 5401, reference.minusSeconds(20), reference.minusSeconds(2),
+                14.0, 12.0, 6, created);
+    }
+
+    private void simulateG2CameraStillAbnormal(Instant reference, Map<String, Integer> created) {
+        Instant challengeStart = reference.minusSeconds(300);
+        createCameraEvent("g2-1-base", "core-night-g2", challengeStart.minusSeconds(6), CameraEventKind.ENTRY, true);
+        createCameraEvent("g2-1-base", "core-night-g2", challengeStart.minusSeconds(2), CameraEventKind.LOITER, true);
+        createCameraEvent("g2-1-extra", "core-night-g2", reference.minusSeconds(40), CameraEventKind.ENTRY, true);
+        createCameraEvent("g2-1-extra", "core-night-g2", reference.minusSeconds(20), CameraEventKind.LOITER, true);
+        addCount(created, "camera", 4);
+    }
+
+    private void simulateG2CameraCleared(Instant reference, Map<String, Integer> created) {
+        Instant challengeStart = reference.minusSeconds(300);
+        createCameraEvent("g2-2-base", "core-night-g2", challengeStart.minusSeconds(6), CameraEventKind.ENTRY, true);
+        createCameraEvent("g2-2-base", "core-night-g2", challengeStart.minusSeconds(2), CameraEventKind.LOITER, true);
+        createCameraEvent("g2-2-leave", "core-night-g2", reference.minusSeconds(30), CameraEventKind.LEAVE, true);
+        addCount(created, "camera", 3);
+    }
+
+    private void simulateG2RadarStillAbnormal(Instant reference, Map<String, Integer> created) {
+        Instant challengeStart = reference.minusSeconds(300);
+        createCameraEvent("g2-3-base", "core-night-g2", challengeStart.minusSeconds(6), CameraEventKind.ENTRY, true);
+        createCameraEvent("g2-3-base", "core-night-g2", challengeStart.minusSeconds(2), CameraEventKind.LOITER, true);
+        addCount(created, "camera", 2);
+        createRadarTrack("g2-3-radar", 5402, reference.minusSeconds(28), reference.minusSeconds(3),
+                16.0, 10.5, 6, created);
+    }
+
+    private void createCameraEvent(String scenario,
+                                   String channel,
+                                   Instant createdAt,
+                                   CameraEventKind kind,
+                                   boolean core) {
+        String prefix = core ? "core" : "perimeter";
+        String eventType = prefix + "-" + kind.getKeyword();
+        String level = core ? "critical" : "minor";
+        if (kind == CameraEventKind.LEAVE) {
+            level = "info";
+        }
+        CameraAlarmEntity entity = new CameraAlarmEntity(
+                SCENARIO_PREFIX + scenario,
+                eventType,
+                channel,
+                level,
+                EVENT_TIME_FORMAT.format(createdAt)
+        );
+        entity.setCreatedAt(createdAt);
+        cameraAlarmRepository.save(entity);
+    }
+
+    private enum CameraEventKind {
+        ENTRY("entry"),
+        LOITER("loiter"),
+        LEAVE("leave");
+
+        private final String keyword;
+
+        CameraEventKind(String keyword) {
+            this.keyword = keyword;
+        }
+
+        String getKeyword() {
+            return keyword;
+        }
     }
 
     private void createRadarTrack(String scenario,
@@ -342,21 +511,6 @@ public class RiskScenarioService {
             createRadarTarget(scenario, trackId, range, longitudinal, lateral, speed, timestamp);
         }
         addCount(created, "radar", samples);
-    }
-
-    private void createCameraAlarm(String scenario, String channel, Instant createdAt, boolean core) {
-        String id = SCENARIO_PREFIX + scenario + "-" + UUID.randomUUID();
-        String type = core ? "core-perimeter-breach" : "perimeter-watch";
-        String level = core ? "critical" : "minor";
-        CameraAlarmEntity entity = new CameraAlarmEntity(
-                id,
-                type,
-                channel,
-                level,
-                EVENT_TIME_FORMAT.format(createdAt)
-        );
-        entity.setCreatedAt(createdAt);
-        cameraAlarmRepository.save(entity);
     }
 
     private void createImsiRecord(String scenario, String imsi, Instant fetchedAt) {
