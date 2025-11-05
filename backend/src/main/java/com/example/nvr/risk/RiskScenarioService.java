@@ -74,27 +74,27 @@ public class RiskScenarioService {
     private Map<String, ScenarioDefinition> buildScenarioDefinitions() {
         Map<String, ScenarioDefinition> map = new LinkedHashMap<>();
         map.put("A1", new ScenarioDefinition("A1",
-                "昼间单次进入（C4）场景已注入",
+                "昼间单次进入（C4）场景已注入，期望 S_cam=50 → P2 → A2 并开启节流",
                 () -> alignToLocalTime(10, 0),
                 this::simulateDaySingleEntry));
         map.put("A2", new ScenarioDefinition("A2",
-                "昼间 12s 内重复进入（C3）场景已注入",
+                "昼间 12s 内重复进入（C3）场景已注入，需命中节流窗口",
                 () -> alignToLocalTime(10, 5),
                 this::simulateDayRepeatEntry));
         map.put("A3", new ScenarioDefinition("A3",
-                "昼间徘徊 ≥10s（C5）场景已注入",
+                "昼间徘徊 ≥10s（C5）场景已注入，验证 S_cam=55 → P2 → A2",
                 () -> alignToLocalTime(10, 10),
                 this::simulateDayLoiterOnly));
         map.put("A4", new ScenarioDefinition("A4",
-                "昼间越界后 3s 内离开（C6）场景已注入",
+                "昼间秒退（C6）场景已注入，期望仅下发 A1",
                 () -> alignToLocalTime(10, 15),
                 this::simulateDayQuickLeave));
         map.put("A5", new ScenarioDefinition("A5",
-                "夜间越界 + 雷达协同（C1）场景已注入",
+                "夜间越界 + 雷达协同（C1）场景已注入，验证协同×1.2 与夜乘 1.5",
                 () -> alignToLocalTime(22, 0),
                 this::simulateNightEntryWithRadar));
         map.put("A6", new ScenarioDefinition("A6",
-                "夜间越界 + 徘徊（C2）场景已注入",
+                "夜间越界 + 徘徊（C2）场景已注入，得分≥90 → P1",
                 () -> alignToLocalTime(22, 5),
                 this::simulateNightEntryLoiter));
         map.put("A7", new ScenarioDefinition("A7",
@@ -103,34 +103,38 @@ public class RiskScenarioService {
                 this::simulateNightQuickLeaveWithRadar));
 
         map.put("B1A", new ScenarioDefinition("B1A",
-                "夜间 A2 远程警报起始场景已注入",
+                "夜间 A2 远程警报起始场景已注入，状态应转入 CHALLENGE",
                 () -> alignToLocalTime(22, 20),
                 this::simulateNightChallengeStart));
         map.put("B1B", new ScenarioDefinition("B1B",
-                "夜间等待窗 T 前 60s 摄像仍异常场景已注入",
+                "夜间等待窗 T−60s 摄像仍异常场景已注入，期望升级 A3",
                 () -> alignToLocalTime(22, 25),
                 this::simulateNightChallengeCameraPersist));
         map.put("B1C", new ScenarioDefinition("B1C",
-                "夜间等待窗 T 前 30s 雷达仍异常场景已注入",
+                "夜间等待窗 T−30s 雷达仍异常场景已注入，期望升级 A3",
                 () -> alignToLocalTime(22, 30),
                 this::simulateNightChallengeRadarPersist));
         map.put("B1D", new ScenarioDefinition("B1D",
-                "夜间等待窗到期前出现离场场景已注入",
+                "夜间等待窗到期前出现离场场景已注入，应保持在 A2",
                 () -> alignToLocalTime(22, 35),
                 this::simulateNightChallengeRecovered));
 
         map.put("C1-X", new ScenarioDefinition("C1-X",
-                "昼间 F1×2 + F2 三强例外闸门场景已注入",
+                "昼间双未知 + F2 三强例外闸门场景已注入（81.6 分）",
                 () -> alignToLocalTime(11, 0),
                 this::simulateDayExceptionUnknownPlusF2));
         map.put("C2-X", new ScenarioDefinition("C2-X",
-                "昼间 F1 重现 + F2 三强例外闸门场景已注入",
+                "昼间未知 + 重现 + F2 三强例外闸门场景已注入（79.2 分）",
                 () -> alignToLocalTime(11, 10),
                 this::simulateDayExceptionRepeatPlusF2));
         map.put("C3-X", new ScenarioDefinition("C3-X",
-                "昼间链路 + F2 三强例外闸门场景已注入",
+                "昼间 C3-X 标准：双未知 + 重复 + F2 三强（91.2 分）场景已注入",
                 () -> alignToLocalTime(11, 20),
                 this::simulateDayExceptionLinkPlusF2));
+        map.put("C3-X-BORDER", new ScenarioDefinition("C3-X-BORDER",
+                "昼间链路 + 单未知边界场景已注入（69.6 分，仅 A1）",
+                () -> alignToLocalTime(11, 30),
+                this::simulateDayExceptionBorderlineLink));
 
         map.put("D1", new ScenarioDefinition("D1",
                 "昼间同 ROI 600s 内重复触发应节流场景已注入",
@@ -178,6 +182,10 @@ public class RiskScenarioService {
                 "白名单 IMSI 不参与协同场景已注入",
                 () -> alignToLocalTime(10, 30),
                 this::simulateWhitelistNoCooperation));
+        map.put("E3", new ScenarioDefinition("E3",
+                "白名单撤白后协同立即恢复场景已注入",
+                () -> alignToLocalTime(10, 35),
+                this::simulateWhitelistImmediateRecovery));
 
         map.put("F1", new ScenarioDefinition("F1",
                 "雷达 <10m 盲区仅记录场景已注入",
@@ -317,6 +325,13 @@ public class RiskScenarioService {
                 19.5, 11.0, 7, created);
     }
 
+    private void simulateDayExceptionBorderlineLink(Instant reference, Map<String, Integer> created) {
+        createImsiRecord("c3x-day-border", "46037" + randomDigits(5), reference.minusSeconds(220));
+        addCount(created, "imsi", 1);
+        createRadarTrack("c3x-day-border", 5205, reference.minusSeconds(50), reference.minusSeconds(6),
+                18.8, 11.2, 6, created);
+    }
+
     private void simulateDayThrottleSameRoi(Instant reference, Map<String, Integer> created) {
         Instant firstCluster = reference.minusSeconds(420);
         createCameraEvent("d1-day-throttle", "cam-roi-throttle", firstCluster.minusSeconds(6), CameraEventKind.ENTRY, true);
@@ -386,6 +401,18 @@ public class RiskScenarioService {
                     reference.minusSeconds(60 + i));
         }
         addCount(created, "imsi", 210);
+    }
+
+    private void simulateWhitelistImmediateRecovery(Instant reference, Map<String, Integer> created) {
+        Instant base = reference.minusSeconds(240);
+        createImsiRecord("e3-whitelist", SCENARIO_WHITELIST_IMSI, base.minusSeconds(60));
+        addCount(created, "imsi", 1);
+        createRadarTrack("e3-whitelist", 5303, reference.minusSeconds(45), reference.minusSeconds(5),
+                18.2, 11.0, 6, created);
+        createCameraEvent("e3-whitelist", "core-night-e3", reference.minusSeconds(18), CameraEventKind.ENTRY, true);
+        addCount(created, "camera", 1);
+        createImsiRecord("e3-whitelist", SCENARIO_WHITELIST_IMSI, reference.minusSeconds(15));
+        addCount(created, "imsi", 1);
     }
 
     private void simulateCooperationMultiplier(Instant reference, Map<String, Integer> created) {
