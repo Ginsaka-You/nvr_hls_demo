@@ -7,15 +7,10 @@ import MultiCam from './pages/MultiCam.vue'
 import Settings from './pages/Settings.vue'
 import ImsiTrend from './pages/ImsiTrend.vue'
 import RadarPlot from './pages/RadarPlot.vue'
-import SeismicWave from './pages/SeismicWave.vue'
-import DroneTelemetry from './pages/DroneTelemetry.vue'
-import BigDataView8 from './pages/BigDataView8.vue'
-import BigDataView61 from './pages/BigDataView61.vue'
-import BigDataView67 from './pages/BigDataView67.vue'
-import AxureDemo from './pages/AxureDemo.vue'
 import EventCenter from './pages/EventCenter.vue'
 import RiskModel from './pages/RiskModel.vue'
-import AlertPanel from './components/AlertPanel.vue'
+import ExternalFramePage from './components/ExternalFramePage.vue'
+import PlaceholderPage from './components/PlaceholderPage.vue'
 import { ensureSettingsLoaded } from './store/config'
 import { connectAlerts } from './store/alerts'
 import { connectRadar } from './store/radar'
@@ -23,29 +18,48 @@ import { connectDeviceMonitoring } from './store/devices'
 import { connectImsiUpdates } from './store/imsiUpdates'
 
 type Tab = 'main'|'multicam'|'events'|'risk'|'imsi'|'radar'|'seismic'|'drone'|'big8'|'big61'|'big67'|'axure'|'settings'
+type TabGroup = 'primary'|'more'|'hidden'
+
+interface TabDefinition {
+  key: Tab
+  label: string
+  component?: Component
+  props?: Record<string, unknown>
+  group: TabGroup
+  standalone?: boolean
+}
+
 const tab = ref<Tab>('main')
 
-// 顶部导航项（原左侧栏）：仅核心功能页，外链与大屏放到头像右侧下拉
-const navItems = [
-  { key: 'main', label: '主屏幕' },
-  { key: 'multicam', label: '多摄像头' },
-  { key: 'events', label: '事件中心' },
-  { key: 'risk', label: '风控模型' },
-  { key: 'imsi', label: 'IMSI 趋势' },
-  { key: 'radar', label: '相控阵雷达' },
-  { key: 'seismic', label: '震动波形' },
-  { key: 'drone', label: '无人机遥测' },
-] as { key: Tab, label: string }[]
-// 头像右侧下拉项
-const moreItems = [
-  { key: 'big8', label: '兰州智慧消防大数据平台' },
-  { key: 'big61', label: '智慧小区大数据分析' },
-  { key: 'big67', label: '智慧旅游综合服务平台' },
-  { key: 'axure', label: 'Axure 原型' },
-] as { key: Tab, label: string }[]
-const splitIdx = Math.ceil(navItems.length / 2)
-const navLeft = computed(() => navItems.slice(0, splitIdx))
-const navRight = computed(() => navItems.slice(splitIdx))
+const tabDefinitions: TabDefinition[] = [
+  { key: 'main', label: '主屏幕', component: Overview, group: 'primary' },
+  { key: 'multicam', label: '多摄像头', component: MultiCam, group: 'primary', standalone: true },
+  { key: 'events', label: '事件中心', component: EventCenter, group: 'primary' },
+  { key: 'risk', label: '风控模型', component: RiskModel, group: 'primary' },
+  { key: 'imsi', label: 'IMSI 趋势', component: ImsiTrend, group: 'primary' },
+  { key: 'radar', label: '相控阵雷达', component: RadarPlot, group: 'primary' },
+  { key: 'seismic', label: '震动波形', component: PlaceholderPage, props: { message: '震动波形图表占位' }, group: 'primary' },
+  { key: 'drone', label: '无人机遥测', component: PlaceholderPage, props: { message: '无人机遥测面板占位' }, group: 'primary' },
+  { key: 'big8', label: '兰州智慧消防大数据平台', component: ExternalFramePage, props: { envVar: 'VITE_BIGDATA8_URL', fallbackUrl: '/bigdata/008/index.html', theme: 'light' }, group: 'more' },
+  { key: 'big61', label: '智慧小区大数据分析', component: ExternalFramePage, props: { envVar: 'VITE_BIGDATA61_URL', fallbackUrl: '/bigdata/061/index.html' }, group: 'more' },
+  { key: 'big67', label: '智慧旅游综合服务平台', component: ExternalFramePage, props: { envVar: 'VITE_BIGDATA67_URL', fallbackUrl: '/bigdata/067/index.html' }, group: 'more' },
+  { key: 'axure', label: 'Axure 原型', component: ExternalFramePage, props: { envVar: 'VITE_AXURE_URL', fallbackUrl: 'https://9rpk49.axshare.com' }, group: 'more' },
+  { key: 'settings', label: '设置', component: Settings, group: 'hidden' }
+]
+
+const tabMap = tabDefinitions.reduce<Record<Tab, TabDefinition>>((acc, def) => {
+  acc[def.key] = def
+  return acc
+}, {} as Record<Tab, TabDefinition>)
+
+const primaryTabs = computed(() => tabDefinitions.filter(def => def.group === 'primary'))
+const navItems = computed(() => primaryTabs.value.map(def => ({ key: def.key, label: def.label })))
+const splitIdx = computed(() => Math.ceil(navItems.value.length / 2))
+const navLeft = computed(() => navItems.value.slice(0, splitIdx.value))
+const navRight = computed(() => navItems.value.slice(splitIdx.value))
+const moreItems = computed(() => tabDefinitions
+  .filter(def => def.group === 'more')
+  .map(def => ({ key: def.key, label: def.label })))
 
 const isCompact = ref(false)
 function handleResize() {
@@ -71,33 +85,22 @@ onMounted(async () => {
 })
 
 function onMenuClick(e: any) {
-  const key = e?.key as Tab
-  if (key) tab.value = key
+  const key = e?.key as Tab | undefined
+  if (key && tabMap[key]) {
+    tab.value = key
+  }
 }
 
 function gotoSettings() { tab.value = 'settings' }
 function gotoHome() { tab.value = 'main' }
 
-type NonMultiCamTab = Exclude<Tab, 'multicam'>
-const tabComponents: Record<NonMultiCamTab, Component> = {
-  main: Overview,
-  events: EventCenter,
-  risk: RiskModel,
-  imsi: ImsiTrend,
-  radar: RadarPlot,
-  seismic: SeismicWave,
-  drone: DroneTelemetry,
-  big8: BigDataView8,
-  big61: BigDataView61,
-  big67: BigDataView67,
-  axure: AxureDemo,
-  settings: Settings
-}
-
+const activeDefinition = computed(() => tabMap[tab.value])
 const activeComponent = computed<Component | null>(() => {
-  if (tab.value === 'multicam') return null
-  return tabComponents[tab.value as NonMultiCamTab] ?? null
+  const def = activeDefinition.value
+  if (!def || def.standalone) return null
+  return def.component ?? null
 })
+const activeProps = computed(() => activeDefinition.value?.props ?? {})
 </script>
 
 <template>
@@ -153,6 +156,7 @@ const activeComponent = computed<Component | null>(() => {
           :key="tab"
           :is="activeComponent"
           class="tab-view"
+          v-bind="activeProps"
         />
       </a-layout-content>
     </a-layout>

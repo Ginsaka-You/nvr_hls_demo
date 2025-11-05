@@ -2,3 +2,10 @@
 backend/streams/
 streams/
 
+# Build and dependency artifacts
+backend/target/
+frontend/node_modules/
+frontend/dist/
+
+# Editor config
+.vscode/
