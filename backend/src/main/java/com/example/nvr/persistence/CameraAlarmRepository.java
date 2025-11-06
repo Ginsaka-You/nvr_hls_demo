@@ -14,4 +14,6 @@ public interface CameraAlarmRepository extends JpaRepository<CameraAlarmEntity, 
     long countByCreatedAtBetween(Instant start, Instant end);
 
     void deleteByEventIdStartingWith(String prefix);
+
+    boolean existsByEventId(String eventId);
 }

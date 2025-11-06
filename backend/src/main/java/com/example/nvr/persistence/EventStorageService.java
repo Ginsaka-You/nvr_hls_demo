@@ -1,6 +1,7 @@
 package com.example.nvr.persistence;
 
 import com.example.nvr.AlertHub;
+import com.example.nvr.CameraChannelBlocklist;
 import com.example.nvr.ImsiHub;
 import com.example.nvr.RadarController;
 import com.example.nvr.imsi.ImsiRecordPayload;
@@ -14,7 +15,6 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Instant;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -126,11 +126,14 @@ public class EventStorageService {
     }
 
     @Transactional
-    public void recordAlertEvent(Map<String, Object> event, String rawPayload) {
+    public boolean recordAlertEvent(Map<String, Object> event, String rawPayload) {
         try {
             String eventId = stringValue(event.get("id"));
             if (eventId == null) {
                 eventId = "evt-" + Instant.now().toEpochMilli();
+            }
+            if (eventId != null && alertEventRepository.existsByEventId(eventId)) {
+                return false;
             }
             String eventType = normalizeEventType(stringValue(event.get("eventType")));
             Integer channelId = intValue(event.get("channelID"));
@@ -141,40 +144,54 @@ public class EventStorageService {
             if (camChannel == null) {
                 camChannel = deriveCamChannel(channelId, port);
             }
+            if (CameraChannelBlocklist.shouldIgnore(channelId, port, camChannel)) {
+                return false;
+            }
             String status = stringValue(event.get("status"));
 
             AlertEventEntity entity = new AlertEventEntity(eventId, eventType, camChannel, level, eventTime, status);
             alertEventRepository.save(entity);
+            return true;
         } catch (Exception ex) {
             log.warn("Failed to persist alert event", ex);
+            return false;
         }
     }
 
     @Transactional
-    public void recordCameraAlarm(Map<String, Object> event, String rawPayload) {
+    public boolean recordCameraAlarm(Map<String, Object> event, String rawPayload) {
         try {
             Integer port = intValue(event.get("port"));
-            if (port == null) {
-                return; // Not a camera-specific alert
+            Integer channelId = intValue(event.get("channelID"));
+            String camChannelHint = stringValue(event.get("camChannel"));
+            if (port == null && channelId == null && camChannelHint == null) {
+                return false; // Nothing to tie the alarm back to a camera
+            }
+            if (CameraChannelBlocklist.shouldIgnore(channelId, port, camChannelHint)) {
+                return false;
             }
             String eventId = stringValue(event.get("id"));
             if (eventId == null) {
                 eventId = "cam-" + Instant.now().toEpochMilli();
             }
+            if (cameraAlarmRepository.existsByEventId(eventId)) {
+                return false;
+            }
             String eventType = normalizeEventType(stringValue(event.get("eventType")));
-            Integer channelId = intValue(event.get("channelID"));
             String level = stringValue(event.get("level"));
             String eventTime = stringValue(event.get("time"));
 
-            String camChannel = deriveCamChannel(channelId, port);
+            String camChannel = camChannelHint != null ? camChannelHint : deriveCamChannel(channelId, port);
+            if (camChannel == null) {
+                return false;
+            }
             CameraAlarmEntity entity = new CameraAlarmEntity(eventId, eventType, camChannel, level, eventTime);
             CameraAlarmEntity saved = cameraAlarmRepository.save(entity);
-            if (event == null || !Boolean.TRUE.equals(event.get("__broadcasted"))) {
-                broadcastCameraAlert(saved, event);
-            }
             riskAssessmentService.processCameraAlarmSaved(saved);
+            return true;
         } catch (Exception ex) {
             log.warn("Failed to persist camera alarm", ex);
+            return false;
         }
     }
 
@@ -232,6 +249,9 @@ public class EventStorageService {
         try {
             String normalizedId = eventId != null ? eventId : "manual-" + Instant.now().toEpochMilli();
             String camChannel = deriveCamChannel(channelId, port);
+            if (CameraChannelBlocklist.shouldIgnore(channelId, port, camChannel)) {
+                return;
+            }
             AlertEventEntity entity = new AlertEventEntity(normalizedId, normalizeEventType(eventType), camChannel, level, eventTime, null);
             alertEventRepository.save(entity);
         } catch (Exception ex) {
@@ -297,63 +317,6 @@ public class EventStorageService {
             return "检测到区域入侵";
         }
         return trimmed;
-    }
-
-    private void broadcastCameraAlert(CameraAlarmEntity entity, Map<String, Object> rawEvent) {
-        try {
-            Map<String, Object> payload = new HashMap<>();
-            payload.put("type", "alert");
-            Object rawId = rawEvent != null ? rawEvent.get("id") : null;
-            payload.put("id", rawId != null ? rawId : entity.getEventId());
-
-            Object rawEventType = rawEvent != null ? rawEvent.get("eventType") : null;
-            payload.put("eventType", rawEventType != null ? rawEventType : entity.getEventType());
-
-            Object rawLevel = rawEvent != null ? rawEvent.get("level") : null;
-            String level = rawLevel != null ? rawLevel.toString() : (entity.getLevel() != null ? entity.getLevel() : "major");
-            payload.put("level", level);
-
-            Integer channelId = rawEvent != null ? intValue(rawEvent.get("channelID")) : null;
-            Integer port = rawEvent != null ? intValue(rawEvent.get("port")) : null;
-            if (channelId != null) {
-                payload.put("channelID", channelId);
-            }
-            if (port != null) {
-                payload.put("port", port);
-            }
-
-            String camChannel = null;
-            if (rawEvent != null && rawEvent.get("camChannel") instanceof String) {
-                String cc = ((String) rawEvent.get("camChannel")).trim();
-                if (!cc.isEmpty()) {
-                    camChannel = cc;
-                }
-            }
-            if (camChannel == null || camChannel.isEmpty()) {
-                camChannel = entity.getCamChannel();
-            }
-            if (camChannel == null || camChannel.isEmpty()) {
-                camChannel = deriveCamChannel(channelId, port);
-            }
-            if (camChannel != null) {
-                payload.put("camChannel", camChannel);
-            }
-
-            String eventTime = entity.getEventTime();
-            if ((eventTime == null || eventTime.isBlank()) && rawEvent != null) {
-                Object rawTime = rawEvent.get("time");
-                if (rawTime != null) {
-                    eventTime = rawTime.toString();
-                }
-            }
-            if (eventTime != null) {
-                payload.put("time", eventTime);
-            }
-
-            AlertHub.broadcast(payload);
-        } catch (Exception ex) {
-            log.debug("Failed to broadcast camera alert over SSE", ex);
-        }
     }
 
     private void broadcastImsiUpdate(List<ImsiRecordEntity> saved) {

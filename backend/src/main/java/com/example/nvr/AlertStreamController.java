@@ -7,8 +7,6 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.net.Authenticator;
-import java.net.PasswordAuthentication;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -17,13 +15,16 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.UUID;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 @RestController
 @RequestMapping("/api/nvr/alerts")
 public class AlertStreamController {
+
+    private final AlertEventParser alertEventParser;
+
+    public AlertStreamController(AlertEventParser alertEventParser) {
+        this.alertEventParser = alertEventParser;
+    }
 
     @GetMapping(path = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(@RequestParam String host,
@@ -69,14 +70,16 @@ public class AlertStreamController {
                         // Accumulate and extract EventNotificationAlert blocks
                         buf.append(line).append('\n');
                         int start;
-                        while ((start = buf.indexOf("<EventNotificationAlert>")) >= 0) {
+                        while ((start = buf.indexOf("<EventNotificationAlert")) >= 0) {
                             int end = buf.indexOf("</EventNotificationAlert>", start);
                             if (end < 0) break; // wait for more
                             String xml = buf.substring(start, end + "</EventNotificationAlert>".length());
-                            // trim processed
                             buf.delete(0, end + "</EventNotificationAlert>".length());
 
-                            Map<String, Object> ev = parseAlertXml(xml);
+                            Map<String, Object> ev = alertEventParser.parse(xml);
+                            if (CameraChannelBlocklist.shouldIgnore(ev)) {
+                                continue;
+                            }
                             try { emitter.send(ev); } catch (Exception ignored) {}
                         }
                     }
@@ -180,42 +183,4 @@ public class AlertStreamController {
         return sb.toString();
     }
 
-    private Map<String, Object> parseAlertXml(String xml) {
-        Map<String, Object> m = new HashMap<>();
-        m.put("type", "alert");
-        m.put("id", UUID.randomUUID().toString());
-        m.put("raw", xml);
-
-        String eventType = text(xml, "eventType");
-        String channelStr = text(xml, "channelID");
-        Integer channel = null;
-        try { if (channelStr != null && !channelStr.isEmpty()) channel = Integer.parseInt(channelStr.trim()); } catch (NumberFormatException ignored) {}
-        Integer port = null;
-        if (channel != null) {
-            port = channel >= 100 ? channel / 100 : channel;
-        }
-
-        m.put("eventType", eventType);
-        m.put("channelID", channel);
-        m.put("port", port);
-        String time = text(xml, "dateTime") != null ? text(xml, "dateTime") : text(xml, "startTime");
-        if (time != null) m.put("time", time);
-
-        // classify level
-        String level = "minor";
-        if (eventType != null) {
-            String et = eventType.toLowerCase();
-            if (et.contains("intrusion") || et.contains("field") || et.contains("line")) level = "major";
-            if (et.contains("tamper") || et.contains("threat")) level = "critical";
-        }
-        m.put("level", level);
-        return m;
-    }
-
-    private String text(String xml, String tag) {
-        Pattern p = Pattern.compile("<" + tag + ">\\s*(.*?)\\s*</" + tag + ">", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
-        Matcher m = p.matcher(xml);
-        if (m.find()) return m.group(1);
-        return null;
-    }
 }
