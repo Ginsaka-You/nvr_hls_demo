@@ -1,5 +1,6 @@
 package com.example.nvr.risk;
 
+import com.example.nvr.AlertHub;
 import com.example.nvr.persistence.CameraAlarmEntity;
 import com.example.nvr.persistence.CameraAlarmRepository;
 import com.example.nvr.persistence.ImsiRecordEntity;
@@ -15,6 +16,7 @@ import com.example.nvr.risk.config.RiskModelConfig.Parameters;
 import com.example.nvr.risk.config.RiskModelConfig.PriorityDefinition;
 import com.example.nvr.risk.config.RiskModelConfigLoader;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,6 +41,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
@@ -127,6 +130,8 @@ public class RiskAssessmentService {
         RiskModelConfig config = configLoader.getConfig();
         Parameters params = config.getParameters();
         ZoneId zone = resolveZone(params);
+        RiskAssessmentEntity previousAssessment = riskAssessmentRepository.findTopByOrderByUpdatedAtDesc().orElse(null);
+        RecordedAction previousA2 = readRecordedAction(previousAssessment, "A2");
 
         Instant windowStart = now.minus(params.getMergeWindow());
         Duration historyDuration = params.getHistoryWindow().compareTo(params.getImsiReentryWindow()) >= 0
@@ -181,7 +186,20 @@ public class RiskAssessmentService {
         String summary = buildSummary(priority, scoreSummary, context, gStatuses, actions);
         Map<String, Object> details = buildDetails(config, scoreSummary, context, fEvaluations, actions, gStatuses,
                 windowStart, now, imsiWindow, cameraWindow, radarWindow);
-        persistAssessment(now, windowStart, priority, scoreSummary, details, summary);
+        Optional<ActionStatus> a2Status = actions.stream()
+                .filter(action -> "A2".equalsIgnoreCase(action.getId()))
+                .findFirst();
+        if (a2Status.filter(ActionStatus::isTriggered).isPresent()) {
+            ActionStatus currentA2 = a2Status.get();
+            Instant decidedAt = Optional.ofNullable(currentA2.getDecidedAt()).orElse(now);
+            boolean shouldBroadcast = !previousA2.isTriggered()
+                    || previousA2.getDecidedAt().isEmpty()
+                    || previousA2.getDecidedAt().map(previous -> !previous.equals(decidedAt)).orElse(true);
+            if (shouldBroadcast) {
+                broadcastRiskAction(decidedAt, priority, scoreSummary, context, currentA2);
+            }
+        }
+        persistAssessment(previousAssessment, now, windowStart, priority, scoreSummary, details, summary);
     }
 
     private ZoneId resolveZone(Parameters params) {
@@ -855,16 +873,15 @@ public class RiskAssessmentService {
         return details;
     }
 
-    private void persistAssessment(Instant now,
+    private void persistAssessment(RiskAssessmentEntity existing,
+                                   Instant now,
                                    Instant windowStart,
                                    PriorityDefinition priority,
                                    ScoreSummary scores,
                                    Map<String, Object> details,
                                    String summary) {
         String classification = priority != null ? priority.getId() : "P4";
-        RiskAssessmentEntity entity = riskAssessmentRepository
-                .findTopByOrderByUpdatedAtDesc()
-                .orElseGet(RiskAssessmentEntity::new);
+        RiskAssessmentEntity entity = existing != null ? existing : new RiskAssessmentEntity();
         entity.setClassification(classification);
         entity.setScore((int) Math.round(scores.getTotalScore()));
         entity.setSummary(summary);
@@ -873,6 +890,89 @@ public class RiskAssessmentService {
         entity.setUpdatedAt(now);
         entity.setDetailsJson(writeDetails(details));
         riskAssessmentRepository.save(entity);
+    }
+
+    private RecordedAction readRecordedAction(RiskAssessmentEntity entity, String actionId) {
+        if (entity == null || actionId == null || actionId.isBlank()) {
+            return RecordedAction.empty();
+        }
+        String detailsJson = entity.getDetailsJson();
+        if (detailsJson == null || detailsJson.isBlank()) {
+            return RecordedAction.empty();
+        }
+        try {
+            JsonNode root = objectMapper.readTree(detailsJson);
+            JsonNode actions = root.get("actions");
+            if (actions != null && actions.isArray()) {
+                for (JsonNode actionNode : actions) {
+                    String id = actionNode.path("id").asText(null);
+                    if (id != null && id.equalsIgnoreCase(actionId)) {
+                        boolean triggered = actionNode.path("triggered").asBoolean(false);
+                        Instant decidedAt = null;
+                        JsonNode decidedNode = actionNode.get("decidedAt");
+                        if (decidedNode != null && !decidedNode.isNull()) {
+                            String text = decidedNode.asText(null);
+                            if (text != null && !text.isBlank()) {
+                                try {
+                                    decidedAt = Instant.parse(text.trim());
+                                } catch (Exception ex) {
+                                    log.debug("Failed to parse recorded action decidedAt '{}'", text, ex);
+                                }
+                            }
+                        }
+                        return new RecordedAction(triggered, decidedAt);
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            log.debug("Failed to inspect previous risk assessment actions", ex);
+        }
+        return RecordedAction.empty();
+    }
+
+    private void broadcastRiskAction(Instant decidedAt,
+                                     PriorityDefinition priority,
+                                     ScoreSummary scores,
+                                     EvaluationContext context,
+                                     ActionStatus action) {
+        if (action == null) {
+            return;
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "risk");
+        payload.put("id", "risk-" + UUID.randomUUID());
+        payload.put("actionId", action.getId());
+        payload.put("triggerAudio", Boolean.TRUE);
+        payload.put("classification", priority != null ? priority.getId() : null);
+        payload.put("priorityName", priority != null ? priority.getName() : null);
+        payload.put("level", mapPriorityToLevel(priority));
+        payload.put("score", scores.getTotalScore());
+        payload.put("summary", "风控模型 A2 触发远程警报");
+        payload.put("rationale", action.getRationale());
+        payload.put("decidedAt", decidedAt);
+        payload.put("channels", new ArrayList<>(context.getStrongChannels()));
+        payload.put("cameraScore", context.getCameraScore());
+        payload.put("radarNearCore", context.hasRadarNearCore());
+        payload.put("radarApproach", context.hasRadarApproach());
+        payload.put("radarPersist", context.hasRadarPersist());
+        AlertHub.broadcast(payload);
+    }
+
+    private String mapPriorityToLevel(PriorityDefinition priority) {
+        if (priority == null || priority.getId() == null) {
+            return "major";
+        }
+        String id = priority.getId().toUpperCase(Locale.ROOT);
+        switch (id) {
+            case "P1":
+                return "critical";
+            case "P2":
+                return "major";
+            case "P3":
+                return "minor";
+            default:
+                return "info";
+        }
     }
 
     private String writeDetails(Map<String, Object> details) {
@@ -1444,6 +1544,10 @@ public class RiskAssessmentService {
             return new LinkedHashSet<>(newImsi).size();
         }
 
+        Set<String> getStrongChannels() {
+            return new LinkedHashSet<>(strongChannelsCurrentWindow);
+        }
+
         Map<String, Object> toMap() {
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("newImsi", new ArrayList<>(newImsi));
@@ -1463,6 +1567,28 @@ public class RiskAssessmentService {
             map.put("radarPersistMoments", new ArrayList<>(radarPersistMoments));
             map.put("radarApproachMoments", new ArrayList<>(radarApproachMoments));
             return map;
+        }
+    }
+
+    private static class RecordedAction {
+        private final boolean triggered;
+        private final Instant decidedAt;
+
+        private RecordedAction(boolean triggered, Instant decidedAt) {
+            this.triggered = triggered;
+            this.decidedAt = decidedAt;
+        }
+
+        static RecordedAction empty() {
+            return new RecordedAction(false, null);
+        }
+
+        boolean isTriggered() {
+            return triggered;
+        }
+
+        Optional<Instant> getDecidedAt() {
+            return Optional.ofNullable(decidedAt);
         }
     }
 
@@ -1614,6 +1740,14 @@ public class RiskAssessmentService {
 
         boolean isTriggered() {
             return triggered;
+        }
+
+        String getRationale() {
+            return rationale;
+        }
+
+        Instant getDecidedAt() {
+            return decidedAt;
         }
 
         Map<String, Object> toMap(ActionDefinition definition) {

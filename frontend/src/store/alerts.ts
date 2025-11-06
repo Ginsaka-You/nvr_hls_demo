@@ -30,10 +30,10 @@ function deriveCamChannel(channelId?: number, port?: number): string | undefined
   return undefined
 }
 
-function pushAlarm(a: Alarm) {
+function pushAlarm(a: Alarm, options: { playAudio?: boolean } = {}) {
   const existed = alarms.value.some(item => item.id === a.id)
   alarms.value = [a, ...alarms.value.filter(item => item.id !== a.id)].slice(0, 200)
-  if (!existed) void triggerCameraAudio()
+  if (!existed && options.playAudio) void triggerCameraAudio()
 }
 
 let esPush: EventSource | null = null
@@ -84,6 +84,8 @@ function handleEvent(ev: MessageEvent) {
     const data = JSON.parse((ev as any).data)
     if (data && data.type === 'alert') {
       pushAlarmFromEvent(data)
+    } else if (data && data.type === 'risk') {
+      pushRiskAlarm(data)
     }
   } catch {}
 }
@@ -135,6 +137,66 @@ export function pushAlarmFromEvent(ev: any) {
     deviceId: camId
   }
   pushAlarm(a)
+}
+
+function normalizeRiskLevel(level: unknown, classification?: unknown): Alarm['level'] {
+  if (typeof level === 'string' && level) {
+    const mapped = level.toLowerCase()
+    if (mapped === 'critical' || mapped === 'major' || mapped === 'minor' || mapped === 'info') {
+      return mapped
+    }
+  }
+  if (typeof classification === 'string' && classification) {
+    const upper = classification.toUpperCase()
+    if (upper === 'P1') return 'critical'
+    if (upper === 'P2') return 'major'
+    if (upper === 'P3') return 'minor'
+  }
+  return 'major'
+}
+
+function sanitizeChannels(channels: unknown): string[] {
+  if (!Array.isArray(channels)) return []
+  return channels
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter((text) => text.length > 0)
+}
+
+function pushRiskAlarm(data: any) {
+  const id = typeof data?.id === 'string' && data.id ? data.id : `risk-${Date.now().toString(36)}`
+  const actionId = typeof data?.actionId === 'string' && data.actionId ? data.actionId : 'A2'
+  const classification = typeof data?.classification === 'string' && data.classification ? data.classification : ''
+  const scoreValue = typeof data?.score === 'number' && Number.isFinite(data.score)
+    ? data.score
+    : (typeof data?.score === 'string' ? Number(data.score) : NaN)
+  const scoreText = Number.isFinite(scoreValue) ? `综合得分 ${scoreValue.toFixed(1)}` : ''
+  const summaryText = typeof data?.summary === 'string' && data.summary.trim().length > 0
+    ? data.summary.trim()
+    : '风控模型触发远程警报'
+  const rationale = typeof data?.rationale === 'string' && data.rationale.trim().length > 0
+    ? data.rationale.trim()
+    : ''
+  const detailParts = [summaryText, rationale, scoreText, classification ? `优先级 ${classification}` : '']
+    .filter(Boolean)
+  const channels = sanitizeChannels(data?.channels)
+  const place = channels.length ? `摄像头 ${channels.join(',')}` : '风控模型'
+  const decidedAt = typeof data?.decidedAt === 'string' && data.decidedAt
+    ? new Date(data.decidedAt)
+    : null
+  const time = decidedAt && !Number.isNaN(decidedAt.getTime())
+    ? decidedAt.toLocaleTimeString()
+    : new Date().toLocaleTimeString()
+  const alarm: Alarm = {
+    id,
+    level: normalizeRiskLevel(data?.level, classification),
+    source: '风控模型',
+    place,
+    time,
+    summary: detailParts.join(' ｜ '),
+    deviceId: `risk:${actionId}`
+  }
+  const shouldPlayAudio = data?.triggerAudio !== false
+  pushAlarm(alarm, { playAudio: shouldPlayAudio })
 }
 
 export async function triggerCameraAudio() {
