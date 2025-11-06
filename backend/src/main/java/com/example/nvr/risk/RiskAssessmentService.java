@@ -59,6 +59,7 @@ public class RiskAssessmentService {
     private static final Duration CAMERA_STILL_POSITIVE_WINDOW = Duration.ofSeconds(60);
     private static final Duration RADAR_STILL_POSITIVE_WINDOW = Duration.ofSeconds(30);
     private static final Duration DAY_A2_COOLDOWN = Duration.ofSeconds(600);
+    private static final Duration NIGHT_A2_COOLDOWN = Duration.ofSeconds(300);
 
     private final RiskAssessmentRepository riskAssessmentRepository;
     private final ImsiRecordRepository imsiRecordRepository;
@@ -66,6 +67,9 @@ public class RiskAssessmentService {
     private final RadarTargetRepository radarTargetRepository;
     private final ObjectMapper objectMapper;
     private final RiskModelConfigLoader configLoader;
+    private final Object audioThrottleLock = new Object();
+    private Instant lastA2AudioAt;
+    private boolean lastA2AudioNight;
 
     public RiskAssessmentService(RiskAssessmentRepository riskAssessmentRepository,
                                  ImsiRecordRepository imsiRecordRepository,
@@ -132,6 +136,7 @@ public class RiskAssessmentService {
         ZoneId zone = resolveZone(params);
         RiskAssessmentEntity previousAssessment = riskAssessmentRepository.findTopByOrderByUpdatedAtDesc().orElse(null);
         RecordedAction previousA2 = readRecordedAction(previousAssessment, "A2");
+        RecordedAction previousA3 = readRecordedAction(previousAssessment, "A3");
 
         Instant windowStart = now.minus(params.getMergeWindow());
         Duration historyDuration = params.getHistoryWindow().compareTo(params.getImsiReentryWindow()) >= 0
@@ -189,14 +194,17 @@ public class RiskAssessmentService {
         Optional<ActionStatus> a2Status = actions.stream()
                 .filter(action -> "A2".equalsIgnoreCase(action.getId()))
                 .findFirst();
+        Optional<ActionStatus> a3Status = actions.stream()
+                .filter(action -> "A3".equalsIgnoreCase(action.getId()))
+                .findFirst();
         if (a2Status.filter(ActionStatus::isTriggered).isPresent()) {
             ActionStatus currentA2 = a2Status.get();
             Instant decidedAt = Optional.ofNullable(currentA2.getDecidedAt()).orElse(now);
-            boolean shouldBroadcast = !previousA2.isTriggered()
-                    || previousA2.getDecidedAt().isEmpty()
-                    || previousA2.getDecidedAt().map(previous -> !previous.equals(decidedAt)).orElse(true);
-            if (shouldBroadcast) {
-                broadcastRiskAction(decidedAt, priority, scoreSummary, context, currentA2);
+            boolean upgradeTriggered = a3Status.filter(ActionStatus::isTriggered).isPresent() && !previousA3.isTriggered();
+            AudioDecision audioDecision = evaluateA2Audio(decidedAt, night, upgradeTriggered);
+            boolean shouldEmit = !previousA2.isTriggered() || audioDecision.shouldTrigger() || upgradeTriggered;
+            if (shouldEmit) {
+                broadcastRiskAction(decidedAt, priority, scoreSummary, context, currentA2, night, audioDecision, upgradeTriggered);
             }
         }
         persistAssessment(previousAssessment, now, windowStart, priority, scoreSummary, details, summary);
@@ -930,11 +938,44 @@ public class RiskAssessmentService {
         return RecordedAction.empty();
     }
 
+    private AudioDecision evaluateA2Audio(Instant decidedAt, boolean night, boolean upgradeTriggered) {
+        Duration cooldown = night ? NIGHT_A2_COOLDOWN : DAY_A2_COOLDOWN;
+        synchronized (audioThrottleLock) {
+            if (upgradeTriggered) {
+                lastA2AudioAt = decidedAt;
+                lastA2AudioNight = night;
+                return AudioDecision.triggered(Duration.ZERO);
+            }
+            if (lastA2AudioAt == null) {
+                lastA2AudioAt = decidedAt;
+                lastA2AudioNight = night;
+                return AudioDecision.triggered(Duration.ZERO);
+            }
+            Duration since = Duration.between(lastA2AudioAt, decidedAt);
+            if (since.isNegative()) {
+                since = Duration.ZERO;
+            }
+            if (since.compareTo(cooldown) >= 0) {
+                lastA2AudioAt = decidedAt;
+                lastA2AudioNight = night;
+                return AudioDecision.triggered(Duration.ZERO);
+            }
+            Duration remaining = cooldown.minus(since);
+            if (remaining.isNegative()) {
+                remaining = Duration.ZERO;
+            }
+            return AudioDecision.suppressed(remaining);
+        }
+    }
+
     private void broadcastRiskAction(Instant decidedAt,
                                      PriorityDefinition priority,
                                      ScoreSummary scores,
                                      EvaluationContext context,
-                                     ActionStatus action) {
+                                     ActionStatus action,
+                                     boolean night,
+                                     AudioDecision audioDecision,
+                                     boolean upgradeTriggered) {
         if (action == null) {
             return;
         }
@@ -942,12 +983,12 @@ public class RiskAssessmentService {
         payload.put("type", "risk");
         payload.put("id", "risk-" + UUID.randomUUID());
         payload.put("actionId", action.getId());
-        payload.put("triggerAudio", Boolean.TRUE);
+        payload.put("triggerAudio", audioDecision.shouldTrigger());
         payload.put("classification", priority != null ? priority.getId() : null);
         payload.put("priorityName", priority != null ? priority.getName() : null);
         payload.put("level", mapPriorityToLevel(priority));
         payload.put("score", scores.getTotalScore());
-        payload.put("summary", "风控模型 A2 触发远程警报");
+        payload.put("summary", upgradeTriggered ? "风控模型升级至 A3，触发远程警报" : "风控模型 A2 触发远程警报");
         payload.put("rationale", action.getRationale());
         payload.put("decidedAt", decidedAt);
         payload.put("channels", new ArrayList<>(context.getStrongChannels()));
@@ -955,6 +996,9 @@ public class RiskAssessmentService {
         payload.put("radarNearCore", context.hasRadarNearCore());
         payload.put("radarApproach", context.hasRadarApproach());
         payload.put("radarPersist", context.hasRadarPersist());
+        payload.put("nightMode", night);
+        payload.put("upgrade", upgradeTriggered);
+        payload.put("audioCooldownSeconds", audioDecision.getRemaining().getSeconds());
         AlertHub.broadcast(payload);
     }
 
@@ -1589,6 +1633,32 @@ public class RiskAssessmentService {
 
         Optional<Instant> getDecidedAt() {
             return Optional.ofNullable(decidedAt);
+        }
+    }
+
+    private static class AudioDecision {
+        private final boolean trigger;
+        private final Duration remaining;
+
+        private AudioDecision(boolean trigger, Duration remaining) {
+            this.trigger = trigger;
+            this.remaining = remaining != null ? remaining : Duration.ZERO;
+        }
+
+        static AudioDecision triggered(Duration remaining) {
+            return new AudioDecision(true, remaining == null ? Duration.ZERO : remaining);
+        }
+
+        static AudioDecision suppressed(Duration remaining) {
+            return new AudioDecision(false, remaining == null ? Duration.ZERO : remaining);
+        }
+
+        boolean shouldTrigger() {
+            return trigger;
+        }
+
+        Duration getRemaining() {
+            return remaining;
         }
     }
 

@@ -170,13 +170,23 @@ function pushRiskAlarm(data: any) {
     ? data.score
     : (typeof data?.score === 'string' ? Number(data.score) : NaN)
   const scoreText = Number.isFinite(scoreValue) ? `综合得分 ${scoreValue.toFixed(1)}` : ''
+  const upgrade = data?.upgrade === true
+  const nightMode = data?.nightMode === true
+  const cooldownSecondsRaw = typeof data?.audioCooldownSeconds === 'number' ? data.audioCooldownSeconds : Number(data?.audioCooldownSeconds)
+  const cooldownSeconds = Number.isFinite(cooldownSecondsRaw) ? Math.max(0, cooldownSecondsRaw) : null
+  const shouldPlayAudio = data?.triggerAudio !== false
   const summaryText = typeof data?.summary === 'string' && data.summary.trim().length > 0
     ? data.summary.trim()
     : '风控模型触发远程警报'
   const rationale = typeof data?.rationale === 'string' && data.rationale.trim().length > 0
     ? data.rationale.trim()
     : ''
-  const detailParts = [summaryText, rationale, scoreText, classification ? `优先级 ${classification}` : '']
+  const cooldownText = !shouldPlayAudio && cooldownSeconds && cooldownSeconds > 0
+    ? `音频冷却中（约 ${Math.ceil(cooldownSeconds)} 秒）`
+    : ''
+  const upgradeText = upgrade ? '已升级至 A3' : ''
+  const nightLabel = nightMode ? '夜间模式' : ''
+  const detailParts = [summaryText, rationale, scoreText, classification ? `优先级 ${classification}` : '', upgradeText, nightLabel, cooldownText]
     .filter(Boolean)
   const channels = sanitizeChannels(data?.channels)
   const place = channels.length ? `摄像头 ${channels.join(',')}` : '风控模型'
@@ -195,7 +205,6 @@ function pushRiskAlarm(data: any) {
     summary: detailParts.join(' ｜ '),
     deviceId: `risk:${actionId}`
   }
-  const shouldPlayAudio = data?.triggerAudio !== false
   pushAlarm(alarm, { playAudio: shouldPlayAudio })
 }
 
