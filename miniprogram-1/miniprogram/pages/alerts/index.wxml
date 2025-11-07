@@ -1,0 +1,27 @@
+<view class="page">
+  <view class="card hero-card">
+    <view class="card-title">告警订阅</view>
+    <view class="hero-desc">授权订阅后，后端会通过微信服务通知把告警推送到你的手机，无需保持小程序在线。</view>
+    <view class="hero-meta">提示：订阅必须由用户点击触发，每次授权可发送一条通知，可重复点击累计额度。</view>
+  </view>
+
+  <view class="card action-card">
+    <button type="primary" loading="{{loading}}" bindtap="handleSubscribe">订阅报警提醒</button>
+    <button class="outline" bindtap="simulateAlert">查看通知示例</button>
+  </view>
+
+  <view class="card steps-card">
+    <view class="card-title">订阅流程</view>
+    <block wx:for="{{guideSteps}}" wx:key="text">
+      <view class="step">
+        <view class="step-index">{{index + 1}}</view>
+        <view class="step-text">{{item}}</view>
+      </view>
+    </block>
+  </view>
+
+  <view class="card status-card" wx:if="{{lastSubscribeStatus}}">
+    <view class="card-title">最近授权结果</view>
+    <text class="status-text">{{lastSubscribeStatus}}</text>
+  </view>
+</view>

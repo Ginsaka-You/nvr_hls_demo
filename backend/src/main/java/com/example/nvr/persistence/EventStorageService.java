@@ -4,8 +4,10 @@ import com.example.nvr.AlertHub;
 import com.example.nvr.CameraChannelBlocklist;
 import com.example.nvr.ImsiHub;
 import com.example.nvr.RadarController;
+import com.example.nvr.events.AlertEventSavedEvent;
 import com.example.nvr.imsi.ImsiRecordPayload;
 import com.example.nvr.risk.RiskAssessmentService;
+import org.springframework.context.ApplicationEventPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
@@ -34,17 +36,20 @@ public class EventStorageService {
     private final RadarTargetRepository radarTargetRepository;
     private final ImsiRecordRepository imsiRecordRepository;
     private final RiskAssessmentService riskAssessmentService;
+    private final ApplicationEventPublisher eventPublisher;
 
     public EventStorageService(AlertEventRepository alertEventRepository,
                                CameraAlarmRepository cameraAlarmRepository,
                                RadarTargetRepository radarTargetRepository,
                                ImsiRecordRepository imsiRecordRepository,
-                               RiskAssessmentService riskAssessmentService) {
+                               RiskAssessmentService riskAssessmentService,
+                               ApplicationEventPublisher eventPublisher) {
         this.alertEventRepository = alertEventRepository;
         this.cameraAlarmRepository = cameraAlarmRepository;
         this.radarTargetRepository = radarTargetRepository;
         this.imsiRecordRepository = imsiRecordRepository;
         this.riskAssessmentService = riskAssessmentService;
+        this.eventPublisher = eventPublisher;
     }
 
     @Transactional
@@ -150,7 +155,12 @@ public class EventStorageService {
             String status = stringValue(event.get("status"));
 
             AlertEventEntity entity = new AlertEventEntity(eventId, eventType, camChannel, level, eventTime, status);
-            alertEventRepository.save(entity);
+            AlertEventEntity saved = alertEventRepository.save(entity);
+            try {
+                eventPublisher.publishEvent(new AlertEventSavedEvent(saved));
+            } catch (Exception publishEx) {
+                log.debug("Failed to publish alert event notification: {}", publishEx.getMessage());
+            }
             return true;
         } catch (Exception ex) {
             log.warn("Failed to persist alert event", ex);
