@@ -1,0 +1,16 @@
+<view class="page">
+  <block wx:for="{{alerts}}" wx:key="_id">
+    <view class="card" data-id="{{item._id}}" bindtap="goDetail">
+      <view class="card-header">
+        <text class="title">{{item.title}}</text>
+        <text class="severity-badge {{item.severityClass}}">{{item.severity}}</text>
+      </view>
+      <view class="line">位置：{{item.location}}</view>
+      <view class="line">设备：{{item.device}}</view>
+      <view class="time">{{item.displayTime}}</view>
+    </view>
+  </block>
+  <view wx:if="{{loading}}" class="placeholder">加载中...</view>
+  <view wx:if="{{!loading && !alerts.length}}" class="placeholder">暂无告警</view>
+  <view wx:if="{{error}}" class="error">{{error}}</view>
+</view>

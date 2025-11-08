@@ -145,15 +145,19 @@ public class EventStorageService {
             Integer port = intValue(event.get("port"));
             String level = stringValue(event.get("level"));
             String eventTime = stringValue(event.get("time"));
-            String camChannel = stringValue(event.get("camChannel"));
+            String camChannel = normalizeStreamSuffix(stringValue(event.get("camChannel")));
             if (camChannel == null) {
                 camChannel = deriveCamChannel(channelId, port);
             }
+            camChannel = normalizeStreamSuffix(camChannel);
             if (CameraChannelBlocklist.shouldIgnore(channelId, port, camChannel)) {
                 return false;
             }
             String status = stringValue(event.get("status"));
 
+            if (camChannel != null) {
+                event.put("camChannel", camChannel);
+            }
             AlertEventEntity entity = new AlertEventEntity(eventId, eventType, camChannel, level, eventTime, status);
             AlertEventEntity saved = alertEventRepository.save(entity);
             try {
@@ -173,7 +177,7 @@ public class EventStorageService {
         try {
             Integer port = intValue(event.get("port"));
             Integer channelId = intValue(event.get("channelID"));
-            String camChannelHint = stringValue(event.get("camChannel"));
+            String camChannelHint = normalizeStreamSuffix(stringValue(event.get("camChannel")));
             if (port == null && channelId == null && camChannelHint == null) {
                 return false; // Nothing to tie the alarm back to a camera
             }
@@ -192,6 +196,7 @@ public class EventStorageService {
             String eventTime = stringValue(event.get("time"));
 
             String camChannel = camChannelHint != null ? camChannelHint : deriveCamChannel(channelId, port);
+            camChannel = normalizeStreamSuffix(camChannel);
             if (camChannel == null) {
                 return false;
             }
@@ -258,7 +263,7 @@ public class EventStorageService {
                                   String level, String eventTime) {
         try {
             String normalizedId = eventId != null ? eventId : "manual-" + Instant.now().toEpochMilli();
-            String camChannel = deriveCamChannel(channelId, port);
+            String camChannel = normalizeStreamSuffix(deriveCamChannel(channelId, port));
             if (CameraChannelBlocklist.shouldIgnore(channelId, port, camChannel)) {
                 return;
             }
@@ -312,6 +317,20 @@ public class EventStorageService {
             return String.format("%d%02d", port, 1);
         }
         return null;
+    }
+
+    private String normalizeStreamSuffix(String channel) {
+        if (channel == null) {
+            return null;
+        }
+        String trimmed = channel.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        if (trimmed.endsWith("*02")) {
+            return trimmed.substring(0, trimmed.length() - 3) + "*01";
+        }
+        return trimmed;
     }
 
     private String normalizeEventType(String value) {

@@ -1,0 +1,13 @@
+{
+  "miniprogramRoot": "miniprogram-1/miniprogram/",
+  "cloudfunctionRoot": "cloudfunctions/",
+  "projectName": "alerts-demo",
+  "appId": "wx6a859de2d9d4bad0",
+  "compileType": "miniprogram",
+  "setting": {
+    "es6": true,
+    "enhance": true,
+    "urlCheck": false,
+    "minified": false
+  }
+}

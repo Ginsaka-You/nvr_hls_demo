@@ -1,0 +1,28 @@
+<view class="page" wx:if="{{!loading}}">
+  <view class="card">
+    <view class="title">{{alert.title}}</view>
+    <view class="line">等级：{{alert.severity}}</view>
+    <view class="line">位置：{{alert.location}}</view>
+    <view class="line">设备：{{alert.device}}</view>
+    <view class="line" wx:if="{{alert.camera}}">摄像头：{{alert.camera}}</view>
+    <view class="line">发生时间：{{alert.occurAtFmt}}</view>
+    <view class="line">状态：{{alert.status}}</view>
+    <view class="line" wx:if="{{alert.handledBy}}">处理人：{{alert.handledBy}}</view>
+    <view class="line" wx:if="{{alert.handledAtFmt}}">处理时间：{{alert.handledAtFmt}}</view>
+    <view class="line" wx:if="{{alert.note}}">备注：{{alert.note}}</view>
+  </view>
+
+  <view class="card" wx:if="{{imageUrl}}">
+    <image src="{{imageUrl}}" mode="aspectFit" class="snapshot" />
+  </view>
+
+  <view class="card action-card" wx:if="{{alert.status !== 'ACK'}}">
+    <view class="field">
+      <text class="label">处理备注</text>
+      <textarea placeholder="选填" value="{{note}}" bindinput="onNoteInput" />
+    </view>
+    <button type="primary" bindtap="handleAck">标记已处理</button>
+  </view>
+</view>
+
+<view wx:if="{{loading}}" class="placeholder">加载中...</view>

@@ -33,3 +33,19 @@ wx:
   appSecret: 563f953524c9dcc96d5cee984e6fcf24
   templateId: TEMPLATE_ID_FROM_WECHAT
   alertPage: pages/alerts/index
+
+weixin:
+  appid: YOUR_MINIPROGRAM_APPID
+  secret: YOUR_MINIPROGRAM_SECRET
+
+tcb:
+  envId: YOUR_ENV_ID
+  ingestFunction: ingestAlarm
+  snapshotUploadThresholdKB: 256
+
+security:
+  hmacSecret: YOUR_SHARED_HMAC_SECRET
+
+http:
+  connectTimeoutMs: 5000
+  readTimeoutMs: 7000

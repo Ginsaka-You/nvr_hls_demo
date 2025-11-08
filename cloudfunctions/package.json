@@ -1,0 +1,9 @@
+{
+  "name": "alerts-cloudfunctions",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloud functions for alerts demo",
+  "dependencies": {
+    "@cloudbase/node-sdk": "^3.9.0"
+  }
+}
