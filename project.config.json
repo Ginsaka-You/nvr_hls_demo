@@ -1,6 +1,6 @@
 {
   "miniprogramRoot": "miniprogram-1/miniprogram/",
-  "cloudfunctionRoot": "cloudfunctions/",
+  "cloudfunctionRoot": "miniprogram-1/cloudfunctions/",
   "projectName": "alerts-demo",
   "appId": "wx6a859de2d9d4bad0",
   "compileType": "miniprogram",

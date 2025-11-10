@@ -19,6 +19,9 @@ public class TcbProperties {
     @Min(1)
     private int snapshotUploadThresholdKB = 256;
 
+    @NotBlank
+    private String defaultUserId;
+
     public String getEnvId() {
         return envId;
     }
@@ -41,5 +44,13 @@ public class TcbProperties {
 
     public void setSnapshotUploadThresholdKB(int snapshotUploadThresholdKB) {
         this.snapshotUploadThresholdKB = snapshotUploadThresholdKB;
+    }
+
+    public String getDefaultUserId() {
+        return defaultUserId;
+    }
+
+    public void setDefaultUserId(String defaultUserId) {
+        this.defaultUserId = defaultUserId;
     }
 }

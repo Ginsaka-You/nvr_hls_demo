@@ -1,42 +1,36 @@
 const app = getApp();
+const globalData = (app && app.globalData) || {};
+const USER_ID = globalData.defaultUserId || "demo-admin";
+const TEMPLATE_ID =
+  globalData.templateId || "lKtnQJIVx4mFSs9QJWm6xhL5in6KYOsrcdmhpNzCLfQ";
 
 Page({
   data: {
-    userId: '',
-    templateId: ''
+    userId: USER_ID
   },
-  onLoad() {
-    const stored = wx.getStorageSync('userId');
-    const userId = stored || app.globalData.userId || '';
-    const templateId = app.globalData.templateId || '';
-    this.setData({ userId, templateId });
-  },
-  onUserIdInput(e) {
-    this.setData({ userId: e.detail.value });
-  },
-  async handleSubscribe() {
-    if (!this.data.userId) {
-      wx.showToast({ title: '请输入用户ID', icon: 'none' });
-      return;
-    }
-    try {
-      const res = await wx.requestSubscribeMessage({
-        tmplIds: [this.data.templateId]
-      });
-      if (res[this.data.templateId] !== 'accept') {
-        wx.showToast({ title: '未授权订阅', icon: 'none' });
-        return;
+  async onSubscribeTap() {
+    wx.requestSubscribeMessage({
+      tmplIds: [TEMPLATE_ID],
+      success: async (res) => {
+        try {
+          await wx.cloud.callFunction({
+            name: "bindUser",
+            data: { userId: USER_ID }
+          });
+          const accepted = res && res[TEMPLATE_ID] === "accept";
+          wx.showToast({
+            title: accepted ? "订阅与账号绑定已更新" : "账号绑定已更新",
+            icon: "success"
+          });
+        } catch (err) {
+          console.error("bindUser failed", err);
+          wx.showToast({ title: "绑定失败", icon: "none" });
+        }
+      },
+      fail: (err) => {
+        console.error("subscribe fail", err);
+        wx.showToast({ title: "订阅失败", icon: "none" });
       }
-      await wx.cloud.callFunction({
-        name: 'bindUser',
-        data: { userId: this.data.userId }
-      });
-      wx.setStorageSync('userId', this.data.userId);
-      app.globalData.userId = this.data.userId;
-      wx.showToast({ title: '订阅成功', icon: 'success' });
-    } catch (err) {
-      console.error('subscribe fail', err);
-      wx.showToast({ title: '操作失败', icon: 'none' });
-    }
+    });
   }
 });

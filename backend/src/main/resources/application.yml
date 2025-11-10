@@ -42,6 +42,7 @@ tcb:
   envId: cloud1-0grqej0tb7ac6745
   ingestFunction: ingestAlarm
   snapshotUploadThresholdKB: 256
+  defaultUserId: demo-admin
 
 security:
   hmacSecret: b43d59e7e9a34f428d88e9f3c90b5e63c6a0dcebeae4485b8cb93b771b75d3f7

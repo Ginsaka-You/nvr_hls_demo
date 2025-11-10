@@ -1,6 +1,7 @@
 package com.example.nvr.risk;
 
 import com.example.nvr.AlertHub;
+import com.example.nvr.config.TcbProperties;
 import com.example.nvr.persistence.CameraAlarmEntity;
 import com.example.nvr.persistence.CameraAlarmRepository;
 import com.example.nvr.persistence.ImsiRecordEntity;
@@ -15,6 +16,8 @@ import com.example.nvr.risk.config.RiskModelConfig.GRuleDefinition;
 import com.example.nvr.risk.config.RiskModelConfig.Parameters;
 import com.example.nvr.risk.config.RiskModelConfig.PriorityDefinition;
 import com.example.nvr.risk.config.RiskModelConfigLoader;
+import com.example.nvr.tcb.model.AlertEvent;
+import com.example.nvr.tcb.service.AlertPublisherService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -26,6 +29,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
@@ -67,6 +71,8 @@ public class RiskAssessmentService {
     private final RadarTargetRepository radarTargetRepository;
     private final ObjectMapper objectMapper;
     private final RiskModelConfigLoader configLoader;
+    private final AlertPublisherService alertPublisherService;
+    private final TcbProperties tcbProperties;
     private final Object audioThrottleLock = new Object();
     private Instant lastA2AudioAt;
     private boolean lastA2AudioNight;
@@ -76,13 +82,17 @@ public class RiskAssessmentService {
                                  CameraAlarmRepository cameraAlarmRepository,
                                  RadarTargetRepository radarTargetRepository,
                                  ObjectMapper objectMapper,
-                                 RiskModelConfigLoader configLoader) {
+                                 RiskModelConfigLoader configLoader,
+                                 AlertPublisherService alertPublisherService,
+                                 TcbProperties tcbProperties) {
         this.riskAssessmentRepository = riskAssessmentRepository;
         this.imsiRecordRepository = imsiRecordRepository;
         this.cameraAlarmRepository = cameraAlarmRepository;
         this.radarTargetRepository = radarTargetRepository;
         this.objectMapper = objectMapper;
         this.configLoader = configLoader;
+        this.alertPublisherService = alertPublisherService;
+        this.tcbProperties = tcbProperties;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -1000,6 +1010,7 @@ public class RiskAssessmentService {
         payload.put("upgrade", upgradeTriggered);
         payload.put("audioCooldownSeconds", audioDecision.getRemaining().getSeconds());
         AlertHub.broadcast(payload);
+        forwardToTcb(decidedAt, priority, context, action, night, upgradeTriggered);
     }
 
     private String mapPriorityToLevel(PriorityDefinition priority) {
@@ -1017,6 +1028,99 @@ public class RiskAssessmentService {
             default:
                 return "info";
         }
+    }
+
+    private void forwardToTcb(Instant decidedAt,
+                              PriorityDefinition priority,
+                              EvaluationContext context,
+                              ActionStatus action,
+                              boolean night,
+                              boolean upgradeTriggered) {
+        if (alertPublisherService == null || tcbProperties == null) {
+            return;
+        }
+        String userId = tcbProperties.getDefaultUserId();
+        if (userId == null || userId.isBlank()) {
+            return;
+        }
+        AlertEvent alert = new AlertEvent();
+        alert.setUserId(userId);
+        alert.setTitle(buildAlertTitle(priority, action, upgradeTriggered));
+        alert.setSeverity(mapPriorityToSeverity(priority));
+        String device = describeDevice(context);
+        alert.setDevice(device);
+        alert.setCamera(device);
+        alert.setLocation(describeLocation(context, night));
+        alert.setOccurAt(formatOccurAt(decidedAt));
+        try {
+            alertPublisherService.publish(alert, null);
+        } catch (Exception ex) {
+            log.warn("Failed to publish risk alert to TCB", ex);
+        }
+    }
+
+    private String mapPriorityToSeverity(PriorityDefinition priority) {
+        if (priority == null || priority.getId() == null) {
+            return "LOW";
+        }
+        String id = priority.getId().toUpperCase(Locale.ROOT);
+        switch (id) {
+            case "P1":
+                return "CRITICAL";
+            case "P2":
+                return "HIGH";
+            case "P3":
+                return "MEDIUM";
+            default:
+                return "LOW";
+        }
+    }
+
+    private String buildAlertTitle(PriorityDefinition priority, ActionStatus action, boolean upgradeTriggered) {
+        String priorityLabel;
+        if (priority != null && priority.getName() != null && !priority.getName().isBlank()) {
+            priorityLabel = priority.getName().trim();
+        } else if (priority != null && priority.getId() != null && !priority.getId().isBlank()) {
+            priorityLabel = priority.getId().trim();
+        } else {
+            priorityLabel = "P2 高优先级";
+        }
+        String actionId = action != null && action.getId() != null ? action.getId().toUpperCase(Locale.ROOT) : "A2";
+        String actionLabel = (upgradeTriggered || "A3".equals(actionId)) ? "A3 升级" : "A2 远程警报";
+        return priorityLabel + " · " + actionLabel;
+    }
+
+    private String describeDevice(EvaluationContext context) {
+        if (context == null) {
+            return "核心摄像头";
+        }
+        for (String channel : context.getStrongChannels()) {
+            if (channel != null && !channel.isBlank()) {
+                return channel;
+            }
+        }
+        return "核心摄像头";
+    }
+
+    private String describeLocation(EvaluationContext context, boolean night) {
+        String prefix = night ? "夜间防区" : "日间防区";
+        if (context == null) {
+            return prefix;
+        }
+        List<String> channels = context.getStrongChannels().stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(str -> !str.isEmpty())
+                .collect(Collectors.toList());
+        if (channels.isEmpty()) {
+            return prefix;
+        }
+        return prefix + " " + String.join("/", channels);
+    }
+
+    private String formatOccurAt(Instant decidedAt) {
+        Instant ts = decidedAt != null ? decidedAt : Instant.now();
+        return OffsetDateTime.ofInstant(ts, ZoneId.systemDefault()).toString();
     }
 
 

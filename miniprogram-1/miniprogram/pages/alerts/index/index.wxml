@@ -1,4 +1,7 @@
 <view class="page">
+  <view class="toolbar">
+    <button class="subscribe-btn" size="mini" type="primary" bindtap="openSubscribe">订阅设置</button>
+  </view>
   <block wx:for="{{alerts}}" wx:key="_id">
     <view class="card" data-id="{{item._id}}" bindtap="goDetail">
       <view class="card-header">

@@ -1,8 +1,8 @@
 App({
   globalData: {
     envId: 'cloud1-0grqej0tb7ac6745',
-    userId: 'user-demo-001',
-    templateId: 'lKtnQJIVx4mFSs9QJWm6xhL5in6KYOsrcdmhpNzCLfQD'
+    defaultUserId: 'demo-admin',
+    templateId: 'lKtnQJIVx4mFSs9QJWm6xhL5in6KYOsrcdmhpNzCLfQ'
   },
   onLaunch() {
     wx.cloud.init({

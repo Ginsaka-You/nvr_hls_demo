@@ -7,7 +7,7 @@ Page({
     error: ''
   },
   onLoad() {
-    this.userId = app.globalData.userId;
+    this.userId = app.globalData.defaultUserId || 'demo-admin';
     this.db = wx.cloud.database();
     this.startWatch();
   },
@@ -49,6 +49,9 @@ Page({
   goDetail(e) {
     const id = e.currentTarget.dataset.id;
     wx.navigateTo({ url: `/pages/alerts/detail/detail?id=${id}` });
+  },
+  openSubscribe() {
+    wx.navigateTo({ url: "/pages/settings/subscribe/subscribe" });
   },
   formatTime(value) {
     if (!value) return '';
