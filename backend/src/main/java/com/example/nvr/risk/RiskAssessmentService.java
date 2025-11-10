@@ -1019,6 +1019,7 @@ public class RiskAssessmentService {
         }
     }
 
+
     private String writeDetails(Map<String, Object> details) {
         try {
             return objectMapper.writeValueAsString(details);

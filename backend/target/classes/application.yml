@@ -31,20 +31,20 @@ spring:
 wx:
   appId: wx6a859de2d9d4bad0
   appSecret: 563f953524c9dcc96d5cee984e6fcf24
-  templateId: TEMPLATE_ID_FROM_WECHAT
+  templateId: lKtnQJIVx4mFSs9QJWm6xhL5in6KYOsrcdmhpNzCLfQ
   alertPage: pages/alerts/index
 
 weixin:
-  appid: YOUR_MINIPROGRAM_APPID
-  secret: YOUR_MINIPROGRAM_SECRET
+  appid: wx6a859de2d9d4bad0
+  secret: 563f953524c9dcc96d5cee984e6fcf24
 
 tcb:
-  envId: YOUR_ENV_ID
+  envId: cloud1-0grqej0tb7ac6745
   ingestFunction: ingestAlarm
   snapshotUploadThresholdKB: 256
 
 security:
-  hmacSecret: YOUR_SHARED_HMAC_SECRET
+  hmacSecret: b43d59e7e9a34f428d88e9f3c90b5e63c6a0dcebeae4485b8cb93b771b75d3f7
 
 http:
   connectTimeoutMs: 5000
