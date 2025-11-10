@@ -76,7 +76,7 @@ async function persistAlert(alert, fileID) {
     note: '',
     ts: Date.now()
   };
-  const ret = await alarms.add(doc);
+  const ret = await alarms.add({ data: doc });
   return ret._id || ret.id;            // 不同 SDK 版本有 _id 或 id
 }
 
