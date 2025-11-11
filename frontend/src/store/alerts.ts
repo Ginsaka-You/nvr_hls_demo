@@ -37,7 +37,6 @@ function pushAlarm(a: Alarm, options: { playAudio?: boolean } = {}) {
 }
 
 let esPush: EventSource | null = null
-let esPull: EventSource | null = null
 let connected = false
 
 export function connectAlerts() {
@@ -53,7 +52,6 @@ export function connectAlerts() {
 
 function openStreams() {
   try { if (esPush) { esPush.close(); esPush = null } } catch {}
-  try { if (esPull) { esPull.close(); esPull = null } } catch {}
 
   // Push (device -> server)
   try {
@@ -61,22 +59,11 @@ function openStreams() {
     esPush.onmessage = (ev) => handleEvent(ev)
     esPush.onerror = () => { try { esPush && esPush.close() } catch {}; esPush = null; setTimeout(openStreams, 3000) }
   } catch {}
-
-  // Pull (server -> device) — optional fallback
-  try {
-    const params = new URLSearchParams({ host: nvrHost.value, user: nvrUser.value, pass: nvrPass.value, scheme: nvrScheme.value })
-    if (nvrHttpPort.value) params.set('httpPort', String(nvrHttpPort.value))
-    esPull = new EventSource(`/api/nvr/alerts/stream?${params.toString()}`)
-    esPull.onmessage = (ev) => handleEvent(ev)
-    esPull.onerror = () => { try { esPull && esPull.close() } catch {}; esPull = null; setTimeout(openStreams, 3000) }
-  } catch {}
 }
 
 function closeStreams() {
   try { esPush && esPush.close() } catch {}
-  try { esPull && esPull.close() } catch {}
   esPush = null
-  esPull = null
 }
 
 function handleEvent(ev: MessageEvent) {

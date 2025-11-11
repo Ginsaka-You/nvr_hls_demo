@@ -2,8 +2,6 @@
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/AlertHub.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/AlertManualController.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/AlertPushController.java
-/media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/AlertStreamController.java
-/media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/AlertStreamIngestService.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/Application.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/CameraChannelBlocklist.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/DatabaseConfigController.java

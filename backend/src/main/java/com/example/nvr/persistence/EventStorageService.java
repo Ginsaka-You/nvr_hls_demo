@@ -25,6 +25,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -32,7 +33,6 @@ import java.util.Set;
 public class EventStorageService {
 
     private static final Logger log = LoggerFactory.getLogger(EventStorageService.class);
-
     private final AlertEventRepository alertEventRepository;
     private final CameraAlarmRepository cameraAlarmRepository;
     private final RadarTargetRepository radarTargetRepository;
@@ -305,17 +305,25 @@ public class EventStorageService {
 
     private String deriveCamChannel(Integer channelId, Integer port) {
         if (channelId != null) {
-            int base = channelId;
-            int physical = base;
+            int physical = channelId;
             int stream = 1;
-            if (base > 32) {
-                physical = ((base - 1) % 32) + 1;
-                stream = ((base - 1) / 32) + 1;
+            if (channelId >= 100) {
+                int prefix = channelId / 100;
+                int suffix = channelId % 100;
+                if (prefix > 0) {
+                    physical = prefix;
+                }
+                if (suffix > 0) {
+                    stream = suffix;
+                }
+            } else if (channelId > 32) {
+                physical = ((channelId - 1) % 32) + 1;
+                stream = ((channelId - 1) / 32) + 1;
             }
-            return String.format("%d%02d", physical, stream);
+            return String.format(Locale.ROOT, "%d%02d", physical, Math.max(1, stream));
         }
         if (port != null) {
-            return String.format("%d%02d", port, 1);
+            return String.format(Locale.ROOT, "%d%02d", Math.max(1, port), 1);
         }
         return null;
     }
@@ -330,6 +338,13 @@ public class EventStorageService {
         }
         if (trimmed.endsWith("*02")) {
             return trimmed.substring(0, trimmed.length() - 3) + "*01";
+        }
+        if (trimmed.matches("\\d{3,}")) {
+            String prefix = trimmed.substring(0, trimmed.length() - 2);
+            String suffix = trimmed.substring(trimmed.length() - 2);
+            if (!suffix.equals("01") && suffix.chars().allMatch(Character::isDigit)) {
+                return prefix + "01";
+            }
         }
         return trimmed;
     }
@@ -397,4 +412,5 @@ public class EventStorageService {
             }
         }
     }
+
 }

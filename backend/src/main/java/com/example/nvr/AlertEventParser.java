@@ -56,7 +56,7 @@ public class AlertEventParser {
         if (port != null) {
             event.put("port", port);
         }
-        String camChannel = deriveCamChannel(channel, port);
+        String camChannel = normalizeStreamSuffix(deriveCamChannel(channel, port));
         if (camChannel != null) {
             event.put("camChannel", camChannel);
         }
@@ -127,14 +127,43 @@ public class AlertEventParser {
         if (source == null || source <= 0) {
             return null;
         }
-        int base = source;
-        int physical = base;
+        int physical = source;
         int stream = 1;
-        if (base > 32) {
-            physical = ((base - 1) % 32) + 1;
-            stream = ((base - 1) / 32) + 1;
+        if (source >= 100) {
+            int prefix = source / 100;
+            int suffix = source % 100;
+            if (prefix > 0) {
+                physical = prefix;
+            }
+            if (suffix > 0) {
+                stream = suffix;
+            }
+        } else if (source > 32) {
+            physical = ((source - 1) % 32) + 1;
+            stream = ((source - 1) / 32) + 1;
         }
-        return String.format("%d%02d", physical, stream);
+        return String.format(Locale.ROOT, "%d%02d", physical, Math.max(1, stream));
+    }
+
+    private String normalizeStreamSuffix(String channel) {
+        if (channel == null) {
+            return null;
+        }
+        String trimmed = channel.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        if (trimmed.endsWith("*02")) {
+            return trimmed.substring(0, trimmed.length() - 3) + "*01";
+        }
+        if (trimmed.matches("\\d{3,}")) {
+            String prefix = trimmed.substring(0, trimmed.length() - 2);
+            String suffix = trimmed.substring(trimmed.length() - 2);
+            if (!suffix.equals("01") && suffix.chars().allMatch(Character::isDigit)) {
+                return prefix + "01";
+            }
+        }
+        return trimmed;
     }
 
     private String computeEventId(Map<String, Object> event, String payload) {
