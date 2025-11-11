@@ -1,0 +1,16 @@
+{
+  "name": "miniprogram",
+  "version": "1.0.0",
+  "main": "app.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@babel/runtime": "^7.28.4",
+    "@babel/runtime-corejs3": "^7.28.4"
+  },
+  "description": ""
+}

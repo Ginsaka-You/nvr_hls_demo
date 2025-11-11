@@ -7,6 +7,8 @@ import com.example.nvr.persistence.ImsiRecordRepository;
 import com.example.nvr.persistence.RadarTargetEntity;
 import com.example.nvr.persistence.RadarTargetRepository;
 import com.example.nvr.persistence.RiskAssessmentRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,12 +21,13 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
 
 @Service
 public class RiskScenarioService {
+
+    private static final Logger log = LoggerFactory.getLogger(RiskScenarioService.class);
 
     private static final String SCENARIO_PREFIX = "SCN-";
     private static final ZoneId DEFAULT_ZONE = ZoneId.systemDefault();
@@ -34,6 +37,8 @@ public class RiskScenarioService {
             DateTimeFormatter.ofPattern("yyyyMMdd").withZone(DEFAULT_ZONE);
     private static final DateTimeFormatter REPORT_TIME_FORMAT =
             DateTimeFormatter.ofPattern("HHmmss").withZone(DEFAULT_ZONE);
+    private static final DateTimeFormatter RUN_ID_FORMAT =
+            DateTimeFormatter.ofPattern("yyyyMMddHHmmss").withZone(DEFAULT_ZONE);
     private static final String SCENARIO_WHITELIST_IMSI = "460000000000001";
 
     private final CameraAlarmRepository cameraAlarmRepository;
@@ -42,6 +47,7 @@ public class RiskScenarioService {
     private final RiskAssessmentRepository riskAssessmentRepository;
     private final RiskAssessmentService riskAssessmentService;
     private final Map<String, ScenarioDefinition> scenarioDefinitions;
+    private final ThreadLocal<String> scenarioRunPrefix = new ThreadLocal<>();
 
     public RiskScenarioService(CameraAlarmRepository cameraAlarmRepository,
                                ImsiRecordRepository imsiRecordRepository,
@@ -58,17 +64,45 @@ public class RiskScenarioService {
 
     @Transactional
     public ScenarioResult runScenario(String scenarioId) {
-        cleanupScenarioArtifacts();
         Map<String, Integer> created = new LinkedHashMap<>();
         String normalized = normalizeScenarioId(scenarioId);
         ScenarioDefinition definition = scenarioDefinitions.get(normalized);
         if (definition == null) {
             throw new IllegalArgumentException("未知的场景标识: " + scenarioId);
         }
-        Instant reference = definition.resolveReference();
-        definition.execute(reference, created);
-        riskAssessmentService.recomputeAt(reference);
-        return new ScenarioResult(true, normalized, created, definition.getMessage());
+        String runPrefix = buildScenarioRunPrefix(normalized);
+        scenarioRunPrefix.set(runPrefix);
+        Instant reference;
+        Map<String, Integer> persistedCounts = new LinkedHashMap<>();
+        try {
+            reference = definition.resolveReference();
+            definition.execute(reference, created);
+            cameraAlarmRepository.flush();
+            imsiRecordRepository.flush();
+            radarTargetRepository.flush();
+            long persistedCamera = cameraAlarmRepository.countByEventIdStartingWith(runPrefix);
+            long persistedImsi = imsiRecordRepository.countBySourceFileStartingWith(runPrefix);
+            long persistedRadar = radarTargetRepository.countByRadarHostStartingWith(runPrefix);
+            if (persistedCamera > 0) {
+                persistedCounts.put("camera", safeCount(persistedCamera));
+            }
+            if (persistedImsi > 0) {
+                persistedCounts.put("imsi", safeCount(persistedImsi));
+            }
+            if (persistedRadar > 0) {
+                persistedCounts.put("radar", safeCount(persistedRadar));
+            }
+            if (persistedCounts.isEmpty()) {
+                throw new IllegalStateException("虚拟场景未能写入数据库，请检查数据库连接/权限配置");
+            }
+            log.info("Scenario {} persisted data prefix {} => camera={}, radar={}, imsi={}",
+                    normalized, runPrefix, persistedCamera, persistedRadar, persistedImsi);
+        } finally {
+            scenarioRunPrefix.remove();
+        }
+        Instant effectiveRef = reference != null ? reference : Instant.now();
+        riskAssessmentService.recomputeAt(effectiveRef);
+        return new ScenarioResult(true, normalized, created, persistedCounts, definition.getMessage(), runPrefix);
     }
 
     private Map<String, ScenarioDefinition> buildScenarioDefinitions() {
@@ -478,7 +512,7 @@ public class RiskScenarioService {
             level = "info";
         }
         CameraAlarmEntity entity = new CameraAlarmEntity(
-                SCENARIO_PREFIX + scenario,
+                scenarioArtifactId(scenario),
                 eventType,
                 channel,
                 level,
@@ -551,7 +585,7 @@ public class RiskScenarioService {
                 "TERRITORY",
                 reportDate,
                 reportTime,
-                SCENARIO_PREFIX + scenario,
+                scenarioArtifactId(scenario),
                 null,
                 "scenario-host",
                 9000,
@@ -571,7 +605,7 @@ public class RiskScenarioService {
                                    double speed,
                                    Instant capturedAt) {
         RadarTargetEntity entity = new RadarTargetEntity(
-                SCENARIO_PREFIX + scenario,
+                scenarioArtifactId(scenario),
                 6100,
                 6200,
                 6201,
@@ -603,6 +637,56 @@ public class RiskScenarioService {
         createRadarTarget(scenario, 9000, 250.0, 250.0, 0.0, 0.0, timestamp);
     }
 
+    private String buildScenarioRunPrefix(String normalizedScenarioId) {
+        String scenarioPart = (normalizedScenarioId == null || normalizedScenarioId.isBlank())
+                ? "SCENARIO"
+                : normalizedScenarioId;
+        String timestamp = RUN_ID_FORMAT.format(Instant.now());
+        String suffix = randomDigits(4);
+        return String.format(Locale.ROOT, "%s%s-%s-%s", SCENARIO_PREFIX, scenarioPart, timestamp, suffix);
+    }
+
+    private String scenarioArtifactId(String scenario) {
+        String prefix = scenarioRunPrefix.get();
+        if (prefix == null || prefix.isBlank()) {
+            prefix = SCENARIO_PREFIX + "adhoc";
+        }
+        String suffix = normalizeArtifactSuffix(scenario);
+        return prefix + "-" + suffix;
+    }
+
+    private String normalizeArtifactSuffix(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "event";
+        }
+        String trimmed = raw.trim();
+        StringBuilder builder = new StringBuilder(trimmed.length());
+        boolean lastDash = false;
+        for (int i = 0; i < trimmed.length(); i++) {
+            char ch = trimmed.charAt(i);
+            char normalized = Character.toLowerCase(ch);
+            if (Character.isLetterOrDigit(ch) || ch == '-' || ch == '_') {
+                builder.append(normalized);
+                lastDash = false;
+                continue;
+            }
+            if (lastDash) {
+                continue;
+            }
+            builder.append('-');
+            lastDash = true;
+        }
+        if (builder.length() == 0) {
+            return "event";
+        }
+        int end = builder.length() - 1;
+        while (end >= 0 && builder.charAt(end) == '-') {
+            builder.deleteCharAt(end);
+            end--;
+        }
+        return builder.length() == 0 ? "event" : builder.toString();
+    }
+
     private String normalizeScenarioId(String scenarioId) {
         if (scenarioId == null) {
             return "";
@@ -616,6 +700,10 @@ public class RiskScenarioService {
 
     @Transactional
     public void cleanupScenarioArtifacts() {
+        cleanupScenarioArtifactsInternal();
+    }
+
+    private void cleanupScenarioArtifactsInternal() {
         cameraAlarmRepository.deleteByEventIdStartingWith(SCENARIO_PREFIX);
         imsiRecordRepository.deleteBySourceFileStartingWith(SCENARIO_PREFIX);
         radarTargetRepository.deleteByRadarHostStartingWith(SCENARIO_PREFIX);
@@ -642,7 +730,7 @@ public class RiskScenarioService {
         removed.put("radar", safeCount(radarCount));
         removed.put("assessments", safeCount(assessmentCount));
         String message = "已清空风控模型相关数据，可以重新执行场景测试";
-        return new ScenarioResult(true, "reset-model", removed, message);
+        return new ScenarioResult(true, "reset-model", removed, Map.of(), message, null);
     }
 
     private void addCount(Map<String, Integer> created, String key, int amount) {
@@ -704,12 +792,21 @@ public class RiskScenarioService {
         private final String scenarioId;
         private final Map<String, Integer> created;
         private final String message;
+        private final String artifactPrefix;
+        private final Map<String, Integer> persisted;
 
-        public ScenarioResult(boolean ok, String scenarioId, Map<String, Integer> created, String message) {
+        public ScenarioResult(boolean ok,
+                              String scenarioId,
+                              Map<String, Integer> created,
+                              Map<String, Integer> persisted,
+                              String message,
+                              String artifactPrefix) {
             this.ok = ok;
             this.scenarioId = scenarioId;
             this.created = created != null ? Collections.unmodifiableMap(new LinkedHashMap<>(created)) : Map.of();
+            this.persisted = persisted != null ? Collections.unmodifiableMap(new LinkedHashMap<>(persisted)) : Map.of();
             this.message = message;
+            this.artifactPrefix = artifactPrefix;
         }
 
         public boolean isOk() {
@@ -726,6 +823,14 @@ public class RiskScenarioService {
 
         public String getMessage() {
             return message;
+        }
+
+        public String getArtifactPrefix() {
+            return artifactPrefix;
+        }
+
+        public Map<String, Integer> getPersisted() {
+            return persisted;
         }
     }
 }

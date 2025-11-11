@@ -16,4 +16,6 @@ public interface RadarTargetRepository extends JpaRepository<RadarTargetEntity, 
             Instant end);
 
     void deleteByRadarHostStartingWith(String prefix);
+
+    long countByRadarHostStartingWith(String prefix);
 }
