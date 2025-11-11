@@ -7,15 +7,17 @@ import com.example.nvr.RadarController;
 import com.example.nvr.events.AlertEventSavedEvent;
 import com.example.nvr.imsi.ImsiRecordPayload;
 import com.example.nvr.risk.RiskAssessmentService;
-import org.springframework.context.ApplicationEventPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -109,11 +111,8 @@ public class EventStorageService {
             List<ImsiRecordEntity> saved = imsiRecordRepository.saveAll(entities);
             if (!saved.isEmpty()) {
                 broadcastImsiUpdate(saved);
-            }
-            try {
-                riskAssessmentService.processImsiRecordsSaved(saved);
-            } catch (Exception ex) {
-                log.warn("Failed to trigger risk assessment after IMSI sync", ex);
+                runAfterCommit("risk assessment after IMSI sync",
+                        () -> riskAssessmentService.processImsiRecordsSaved(saved));
             }
         } catch (RuntimeException ex) {
             log.warn("Failed to persist IMSI records", ex);
@@ -202,7 +201,8 @@ public class EventStorageService {
             }
             CameraAlarmEntity entity = new CameraAlarmEntity(eventId, eventType, camChannel, level, eventTime);
             CameraAlarmEntity saved = cameraAlarmRepository.save(entity);
-            riskAssessmentService.processCameraAlarmSaved(saved);
+            runAfterCommit("risk assessment after camera alarm",
+                    () -> riskAssessmentService.processCameraAlarmSaved(saved));
             return true;
         } catch (Exception ex) {
             log.warn("Failed to persist camera alarm", ex);
@@ -252,7 +252,8 @@ public class EventStorageService {
                 entities.add(entity);
             }
             List<RadarTargetEntity> saved = radarTargetRepository.saveAll(entities);
-            riskAssessmentService.processRadarTargetsSaved(saved);
+            runAfterCommit("risk assessment after radar targets",
+                    () -> riskAssessmentService.processRadarTargetsSaved(saved));
         } catch (Exception ex) {
             log.warn("Failed to persist radar targets", ex);
         }
@@ -366,6 +367,34 @@ public class EventStorageService {
             ImsiHub.broadcast(payload);
         } catch (Exception ex) {
             log.debug("Failed to broadcast IMSI update over SSE", ex);
+        }
+    }
+
+    private void runAfterCommit(String description, Runnable action) {
+        if (action == null) {
+            return;
+        }
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            safeRun(description, action);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                safeRun(description, action);
+            }
+        });
+    }
+
+    private void safeRun(String description, Runnable action) {
+        try {
+            action.run();
+        } catch (Exception ex) {
+            if (description == null || description.isBlank()) {
+                log.warn("Deferred action failed: {}", ex.getMessage(), ex);
+            } else {
+                log.warn("Failed to execute {}: {}", description, ex.getMessage(), ex);
+            }
         }
     }
 }

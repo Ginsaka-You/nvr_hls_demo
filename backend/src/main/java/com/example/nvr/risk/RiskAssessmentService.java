@@ -1190,10 +1190,27 @@ public class RiskAssessmentService {
     }
 
     private boolean isCoreCameraEvent(CameraAlarmEntity alarm) {
-        String type = Optional.ofNullable(alarm.getEventType()).orElse("").toLowerCase(Locale.ROOT);
-        String level = Optional.ofNullable(alarm.getLevel()).orElse("").toLowerCase(Locale.ROOT);
-        return type.contains("core") || type.contains("核心") || type.contains("cross")
-                || type.contains("越界") || level.contains("core") || level.contains("一级");
+        String type = Optional.ofNullable(alarm.getEventType()).orElse("");
+        String level = Optional.ofNullable(alarm.getLevel()).orElse("");
+        String combined = (type + " " + level).toLowerCase(Locale.ROOT);
+
+        if (containsKeyword(combined, "perimeter", "外圈", "次要", "secondary")) {
+            return false;
+        }
+        if (containsKeyword(combined, "core", "核心", "critical", "一级")) {
+            return true;
+        }
+        if (containsKeyword(combined,
+                "intrusion", "fielddetection", "linedetection", "regionentrance", "regionenter",
+                "越界", "闯入", "入侵", "侵入", "进入", "跨线", "跨越", "cross")) {
+            return true;
+        }
+        if (containsKeyword(combined,
+                "loiter", "linger", "stay", "徘徊", "滞留", "停留", "逗留")) {
+            return true;
+        }
+        String channel = Optional.ofNullable(alarm.getCamChannel()).orElse("").trim();
+        return !channel.isEmpty();
     }
 
     private List<CameraCluster> buildCameraClusters(List<CameraObservation> observations, boolean radarStrong) {
@@ -1336,19 +1353,65 @@ public class RiskAssessmentService {
     }
 
     private CameraEventType classifyCameraEvent(CameraAlarmEntity alarm) {
-        String normalized = (Optional.ofNullable(alarm.getEventType()).orElse("") + " "
+        String eventType = Optional.ofNullable(alarm.getEventType()).orElse("").trim().toLowerCase(Locale.ROOT);
+        CameraEventType explicit = mapExplicitCameraEventType(eventType);
+        if (explicit != null) {
+            return explicit;
+        }
+        String normalized = (eventType + " "
                 + Optional.ofNullable(alarm.getLevel()).orElse("")).toLowerCase(Locale.ROOT);
-        if (containsKeyword(normalized, "leave", "离开", "离场", "离去", "退出", "exit")) {
+        if (containsKeyword(normalized, "leave", "离开", "离场", "离去", "退出", "exit", "areaexit", "regionexit")) {
             return CameraEventType.LEAVE;
         }
         if (containsKeyword(normalized, "loiter", "徘徊", "滞留", "停留", "逗留", "linger", "stay")) {
             return CameraEventType.LOITER;
         }
         if (containsKeyword(normalized, "entry", "enter", "intrusion", "越界", "闯入", "breach",
-                "跨线", "跨越", "入侵", "侵入", "进入", "cross")) {
+                "跨线", "跨越", "入侵", "侵入", "进入", "cross", "fielddetection", "linedetection",
+                "regionentrance", "areaenter", "motion", "vmd")) {
             return CameraEventType.ENTRY;
         }
-        return CameraEventType.OTHER;
+        // 默认认为核心告警即越界事件，确保能参与 F3 评分
+        return CameraEventType.ENTRY;
+    }
+
+    private CameraEventType mapExplicitCameraEventType(String normalizedType) {
+        if (normalizedType == null || normalizedType.isBlank()) {
+            return null;
+        }
+        switch (normalizedType) {
+            case "loitering":
+            case "loitering detection":
+                return CameraEventType.LOITER;
+            case "regionentrance":
+            case "regionentrancing":
+            case "region entrance":
+            case "region-entering":
+            case "fielddetection":
+            case "field detection":
+            case "linedetection":
+            case "line detection":
+            case "motion":
+            case "motiondetection":
+            case "鲁棒":
+            case "检测到区域入侵":
+                return CameraEventType.ENTRY;
+            case "regionexiting":
+            case "region exiting":
+            case "regionexit":
+            case "region-exiting":
+            case "areaexit":
+            case "area exiting":
+                return CameraEventType.LEAVE;
+            default:
+                if (normalizedType.contains("区域入侵")) {
+                    return CameraEventType.ENTRY;
+                }
+                if (normalizedType.contains("区域离开")) {
+                    return CameraEventType.LEAVE;
+                }
+                return null;
+        }
     }
 
     private boolean containsKeyword(String value, String... keywords) {
