@@ -1,5 +1,7 @@
 package com.example.nvr.risk;
 
+import com.example.nvr.persistence.AlertEventEntity;
+import com.example.nvr.persistence.AlertEventRepository;
 import com.example.nvr.persistence.CameraAlarmEntity;
 import com.example.nvr.persistence.CameraAlarmRepository;
 import com.example.nvr.persistence.ImsiRecordEntity;
@@ -41,6 +43,7 @@ public class RiskScenarioService {
             DateTimeFormatter.ofPattern("yyyyMMddHHmmss").withZone(DEFAULT_ZONE);
     private static final String SCENARIO_WHITELIST_IMSI = "460000000000001";
 
+    private final AlertEventRepository alertEventRepository;
     private final CameraAlarmRepository cameraAlarmRepository;
     private final ImsiRecordRepository imsiRecordRepository;
     private final RadarTargetRepository radarTargetRepository;
@@ -49,11 +52,13 @@ public class RiskScenarioService {
     private final Map<String, ScenarioDefinition> scenarioDefinitions;
     private final ThreadLocal<String> scenarioRunPrefix = new ThreadLocal<>();
 
-    public RiskScenarioService(CameraAlarmRepository cameraAlarmRepository,
+    public RiskScenarioService(AlertEventRepository alertEventRepository,
+                               CameraAlarmRepository cameraAlarmRepository,
                                ImsiRecordRepository imsiRecordRepository,
                                RadarTargetRepository radarTargetRepository,
                                RiskAssessmentRepository riskAssessmentRepository,
                                RiskAssessmentService riskAssessmentService) {
+        this.alertEventRepository = alertEventRepository;
         this.cameraAlarmRepository = cameraAlarmRepository;
         this.imsiRecordRepository = imsiRecordRepository;
         this.radarTargetRepository = radarTargetRepository;
@@ -77,12 +82,17 @@ public class RiskScenarioService {
         try {
             reference = definition.resolveReference();
             definition.execute(reference, created);
+            alertEventRepository.flush();
             cameraAlarmRepository.flush();
             imsiRecordRepository.flush();
             radarTargetRepository.flush();
+            long persistedAlerts = alertEventRepository.countByEventIdStartingWith(runPrefix);
             long persistedCamera = cameraAlarmRepository.countByEventIdStartingWith(runPrefix);
             long persistedImsi = imsiRecordRepository.countBySourceFileStartingWith(runPrefix);
             long persistedRadar = radarTargetRepository.countByRadarHostStartingWith(runPrefix);
+            if (persistedAlerts > 0) {
+                persistedCounts.put("alerts", safeCount(persistedAlerts));
+            }
             if (persistedCamera > 0) {
                 persistedCounts.put("camera", safeCount(persistedCamera));
             }
@@ -95,8 +105,8 @@ public class RiskScenarioService {
             if (persistedCounts.isEmpty()) {
                 throw new IllegalStateException("虚拟场景未能写入数据库，请检查数据库连接/权限配置");
             }
-            log.info("Scenario {} persisted data prefix {} => camera={}, radar={}, imsi={}",
-                    normalized, runPrefix, persistedCamera, persistedRadar, persistedImsi);
+            log.info("Scenario {} persisted data prefix {} => alerts={}, camera={}, radar={}, imsi={}",
+                    normalized, runPrefix, persistedAlerts, persistedCamera, persistedRadar, persistedImsi);
         } finally {
             scenarioRunPrefix.remove();
         }
@@ -511,15 +521,36 @@ public class RiskScenarioService {
         if (kind == CameraEventKind.LEAVE) {
             level = "info";
         }
+        String eventId = scenarioArtifactId(scenario);
+        String eventTime = EVENT_TIME_FORMAT.format(createdAt);
         CameraAlarmEntity entity = new CameraAlarmEntity(
-                scenarioArtifactId(scenario),
+                eventId,
                 eventType,
                 channel,
                 level,
-                EVENT_TIME_FORMAT.format(createdAt)
+                eventTime
         );
         entity.setCreatedAt(createdAt);
         cameraAlarmRepository.save(entity);
+        createAlertEvent(eventId, eventType, channel, level, eventTime, createdAt);
+    }
+
+    private void createAlertEvent(String eventId,
+                                  String eventType,
+                                  String camChannel,
+                                  String level,
+                                  String eventTime,
+                                  Instant createdAt) {
+        AlertEventEntity entity = new AlertEventEntity(
+                eventId,
+                eventType,
+                camChannel,
+                level,
+                eventTime,
+                "未处理"
+        );
+        entity.setCreatedAt(createdAt);
+        alertEventRepository.save(entity);
     }
 
     private enum CameraEventKind {
@@ -704,6 +735,7 @@ public class RiskScenarioService {
     }
 
     private void cleanupScenarioArtifactsInternal() {
+        alertEventRepository.deleteByEventIdStartingWith(SCENARIO_PREFIX);
         cameraAlarmRepository.deleteByEventIdStartingWith(SCENARIO_PREFIX);
         imsiRecordRepository.deleteBySourceFileStartingWith(SCENARIO_PREFIX);
         radarTargetRepository.deleteByRadarHostStartingWith(SCENARIO_PREFIX);
@@ -712,11 +744,13 @@ public class RiskScenarioService {
     @Transactional
     public ScenarioResult resetModelState() {
         cleanupScenarioArtifacts();
+        long alertCount = alertEventRepository.count();
         long cameraCount = cameraAlarmRepository.count();
         long imsiCount = imsiRecordRepository.count();
         long radarCount = radarTargetRepository.count();
         long assessmentCount = riskAssessmentRepository.count();
 
+        alertEventRepository.deleteAllInBatch();
         cameraAlarmRepository.deleteAllInBatch();
         imsiRecordRepository.deleteAllInBatch();
         radarTargetRepository.deleteAllInBatch();
@@ -725,6 +759,7 @@ public class RiskScenarioService {
         riskAssessmentService.recomputeAll();
 
         Map<String, Integer> removed = new LinkedHashMap<>();
+        removed.put("alerts", safeCount(alertCount));
         removed.put("camera", safeCount(cameraCount));
         removed.put("imsi", safeCount(imsiCount));
         removed.put("radar", safeCount(radarCount));
