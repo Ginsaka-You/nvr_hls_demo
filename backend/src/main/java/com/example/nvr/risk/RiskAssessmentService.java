@@ -73,6 +73,7 @@ public class RiskAssessmentService {
     private final RiskModelConfigLoader configLoader;
     private final AlertPublisherService alertPublisherService;
     private final TcbProperties tcbProperties;
+    private final CameraEvidenceService cameraEvidenceService;
     private final Object audioThrottleLock = new Object();
     private Instant lastA2AudioAt;
     private boolean lastA2AudioNight;
@@ -84,7 +85,8 @@ public class RiskAssessmentService {
                                  ObjectMapper objectMapper,
                                  RiskModelConfigLoader configLoader,
                                  AlertPublisherService alertPublisherService,
-                                 TcbProperties tcbProperties) {
+                                 TcbProperties tcbProperties,
+                                 CameraEvidenceService cameraEvidenceService) {
         this.riskAssessmentRepository = riskAssessmentRepository;
         this.imsiRecordRepository = imsiRecordRepository;
         this.cameraAlarmRepository = cameraAlarmRepository;
@@ -93,6 +95,7 @@ public class RiskAssessmentService {
         this.configLoader = configLoader;
         this.alertPublisherService = alertPublisherService;
         this.tcbProperties = tcbProperties;
+        this.cameraEvidenceService = cameraEvidenceService;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -198,19 +201,22 @@ public class RiskAssessmentService {
         List<GRuleStatus> gStatuses = evaluateGRules(priority, context, scoreSummary, night, config, now);
         List<ActionStatus> actions = determineActions(scoreSummary, gStatuses, night, now, context, config);
 
-        String summary = buildSummary(priority, scoreSummary, context, gStatuses, actions);
-        Map<String, Object> details = buildDetails(config, scoreSummary, context, fEvaluations, actions, gStatuses,
-                windowStart, now, imsiWindow, cameraWindow, radarWindow);
         Optional<ActionStatus> a2Status = actions.stream()
                 .filter(action -> "A2".equalsIgnoreCase(action.getId()))
                 .findFirst();
         Optional<ActionStatus> a3Status = actions.stream()
                 .filter(action -> "A3".equalsIgnoreCase(action.getId()))
                 .findFirst();
+        boolean upgradeTriggered = a3Status.filter(ActionStatus::isTriggered).isPresent() && !previousA3.isTriggered();
+
+        planCameraEvidence(now, night, context, fEvaluations, gStatuses, a2Status, a3Status, previousA2, upgradeTriggered);
+
+        String summary = buildSummary(priority, scoreSummary, context, gStatuses, actions);
+        Map<String, Object> details = buildDetails(config, scoreSummary, context, fEvaluations, actions, gStatuses,
+                windowStart, now, imsiWindow, cameraWindow, radarWindow);
         if (a2Status.filter(ActionStatus::isTriggered).isPresent()) {
             ActionStatus currentA2 = a2Status.get();
             Instant decidedAt = Optional.ofNullable(currentA2.getDecidedAt()).orElse(now);
-            boolean upgradeTriggered = a3Status.filter(ActionStatus::isTriggered).isPresent() && !previousA3.isTriggered();
             AudioDecision audioDecision = evaluateA2Audio(decidedAt, night, upgradeTriggered);
             boolean shouldEmit = !previousA2.isTriggered() || audioDecision.shouldTrigger() || upgradeTriggered;
             if (shouldEmit) {
@@ -582,6 +588,10 @@ public class RiskAssessmentService {
                 .forEach(context::registerCameraLeave);
 
         List<CameraCluster> clusters = buildCameraClusters(observations, radarStrong);
+        context.setCameraClusters(clusters.stream()
+                .map(CameraClusterSummary::fromCluster)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList()));
         clusters.forEach(cluster -> {
             context.updateCameraScore(cluster.getScore());
             if (cluster.getScore() >= 50.0) {
@@ -807,6 +817,84 @@ public class RiskAssessmentService {
                 g2 ? "警报无效，已通知安保" : (night ? "未触发 G2" : "白天禁用 A3"),
                 g2 ? now : null));
         return actions;
+    }
+
+    private void planCameraEvidence(Instant now,
+                                    boolean night,
+                                    EvaluationContext context,
+                                    Map<String, FRuleEvaluation> fEvaluations,
+                                    List<GRuleStatus> gStatuses,
+                                    Optional<ActionStatus> a2Status,
+                                    Optional<ActionStatus> a3Status,
+                                    RecordedAction previousA2,
+                                    boolean upgradeTriggered) {
+        if (cameraEvidenceService == null) {
+            return;
+        }
+        CameraClusterSummary bestCluster = context.getBestCameraCluster().orElse(null);
+        double sCam = bestCluster != null ? bestCluster.getScore() : 0.0;
+        String rule = bestCluster != null ? bestCluster.getRuleId() : null;
+        String description = bestCluster != null ? bestCluster.getDescription() : "摄像弱证";
+        Instant clusterEnd = bestCluster != null ? bestCluster.getEnd() : null;
+
+        String channel = null;
+        if (bestCluster != null && bestCluster.getChannelId() != null) {
+            channel = bestCluster.getChannelId();
+        }
+        if (channel == null) {
+            channel = context.getLatestStrongChannel()
+                    .or(() -> context.getStrongChannels().stream().findFirst())
+                    .orElse(null);
+        }
+
+        boolean f2Triggered = Optional.ofNullable(fEvaluations.get("F2"))
+                .map(FRuleEvaluation::isTriggered)
+                .orElse(false);
+        boolean g1dxTriggered = gStatuses.stream()
+                .anyMatch(status -> "G1-D-X".equalsIgnoreCase(status.getId()) && status.isTriggered());
+        boolean a2Triggered = a2Status.map(ActionStatus::isTriggered).orElse(false);
+
+        boolean snapshotPlanned = false;
+        if (bestCluster != null && sCam >= 50.0) {
+            snapshotPlanned = cameraEvidenceService.submitSnapshot(
+                    channel,
+                    clusterEnd != null ? clusterEnd : now,
+                    "S1",
+                    description,
+                    rule,
+                    sCam);
+        }
+        if (!snapshotPlanned && night && "C6".equalsIgnoreCase(rule) && f2Triggered) {
+            snapshotPlanned = cameraEvidenceService.submitSnapshot(
+                    channel,
+                    clusterEnd != null ? clusterEnd : now,
+                    "S2",
+                    "夜间秒退雷达兜底",
+                    rule,
+                    sCam);
+        }
+        if (!snapshotPlanned && !night && g1dxTriggered) {
+            snapshotPlanned = cameraEvidenceService.submitSnapshot(
+                    channel,
+                    now,
+                    "S3",
+                    "白天例外取证",
+                    rule,
+                    sCam);
+        }
+        if (a2Triggered) {
+            boolean s4Accepted = cameraEvidenceService.submitSnapshot(
+                    channel,
+                    now,
+                    "S4",
+                    "远程警报伴随抓拍",
+                    rule,
+                    sCam);
+            if (!s4Accepted && log.isDebugEnabled()) {
+                log.debug("A2 triggered but snapshot S4 rejected (channel={}, rule={}, score={})", channel, rule, sCam);
+            }
+        }
+
     }
 
     private String buildSummary(PriorityDefinition priority,
@@ -1532,6 +1620,67 @@ public class RiskAssessmentService {
         }
     }
 
+    private static final class CameraClusterSummary {
+        private final String channelId;
+        private final String ruleId;
+        private final double score;
+        private final Instant start;
+        private final Instant end;
+        private final String description;
+
+        private CameraClusterSummary(String channelId,
+                                     String ruleId,
+                                     double score,
+                                     Instant start,
+                                     Instant end,
+                                     String description) {
+            this.channelId = channelId;
+            this.ruleId = ruleId;
+            this.score = score;
+            this.start = start;
+            this.end = end;
+            this.description = description;
+        }
+
+        static CameraClusterSummary fromCluster(CameraCluster cluster) {
+            if (cluster == null) {
+                return null;
+            }
+            return new CameraClusterSummary(
+                    cluster.getChannelId(),
+                    cluster.getRuleId(),
+                    cluster.getScore(),
+                    cluster.getStart(),
+                    cluster.getEnd(),
+                    cluster.getDescription()
+            );
+        }
+
+        String getChannelId() {
+            return channelId;
+        }
+
+        String getRuleId() {
+            return ruleId;
+        }
+
+        double getScore() {
+            return score;
+        }
+
+        Instant getStart() {
+            return start;
+        }
+
+        Instant getEnd() {
+            return end;
+        }
+
+        String getDescription() {
+            return description;
+        }
+    }
+
     private static class EvaluationContext {
         private final Map<String, Instant> imsiFirstSeen = new HashMap<>();
         private final List<String> newImsi = new ArrayList<>();
@@ -1546,6 +1695,7 @@ public class RiskAssessmentService {
         private final Map<String, Instant> priorStrongBeforeCurrent = new HashMap<>();
         private final Map<String, Instant> currentStrongByChannel = new HashMap<>();
         private final Set<String> strongChannelsCurrentWindow = new LinkedHashSet<>();
+        private final List<CameraClusterSummary> cameraClusters = new ArrayList<>();
         private boolean hasRadarPersist;
         private boolean hasRadarNearCore;
         private boolean hasRadarApproach;
@@ -1556,6 +1706,7 @@ public class RiskAssessmentService {
         private boolean coreAfterChallenge;
         private boolean linkF1F2;
         private double cameraScore;
+        private CameraClusterSummary bestCameraCluster;
 
         void registerImsi(Map<String, Instant> first) {
             imsiFirstSeen.putAll(first);
@@ -1662,6 +1813,41 @@ public class RiskAssessmentService {
 
         void updateCameraScore(double score) {
             cameraScore = Math.max(cameraScore, score);
+        }
+
+        void setCameraClusters(List<CameraClusterSummary> clusters) {
+            cameraClusters.clear();
+            if (clusters != null) {
+                for (CameraClusterSummary summary : clusters) {
+                    if (summary != null) {
+                        cameraClusters.add(summary);
+                    }
+                }
+            }
+            bestCameraCluster = cameraClusters.stream()
+                    .filter(Objects::nonNull)
+                    .max(Comparator.comparingDouble(CameraClusterSummary::getScore))
+                    .orElse(null);
+        }
+
+        Optional<CameraClusterSummary> getBestCameraCluster() {
+            return Optional.ofNullable(bestCameraCluster);
+        }
+
+        Optional<String> getLatestStrongChannel() {
+            if (!currentStrongByChannel.isEmpty()) {
+                return currentStrongByChannel.entrySet().stream()
+                        .filter(entry -> entry.getValue() != null)
+                        .max(Map.Entry.comparingByValue())
+                        .map(Map.Entry::getKey);
+            }
+            if (!latestStrongByChannel.isEmpty()) {
+                return latestStrongByChannel.entrySet().stream()
+                        .filter(entry -> entry.getValue() != null)
+                        .max(Map.Entry.comparingByValue())
+                        .map(Map.Entry::getKey);
+            }
+            return Optional.empty();
         }
 
         boolean hasRadarPersist() {

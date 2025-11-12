@@ -52,6 +52,7 @@
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/RiskAssessmentRepository.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/WechatSubscriberEntity.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/persistence/WechatSubscriberRepository.java
+/media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/risk/CameraEvidenceService.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/risk/RiskAssessmentController.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/risk/RiskAssessmentService.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/risk/RiskScenarioController.java

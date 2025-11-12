@@ -1,6 +1,7 @@
 # Ignore HLS output directories
 backend/streams/
 streams/
+camera_evidence/
 
 # Build and dependency artifacts
 backend/target/
