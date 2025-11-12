@@ -39,6 +39,8 @@ public class CameraEvidenceService {
     private static final Logger log = LoggerFactory.getLogger(CameraEvidenceService.class);
     private static final DateTimeFormatter TS_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmssX")
             .withZone(ZoneId.systemDefault());
+    private static final DateTimeFormatter DATE_FOLDER = DateTimeFormatter.ofPattern("yyyyMMdd")
+            .withZone(ZoneId.systemDefault());
 
     private final SettingsService settingsService;
     private final ObjectMapper objectMapper;
@@ -52,7 +54,7 @@ public class CameraEvidenceService {
 
     public CameraEvidenceService(SettingsService settingsService,
                                  ObjectMapper objectMapper,
-                                 @Value("${nvr.evidence.root:camera_evidence}") String evidenceRoot,
+                                 @Value("${nvr.evidence.root:../evidence}") String evidenceRoot,
                                  @Value("${nvr.evidence.snapshotThrottleSeconds:30}") long snapshotThrottleSeconds) {
         this.settingsService = settingsService;
         this.objectMapper = objectMapper;
@@ -192,13 +194,11 @@ public class CameraEvidenceService {
         ZonedDateTime zoned = ZonedDateTime.ofInstant(ts, ZoneId.systemDefault());
         Path base = evidenceRoot
                 .resolve(channel)
-                .resolve(String.format(Locale.ROOT, "%04d", zoned.getYear()))
-                .resolve(String.format(Locale.ROOT, "%02d", zoned.getMonthValue()))
-                .resolve(String.format(Locale.ROOT, "%02d", zoned.getDayOfMonth()))
-                .resolve(type);
-        String safeTrigger = trigger == null ? "unknown" : trigger.toLowerCase(Locale.ROOT);
-        String filename = String.format(Locale.ROOT, "%s_%s.%s",
-                TS_FORMAT.format(ts), safeTrigger, extension);
+                .resolve(DATE_FOLDER.format(ts));
+        String safeType = (type == null || type.isBlank()) ? "snapshot" : type.toLowerCase(Locale.ROOT);
+        String safeTrigger = (trigger == null || trigger.isBlank()) ? safeType : trigger.toLowerCase(Locale.ROOT);
+        String filename = String.format(Locale.ROOT, "%s_%s_%s.%s",
+                TS_FORMAT.format(ts), safeType, safeTrigger, extension);
         return base.resolve(filename);
     }
 

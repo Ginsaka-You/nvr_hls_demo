@@ -1,0 +1,10 @@
+{
+  "rule" : "C1",
+  "description" : "远程警报伴随抓拍",
+  "type" : "snapshot",
+  "trigger" : "S4",
+  "anchorTime" : "2025-11-12T06:59:00.042874530Z",
+  "channel" : "701",
+  "score" : 65.0,
+  "capturedAt" : "2025-11-12T06:59:00.242489821Z"
+}

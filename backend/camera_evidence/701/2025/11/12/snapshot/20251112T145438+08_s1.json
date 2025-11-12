@@ -1,0 +1,10 @@
+{
+  "rule" : "C1",
+  "description" : "摄像头越界 + 雷达近域/持续/逼近协同",
+  "type" : "snapshot",
+  "trigger" : "S1",
+  "anchorTime" : "2025-11-12T06:54:38.922912Z",
+  "channel" : "701",
+  "score" : 65.0,
+  "capturedAt" : "2025-11-12T06:58:22.513312678Z"
+}
