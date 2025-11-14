@@ -2,6 +2,8 @@
 backend/streams/
 streams/
 evidence/
+backend/camera_evidence/
+.m2repo/
 
 # Build and dependency artifacts
 backend/target/

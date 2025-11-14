@@ -36,24 +36,15 @@ public class AlertPublisherService {
 
     public String publish(AlertEvent event, byte[] snapshotJpeg) {
         ObjectNode alertNode = objectMapper.valueToTree(event);
-        String snapshotFileId = null;
         String imageBase64 = null;
         if (snapshotJpeg != null && snapshotJpeg.length > 0) {
-            int thresholdBytes = tcbProperties.getSnapshotUploadThresholdKB() * 1024;
-            if (snapshotJpeg.length >= thresholdBytes) {
-                snapshotFileId = weixinTcbClient.uploadSnapshot(snapshotJpeg);
-            } else {
-                imageBase64 = Base64.getEncoder().encodeToString(snapshotJpeg);
-            }
+            imageBase64 = Base64.getEncoder().encodeToString(snapshotJpeg);
+            log.info("Encoded snapshot payload ({} bytes) for alert {}", snapshotJpeg.length, event.getTitle());
         }
-        if (snapshotFileId != null) {
-            alertNode.put("snapshotFileId", snapshotFileId);
-            alertNode.putNull("imageBase64");
-        } else if (imageBase64 != null) {
-            alertNode.putNull("snapshotFileId");
+        alertNode.putNull("snapshotFileId");
+        if (imageBase64 != null) {
             alertNode.put("imageBase64", imageBase64);
         } else {
-            alertNode.putNull("snapshotFileId");
             alertNode.putNull("imageBase64");
         }
 
@@ -89,4 +80,3 @@ public class AlertPublisherService {
         }
     }
 }
-

@@ -39,10 +39,10 @@ public class WechatMessageService {
 
     public SendResult sendAlert(AlertEventEntity alert, String openId) {
         Map<String, Object> data = buildAlertPayload(alert);
-        return sendTemplate(openId, data);
+        return sendTemplate(openId, alert, data);
     }
 
-    private SendResult sendTemplate(String openId, Map<String, Object> data) {
+    private SendResult sendTemplate(String openId, AlertEventEntity alert, Map<String, Object> data) {
         if (!StringUtils.hasText(openId)) {
             return SendResult.failed("INVALID_OPENID", "openId missing");
         }
@@ -50,8 +50,9 @@ public class WechatMessageService {
         payload.put("touser", openId);
         payload.put("template_id", wxProperties.getTemplateId());
         payload.put("data", data);
-        if (StringUtils.hasText(wxProperties.getAlertPage())) {
-            payload.put("page", wxProperties.getAlertPage());
+        String pagePath = buildPagePath(alert);
+        if (StringUtils.hasText(pagePath)) {
+            payload.put("page", pagePath);
         }
         return postToWechat(payload, true);
     }
@@ -84,11 +85,36 @@ public class WechatMessageService {
 
     private Map<String, Object> buildAlertPayload(AlertEventEntity alert) {
         Map<String, Object> data = new HashMap<>();
+        if (alert == null) {
+            data.put("thing1", Map.of("value", "入侵告警"));
+            data.put("time2", Map.of("value", TIME_FORMATTER.format(Instant.now())));
+            data.put("thing3", Map.of("value", "摄像头"));
+            data.put("phrase4", Map.of("value", "未处理"));
+            return data;
+        }
         data.put("thing1", Map.of("value", safeText(alert.getEventType(), "入侵告警")));
         data.put("time2", Map.of("value", safeText(alert.getEventTime(), TIME_FORMATTER.format(Instant.now()))));
-        data.put("thing3", Map.of("value", safeText(alert.getCamChannel(), "摄像头")));
+        String camera = safeText(alert.getCamChannel(), "摄像头");
+        if (alert.getSnapshotUrl() != null) {
+            camera = camera + " (附图)";
+        }
+        data.put("thing3", Map.of("value", camera));
         data.put("phrase4", Map.of("value", safeText(alert.getStatus(), "未处理")));
         return data;
+    }
+
+    private String buildPagePath(AlertEventEntity alert) {
+        if (alert == null || alert.getId() == null) {
+            return StringUtils.hasText(wxProperties.getAlertPage()) ? wxProperties.getAlertPage() : null;
+        }
+        String targetPage = StringUtils.hasText(wxProperties.getDetailPage())
+                ? wxProperties.getDetailPage()
+                : wxProperties.getAlertPage();
+        if (!StringUtils.hasText(targetPage)) {
+            return null;
+        }
+        String separator = targetPage.contains("?") ? "&" : "?";
+        return targetPage + separator + "id=" + alert.getId();
     }
 
     private String safeText(String value, String fallback) {
@@ -130,4 +156,3 @@ public class WechatMessageService {
         }
     }
 }
-

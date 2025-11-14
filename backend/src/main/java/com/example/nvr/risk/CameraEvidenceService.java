@@ -21,8 +21,9 @@ import java.nio.file.Paths;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
-import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -51,6 +52,7 @@ public class CameraEvidenceService {
 
     private final Map<String, Instant> lastSnapshotByChannel = new ConcurrentHashMap<>();
     private final Map<String, Object> channelLocks = new ConcurrentHashMap<>();
+    private final Map<String, Deque<SnapshotRecord>> snapshotHistory = new ConcurrentHashMap<>();
 
     public CameraEvidenceService(SettingsService settingsService,
                                  ObjectMapper objectMapper,
@@ -90,6 +92,25 @@ public class CameraEvidenceService {
                                   String description,
                                   String ruleId,
                                   double score) {
+        return submitSnapshotInternal(channel, anchorTime, trigger, description, ruleId, score, false);
+    }
+
+    public boolean submitSnapshotImmediate(String channel,
+                                           Instant anchorTime,
+                                           String trigger,
+                                           String description,
+                                           String ruleId,
+                                           double score) {
+        return submitSnapshotInternal(channel, anchorTime, trigger, description, ruleId, score, true);
+    }
+
+    private boolean submitSnapshotInternal(String channel,
+                                           Instant anchorTime,
+                                           String trigger,
+                                           String description,
+                                           String ruleId,
+                                           double score,
+                                           boolean bypassThrottle) {
         String normalizedChannel = normalizeChannel(channel);
         if (normalizedChannel == null) {
             log.debug("Skip snapshot trigger {} because channel is empty", trigger);
@@ -99,7 +120,8 @@ public class CameraEvidenceService {
         Object lock = lockFor(normalizedChannel);
         synchronized (lock) {
             Instant last = lastSnapshotByChannel.get(normalizedChannel);
-            if (last != null && Duration.between(last, effectiveTime).compareTo(snapshotThrottle) < 0) {
+            boolean throttled = last != null && Duration.between(last, effectiveTime).compareTo(snapshotThrottle) < 0;
+            if (!bypassThrottle && throttled) {
                 log.debug("Skip snapshot for channel {} due to throttle", normalizedChannel);
                 return false;
             }
@@ -142,10 +164,10 @@ public class CameraEvidenceService {
                 releaseSnapshotSlot(channel, anchorTime);
                 return;
             }
-            Path file = buildEvidencePath(channel, anchorTime, trigger, "snapshot", "jpg");
-            Files.createDirectories(file.getParent());
-            Files.write(file, body);
-            writeMetadata(file, Map.of(
+            SnapshotLocation location = resolveLocation(channel, anchorTime, "snapshot", trigger, "jpg");
+            Files.createDirectories(location.absolutePath().getParent());
+            Files.write(location.absolutePath(), body);
+            writeMetadata(location.absolutePath(), Map.of(
                     "type", "snapshot",
                     "channel", channel,
                     "trigger", trigger,
@@ -155,7 +177,8 @@ public class CameraEvidenceService {
                     "capturedAt", Instant.now(),
                     "anchorTime", anchorTime
             ));
-            log.info("Saved snapshot {} for channel {} at {}", trigger, channel, file);
+            rememberSnapshot(channel, location.timestamp(), location.relativePath(), body);
+            log.info("Saved snapshot {} for channel {} at {}", trigger, channel, location.absolutePath());
         } catch (IOException | InterruptedException ex) {
             log.warn("Snapshot {} failed: {}", trigger, ex.getMessage());
             releaseSnapshotSlot(channel, anchorTime);
@@ -163,6 +186,58 @@ public class CameraEvidenceService {
                 Thread.currentThread().interrupt();
             }
         }
+    }
+
+    public Optional<String> findSnapshotPath(String channel, Instant referenceTime) {
+        return findSnapshotRecord(channel, referenceTime)
+                .map(SnapshotRecord::relativePath);
+    }
+
+    public Optional<String> findLatestSnapshotPath(String channel) {
+        return findSnapshotRecord(channel, null)
+                .map(SnapshotRecord::relativePath);
+    }
+
+    public Optional<byte[]> loadSnapshotBytes(String channel, Instant referenceTime) {
+        return loadSnapshotBytes(channel, referenceTime, Duration.ofSeconds(3));
+    }
+
+    public Optional<byte[]> captureAndLoadSnapshotBytes(String channel,
+                                                        Instant anchorTime,
+                                                        String trigger,
+                                                        String description,
+                                                        String ruleId,
+                                                        double score,
+                                                        Duration waitTimeout) {
+        submitSnapshotImmediate(channel, anchorTime, trigger, description, ruleId, score);
+        return loadSnapshotBytes(channel, anchorTime, waitTimeout == null ? Duration.ofSeconds(3) : waitTimeout);
+    }
+
+    public Optional<byte[]> loadSnapshotBytes(String channel,
+                                              Instant referenceTime,
+                                              Duration waitTimeout) {
+        Duration effective = waitTimeout == null ? Duration.ZERO : waitTimeout;
+        if (effective.isNegative()) {
+            effective = Duration.ZERO;
+        }
+        long timeoutNanos = effective.toNanos();
+        long start = System.nanoTime();
+        Optional<byte[]> result = tryLoadSnapshotBytes(channel, referenceTime);
+        while (result.isEmpty() && (System.nanoTime() - start) < timeoutNanos) {
+            try {
+                Thread.sleep(150);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            result = tryLoadSnapshotBytes(channel, referenceTime);
+        }
+        return result;
+    }
+
+    private Optional<byte[]> tryLoadSnapshotBytes(String channel, Instant referenceTime) {
+        return findSnapshotRecord(channel, referenceTime)
+                .flatMap(this::readSnapshotBytes);
     }
 
     private void writeMetadata(Path file, Map<String, Object> metadata) {
@@ -185,21 +260,20 @@ public class CameraEvidenceService {
         return filename.substring(0, dot + 1) + ext;
     }
 
-    private Path buildEvidencePath(String channel,
-                                   Instant anchorTime,
-                                   String trigger,
-                                   String type,
-                                   String extension) {
+    private SnapshotLocation resolveLocation(String channel,
+                                             Instant anchorTime,
+                                             String type,
+                                             String trigger,
+                                             String extension) {
         Instant ts = anchorTime != null ? anchorTime : Instant.now();
-        ZonedDateTime zoned = ZonedDateTime.ofInstant(ts, ZoneId.systemDefault());
-        Path base = evidenceRoot
-                .resolve(channel)
-                .resolve(DATE_FOLDER.format(ts));
         String safeType = (type == null || type.isBlank()) ? "snapshot" : type.toLowerCase(Locale.ROOT);
         String safeTrigger = (trigger == null || trigger.isBlank()) ? safeType : trigger.toLowerCase(Locale.ROOT);
         String filename = String.format(Locale.ROOT, "%s_%s_%s.%s",
                 TS_FORMAT.format(ts), safeType, safeTrigger, extension);
-        return base.resolve(filename);
+        Path relative = Paths.get(channel, DATE_FOLDER.format(ts), filename);
+        Path absolute = evidenceRoot.resolve(relative).normalize();
+        String relativePath = channel + "/" + DATE_FOLDER.format(ts) + "/" + filename;
+        return new SnapshotLocation(absolute, relativePath, ts);
     }
 
     private Optional<CameraCredentials> resolveCredentials() {
@@ -276,6 +350,127 @@ public class CameraEvidenceService {
         }
     }
 
+    private void rememberSnapshot(String channel, Instant capturedAt, String relativePath, byte[] bytes) {
+        if (relativePath == null || relativePath.isBlank()) {
+            return;
+        }
+        Deque<SnapshotRecord> deque = snapshotHistory.computeIfAbsent(channel, key -> new ArrayDeque<>());
+        synchronized (deque) {
+            byte[] cached = (bytes == null || bytes.length == 0) ? null : bytes.clone();
+            deque.addLast(new SnapshotRecord(capturedAt, relativePath, cached));
+            while (deque.size() > 12) {
+                deque.removeFirst();
+            }
+        }
+    }
+
+    private Optional<byte[]> readSnapshotBytes(SnapshotRecord record) {
+        if (record == null) {
+            return Optional.empty();
+        }
+        if (record.bytes != null && record.bytes.length > 0) {
+            return Optional.of(record.bytes.clone());
+        }
+        return readSnapshotBytesFromDisk(record.relativePath);
+    }
+
+    private Optional<byte[]> readSnapshotBytesFromDisk(String relativePath) {
+        if (relativePath == null || relativePath.isBlank()) {
+            return Optional.empty();
+        }
+        Path relative = Paths.get(relativePath.replace("\\", "/"));
+        Path file = evidenceRoot.resolve(relative).normalize();
+        if (!file.startsWith(evidenceRoot) || !Files.exists(file) || !Files.isRegularFile(file)) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(Files.readAllBytes(file));
+        } catch (IOException ex) {
+            log.debug("Failed to read snapshot {}: {}", relativePath, ex.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    private Optional<SnapshotRecord> findSnapshotRecord(String channel, Instant referenceTime) {
+        String normalized = normalizeChannel(channel);
+        if (normalized == null) {
+            return Optional.empty();
+        }
+        Deque<SnapshotRecord> deque = snapshotHistory.get(normalized);
+        Instant reference = referenceTime != null ? referenceTime : Instant.now();
+        SnapshotRecord best = null;
+        long bestDiff = Long.MAX_VALUE;
+        if (deque != null && !deque.isEmpty()) {
+            synchronized (deque) {
+                for (SnapshotRecord record : deque) {
+                    if (record == null || record.relativePath == null || record.capturedAt == null) {
+                        continue;
+                    }
+                    long diff = Math.abs(Duration.between(record.capturedAt, reference).toMillis());
+                    if (best == null || diff < bestDiff) {
+                        best = record;
+                        bestDiff = diff;
+                    }
+                }
+            }
+        }
+        if (best != null) {
+            return Optional.of(best);
+        }
+        return findSnapshotPathOnDisk(normalized, referenceTime)
+                .map(path -> new SnapshotRecord(reference, path, null));
+    }
+
+    private Optional<String> findSnapshotPathOnDisk(String channel, Instant referenceTime) {
+        Path channelDir = evidenceRoot.resolve(channel);
+        if (!Files.isDirectory(channelDir)) {
+            return Optional.empty();
+        }
+        try {
+            if (referenceTime != null) {
+                Path dateDir = channelDir.resolve(DATE_FOLDER.format(referenceTime));
+                return findLatestFileUnder(dateDir);
+            }
+            return findLatestFileUnder(channelDir);
+        } catch (IOException ex) {
+            log.debug("Failed to scan evidence directory {}: {}", channelDir, ex.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    private Optional<String> findLatestFileUnder(Path root) throws IOException {
+        if (!Files.exists(root)) {
+            return Optional.empty();
+        }
+        Path best = null;
+        long bestTime = Long.MIN_VALUE;
+        if (Files.isDirectory(root)) {
+            try (var stream = Files.list(root)) {
+                for (Path child : (Iterable<Path>) stream::iterator) {
+                    if (Files.isDirectory(child)) {
+                        Optional<String> nested = findLatestFileUnder(child);
+                        if (nested.isPresent()) {
+                            return nested;
+                        }
+                    } else if (Files.isRegularFile(child)) {
+                        long time = Files.getLastModifiedTime(child).toMillis();
+                        if (time > bestTime) {
+                            bestTime = time;
+                            best = child;
+                        }
+                    }
+                }
+            }
+        } else if (Files.isRegularFile(root)) {
+            best = root;
+        }
+        if (best == null) {
+            return Optional.empty();
+        }
+        Path relative = evidenceRoot.relativize(best);
+        return Optional.of(relative.toString().replace("\\", "/"));
+    }
+
     private static final class CameraCredentials {
         private final String host;
         private final String user;
@@ -309,6 +504,54 @@ public class CameraEvidenceService {
 
         Integer httpPort() {
             return httpPort;
+        }
+    }
+
+    private static final class SnapshotLocation {
+        private final Path absolutePath;
+        private final String relativePath;
+        private final Instant timestamp;
+
+        private SnapshotLocation(Path absolutePath, String relativePath, Instant timestamp) {
+            this.absolutePath = absolutePath;
+            this.relativePath = relativePath;
+            this.timestamp = timestamp;
+        }
+
+        Path absolutePath() {
+            return absolutePath;
+        }
+
+        String relativePath() {
+            return relativePath;
+        }
+
+        Instant timestamp() {
+            return timestamp;
+        }
+    }
+
+    private static final class SnapshotRecord {
+        private final Instant capturedAt;
+        private final String relativePath;
+        private final byte[] bytes;
+
+        private SnapshotRecord(Instant capturedAt, String relativePath, byte[] bytes) {
+            this.capturedAt = capturedAt;
+            this.relativePath = relativePath;
+            this.bytes = bytes;
+        }
+
+        Instant capturedAt() {
+            return capturedAt;
+        }
+
+        String relativePath() {
+            return relativePath;
+        }
+
+        byte[] bytes() {
+            return bytes;
         }
     }
 }

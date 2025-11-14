@@ -8,9 +8,14 @@
         <text class="title">{{item.title}}</text>
         <text class="severity-badge {{item.severityClass}}">{{item.severity}}</text>
       </view>
-      <view class="line">位置：{{item.location}}</view>
-      <view class="line">设备：{{item.device}}</view>
-      <view class="time">{{item.displayTime}}</view>
+      <view class="card-body">
+        <image wx:if="{{item.thumbnailUrl}}" class="thumb" mode="aspectFill" src="{{item.thumbnailUrl}}" />
+        <view class="info">
+          <view class="line">位置：{{item.location}}</view>
+          <view class="line">设备：{{item.device}}</view>
+          <view class="time">{{item.displayTime}}</view>
+        </view>
+      </view>
     </view>
   </block>
   <view wx:if="{{loading}}" class="placeholder">加载中...</view>

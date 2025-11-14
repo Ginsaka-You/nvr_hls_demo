@@ -17,6 +17,8 @@ exports.main = async (event) => {
 
     const { alert, sig } = parse(event);
     verifySig(alert, sig);
+    console.log('[ingestAlarm] alert.snapshotFileId =', alert.snapshotFileId,
+      ' imageBase64.len =', alert.imageBase64 ? alert.imageBase64.length : 0);
 
     const fileID = await resolveSnapshotFileId(alert);
     const id     = await persistAlert(alert, fileID);
@@ -52,12 +54,22 @@ function verifySig(alert, sig) {
 
 async function resolveSnapshotFileId(alert) {
   if (alert.imageBase64) {
-    const buffer    = Buffer.from(alert.imageBase64, 'base64');
-    const cloudPath = `alerts/${Date.now()}-${Math.random().toString(16).slice(2)}.jpg`;
-    const up = await cloud.uploadFile({ cloudPath, fileContent: buffer });   // ✅ 用 cloud.uploadFile
-    return up.fileID;
+    try {
+      const buffer    = Buffer.from(alert.imageBase64, 'base64');
+      const cloudPath = `alerts/${Date.now()}-${Math.random().toString(16).slice(2)}.jpg`;
+      const up = await cloud.uploadFile({ cloudPath, fileContent: buffer });
+      console.log('[ingestAlarm] uploadFile ok:', up.fileID);
+      return up.fileID;
+    } catch (err) {
+      console.error('[ingestAlarm] uploadFile error', err);
+    }
   }
-  return alert.snapshotFileId || null;
+  if (alert.snapshotFileId) {
+    console.log('[ingestAlarm] use snapshotFileId from alert:', alert.snapshotFileId);
+    return alert.snapshotFileId;
+  }
+  console.warn('[ingestAlarm] no imageBase64 and no snapshotFileId');
+  return null;
 }
 
 async function persistAlert(alert, fileID) {

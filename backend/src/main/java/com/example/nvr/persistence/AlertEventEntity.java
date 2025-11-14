@@ -1,6 +1,11 @@
 package com.example.nvr.persistence;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import javax.persistence.*;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 
 @Entity
@@ -31,6 +36,9 @@ public class AlertEventEntity {
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
+
+    @Column(name = "snapshot_path", length = 512)
+    private String snapshotPath;
 
     public AlertEventEntity() {
     }
@@ -87,5 +95,36 @@ public class AlertEventEntity {
 
     public void setCreatedAt(Instant createdAt) {
         this.createdAt = createdAt;
+    }
+
+    @JsonIgnore
+    public String getSnapshotPath() {
+        return snapshotPath;
+    }
+
+    public void setSnapshotPath(String snapshotPath) {
+        this.snapshotPath = snapshotPath;
+    }
+
+    @Transient
+    @JsonProperty("snapshotUrl")
+    public String getSnapshotUrl() {
+        if (snapshotPath == null || snapshotPath.isBlank()) {
+            return null;
+        }
+        String normalized = snapshotPath.replace('\\', '/');
+        String[] parts = normalized.split("/");
+        if (parts.length < 3) {
+            return "/api/evidence/snapshots/" + normalized;
+        }
+        String channel = parts[0];
+        String date = parts[1];
+        String filename = parts[parts.length - 1];
+        try {
+            String encodedFilename = URLEncoder.encode(filename, StandardCharsets.UTF_8);
+            return "/api/evidence/snapshots/" + channel + "/" + date + "/" + encodedFilename;
+        } catch (Exception ex) {
+            return "/api/evidence/snapshots/" + channel + "/" + date + "/" + filename;
+        }
     }
 }

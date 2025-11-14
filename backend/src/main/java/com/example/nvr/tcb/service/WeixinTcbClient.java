@@ -1,6 +1,8 @@
 package com.example.nvr.tcb.service;
 
 import com.example.nvr.config.TcbProperties;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.io.ByteArrayResource;
@@ -13,7 +15,6 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.HashMap;
@@ -31,6 +32,7 @@ public class WeixinTcbClient {
     private final RestTemplate restTemplate;
     private final WeixinAccessTokenClient tokenClient;
     private final TcbProperties tcbProperties;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public WeixinTcbClient(RestTemplate restTemplate,
                            WeixinAccessTokenClient tokenClient,
@@ -83,6 +85,18 @@ public class WeixinTcbClient {
     }
 
     public String invokeFunction(String functionName, String requestData) {
+        int payloadLength = requestData != null ? requestData.length() : 0;
+        int imageBase64Length = 0;
+        if (requestData != null && !requestData.isBlank()) {
+            try {
+                JsonNode root = objectMapper.readTree(requestData);
+                imageBase64Length = root.path("alert").path("imageBase64").asText("").length();
+            } catch (Exception ex) {
+                log.debug("Failed to parse request data for logging: {}", ex.getMessage());
+            }
+        }
+        log.info("InvokeCloudFunction {} payload.length={} imageBase64.len={}",
+                functionName, payloadLength, imageBase64Length);
         String accessToken = tokenClient.getAccessToken();
         Map<String, Object> body = new HashMap<>();
         body.put("request_data", requestData);

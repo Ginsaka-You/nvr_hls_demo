@@ -13,6 +13,10 @@ Page({
     await this.loadAlert();
   },
   async loadAlert() {
+    if (!this.id) {
+      wx.showToast({ title: '缺少告警 ID', icon: 'none' });
+      return;
+    }
     this.setData({ loading: true });
     try {
       const res = await this.db.collection('alarms').doc(this.id).get();

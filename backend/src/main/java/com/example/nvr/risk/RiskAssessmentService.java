@@ -1140,8 +1140,27 @@ public class RiskAssessmentService {
         alert.setCamera(device);
         alert.setLocation(describeLocation(context, night));
         alert.setOccurAt(formatOccurAt(decidedAt));
+        Optional<String> primaryChannel = pickPrimaryChannel(context);
+        Instant anchor = decidedAt != null ? decidedAt : Instant.now();
+        byte[] snapshotBytes = null;
+        if (cameraEvidenceService != null && primaryChannel.isPresent()) {
+            String channel = primaryChannel.get();
+            snapshotBytes = cameraEvidenceService
+                    .captureAndLoadSnapshotBytes(
+                            channel,
+                            anchor,
+                            action != null && action.getId() != null ? action.getId() : "TCB",
+                            "TCB 告警抓拍",
+                            action != null ? action.getId() : "TCB",
+                            context != null ? context.getCameraScore() : 0.0,
+                            Duration.ofSeconds(5))
+                    .orElse(null);
+        }
+        log.info("Prepared alert for TCB channel={} snapshotBytes={}",
+                primaryChannel.orElse("unknown"),
+                snapshotBytes == null ? 0 : snapshotBytes.length);
         try {
-            alertPublisherService.publish(alert, null);
+            alertPublisherService.publish(alert, snapshotBytes);
         } catch (Exception ex) {
             log.warn("Failed to publish risk alert to TCB", ex);
         }
@@ -1179,15 +1198,7 @@ public class RiskAssessmentService {
     }
 
     private String describeDevice(EvaluationContext context) {
-        if (context == null) {
-            return "核心摄像头";
-        }
-        for (String channel : context.getStrongChannels()) {
-            if (channel != null && !channel.isBlank()) {
-                return channel;
-            }
-        }
-        return "核心摄像头";
+        return pickPrimaryChannel(context).orElse("核心摄像头");
     }
 
     private String describeLocation(EvaluationContext context, boolean night) {
@@ -1204,6 +1215,20 @@ public class RiskAssessmentService {
             return prefix;
         }
         return prefix + " " + String.join("/", channels);
+    }
+
+    private Optional<String> pickPrimaryChannel(EvaluationContext context) {
+        if (context == null) {
+            return Optional.empty();
+        }
+        return context.getBestCameraCluster()
+                .map(CameraClusterSummary::getChannelId)
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(str -> !str.isEmpty())
+                .or(() -> context.getLatestStrongChannel()
+                        .map(String::trim)
+                .filter(str -> !str.isEmpty()));
     }
 
     private String formatOccurAt(Instant decidedAt) {

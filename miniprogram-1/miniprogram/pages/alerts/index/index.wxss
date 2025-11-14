@@ -27,6 +27,25 @@
   margin-bottom: 12rpx;
 }
 
+.card-body {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+}
+
+.thumb {
+  width: 220rpx;
+  height: 160rpx;
+  border-radius: 16rpx;
+  background: #e5e7eb;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.info {
+  flex: 1;
+}
+
 .title {
   font-size: 32rpx;
   font-weight: 600;
@@ -53,4 +72,28 @@
 
 .error {
   color: #ef4444;
+}
+
+.severity-badge {
+  padding: 4rpx 16rpx;
+  border-radius: 999rpx;
+  font-size: 24rpx;
+  color: #fff;
+}
+
+.badge-critical {
+  background: #ef4444;
+}
+
+.badge-high {
+  background: #f97316;
+}
+
+.badge-medium {
+  background: #facc15;
+  color: #111827;
+}
+
+.badge-low {
+  background: #22c55e;
 }

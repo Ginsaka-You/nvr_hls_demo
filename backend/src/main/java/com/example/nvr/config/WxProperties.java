@@ -19,6 +19,7 @@ public class WxProperties {
     private String templateId;
 
     private String alertPage = "pages/alerts/index";
+    private String detailPage = "pages/alerts/detail/detail";
 
     public String getAppId() {
         return appId;
@@ -51,5 +52,12 @@ public class WxProperties {
     public void setAlertPage(String alertPage) {
         this.alertPage = alertPage;
     }
-}
 
+    public String getDetailPage() {
+        return detailPage;
+    }
+
+    public void setDetailPage(String detailPage) {
+        this.detailPage = detailPage;
+    }
+}

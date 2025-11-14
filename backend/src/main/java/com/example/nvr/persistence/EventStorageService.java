@@ -6,6 +6,7 @@ import com.example.nvr.ImsiHub;
 import com.example.nvr.RadarController;
 import com.example.nvr.events.AlertEventSavedEvent;
 import com.example.nvr.imsi.ImsiRecordPayload;
+import com.example.nvr.risk.CameraEvidenceService;
 import com.example.nvr.risk.RiskAssessmentService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,6 +21,10 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -39,19 +44,23 @@ public class EventStorageService {
     private final ImsiRecordRepository imsiRecordRepository;
     private final RiskAssessmentService riskAssessmentService;
     private final ApplicationEventPublisher eventPublisher;
+    private final CameraEvidenceService cameraEvidenceService;
+    private final ZoneId systemZone = ZoneId.systemDefault();
 
     public EventStorageService(AlertEventRepository alertEventRepository,
                                CameraAlarmRepository cameraAlarmRepository,
                                RadarTargetRepository radarTargetRepository,
                                ImsiRecordRepository imsiRecordRepository,
                                RiskAssessmentService riskAssessmentService,
-                               ApplicationEventPublisher eventPublisher) {
+                               ApplicationEventPublisher eventPublisher,
+                               CameraEvidenceService cameraEvidenceService) {
         this.alertEventRepository = alertEventRepository;
         this.cameraAlarmRepository = cameraAlarmRepository;
         this.radarTargetRepository = radarTargetRepository;
         this.imsiRecordRepository = imsiRecordRepository;
         this.riskAssessmentService = riskAssessmentService;
         this.eventPublisher = eventPublisher;
+        this.cameraEvidenceService = cameraEvidenceService;
     }
 
     @Transactional
@@ -158,6 +167,11 @@ public class EventStorageService {
                 event.put("camChannel", camChannel);
             }
             AlertEventEntity entity = new AlertEventEntity(eventId, eventType, camChannel, level, eventTime, status);
+            if (cameraEvidenceService != null && camChannel != null) {
+                Instant eventInstant = parseEventInstant(eventTime);
+                cameraEvidenceService.findSnapshotPath(camChannel, eventInstant)
+                        .ifPresent(entity::setSnapshotPath);
+            }
             AlertEventEntity saved = alertEventRepository.save(entity);
             try {
                 eventPublisher.publishEvent(new AlertEventSavedEvent(saved));
@@ -383,6 +397,37 @@ public class EventStorageService {
         } catch (Exception ex) {
             log.debug("Failed to broadcast IMSI update over SSE", ex);
         }
+    }
+
+    private Instant parseEventInstant(String eventTime) {
+        if (eventTime == null || eventTime.isBlank()) {
+            return Instant.now();
+        }
+        String trimmed = eventTime.trim();
+        try {
+            return Instant.parse(trimmed);
+        } catch (DateTimeParseException ignored) {
+        }
+        DateTimeFormatter[] formatters = new DateTimeFormatter[]{
+                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"),
+                DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss")
+        };
+        for (DateTimeFormatter formatter : formatters) {
+            try {
+                LocalDateTime ldt = LocalDateTime.parse(trimmed, formatter);
+                return ldt.atZone(systemZone).toInstant();
+            } catch (DateTimeParseException ignored) {
+            }
+        }
+        try {
+            long epochMillis = Long.parseLong(trimmed);
+            if (String.valueOf(epochMillis).length() == 10) {
+                epochMillis *= 1000;
+            }
+            return Instant.ofEpochMilli(epochMillis);
+        } catch (NumberFormatException ignored) {
+        }
+        return Instant.now();
     }
 
     private void runAfterCommit(String description, Runnable action) {

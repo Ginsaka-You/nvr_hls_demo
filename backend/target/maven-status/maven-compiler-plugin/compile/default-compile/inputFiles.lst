@@ -28,6 +28,7 @@
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/config/WeixinOpenApiProperties.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/config/WxProperties.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/events/AlertEventSavedEvent.java
+/media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/evidence/EvidenceController.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/imsi/ImsiRecordPayload.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/imsi/ImsiSyncConfigService.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/imsi/ImsiSyncService.java

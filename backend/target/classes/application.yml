@@ -36,6 +36,7 @@ wx:
   appSecret: 563f953524c9dcc96d5cee984e6fcf24
   templateId: lKtnQJIVx4mFSs9QJWm6xhL5in6KYOsrcdmhpNzCLfQ
   alertPage: pages/alerts/index
+  detailPage: pages/alerts/detail/detail
 
 weixin:
   appid: wx6a859de2d9d4bad0

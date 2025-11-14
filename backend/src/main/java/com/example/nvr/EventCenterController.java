@@ -8,7 +8,9 @@ import com.example.nvr.persistence.RadarTargetEntity;
 import com.example.nvr.persistence.RadarTargetRepository;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -34,6 +36,13 @@ public class EventCenterController {
     @GetMapping("/alerts")
     public List<AlertEventEntity> listAlerts(@RequestParam(name = "limit", defaultValue = "100") int limit) {
         return alertEventRepository.findAll(page(limit, Sort.by(Sort.Direction.DESC, "id"))).getContent();
+    }
+
+    @GetMapping("/alerts/{id}")
+    public ResponseEntity<AlertEventEntity> getAlert(@PathVariable("id") Long id) {
+        return alertEventRepository.findById(id)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
     }
 
     @GetMapping("/camera-alarms")
