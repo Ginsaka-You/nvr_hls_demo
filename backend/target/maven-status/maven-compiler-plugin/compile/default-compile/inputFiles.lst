@@ -14,6 +14,7 @@
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/MimeConfig.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/NvrController.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/RadarController.java
+/media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/SoundLightAlarmController.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/StaticMap.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/StreamController.java
 /media/psf/Downloads/nvr_hls_demo/backend/src/main/java/com/example/nvr/WebRtcDiagnosticsController.java

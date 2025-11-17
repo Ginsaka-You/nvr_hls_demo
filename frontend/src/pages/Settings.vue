@@ -6,6 +6,30 @@ import { message, Modal } from 'ant-design-vue'
 const sec = ref<'multicam'|'alarm'|'imsi'|'radar'|'seismic'|'drone'|'database'>('multicam')
 const saving = ref(false)
 
+const SOUND_LIGHT_HOST = '192.168.50.200'
+const SOUND_LIGHT_PORT = 1000
+
+type SoundLightAction = 'activate' | 'deactivate'
+type SoundLightResult = {
+  ok?: boolean
+  error?: string
+  action?: string
+  host?: string
+  port?: number
+  commandHex?: string
+  responseHex?: string
+  elapsedMs?: number
+  timestamp?: string
+}
+
+const SOUND_LIGHT_COMMANDS: Record<SoundLightAction, string> = {
+  activate: '0110001A000101CE18',
+  deactivate: '0110001A0001000FD8'
+}
+
+const soundLightLoading = ref<SoundLightAction | null>(null)
+const soundLightResult = ref<SoundLightResult | null>(null)
+
 async function testAudio() {
   try {
     const host = (nvrHost.value || '').trim()
@@ -32,6 +56,52 @@ async function testAudio() {
     }
   } catch (e: any) {
     message.error('触发失败：' + (e?.message || e))
+  }
+}
+
+function soundLightActionLabel(action?: string | null): string {
+  if (action === 'activate') return '发送声光报警'
+  if (action === 'deactivate') return '关闭报警'
+  return action || ''
+}
+
+function soundLightCommandFor(action?: string | null): string {
+  if (action === 'deactivate') return SOUND_LIGHT_COMMANDS.deactivate
+  return SOUND_LIGHT_COMMANDS.activate
+}
+
+function formatSoundLightTimestamp(ts?: string | null): string {
+  if (!ts) return ''
+  const d = new Date(ts)
+  return Number.isNaN(d.getTime()) ? ts : d.toLocaleString()
+}
+
+async function triggerSoundLight(action: SoundLightAction) {
+  if (soundLightLoading.value) return
+  const label = soundLightActionLabel(action)
+  soundLightLoading.value = action
+  try {
+    const resp = await fetch(`/api/alarm/sound-light/${action}`, { method: 'POST' })
+    const data = (await resp.json().catch(() => ({}))) as SoundLightResult
+    soundLightResult.value = data
+    if (!resp.ok || data?.ok === false) {
+      const err = data?.error || `请求失败（${resp.status}）`
+      message.error(`${label}失败：${err}`)
+      return
+    }
+    message.success(`${label}指令已发送`)
+  } catch (e: any) {
+    soundLightResult.value = {
+      ok: false,
+      error: e?.message || String(e),
+      action,
+      host: SOUND_LIGHT_HOST,
+      port: SOUND_LIGHT_PORT,
+      commandHex: SOUND_LIGHT_COMMANDS[action]
+    }
+    message.error('声光报警操作失败：' + (e?.message || e))
+  } finally {
+    soundLightLoading.value = null
   }
 }
 
@@ -379,6 +449,65 @@ async function clearHls() {
               </a-form-item>
             </a-form>
             <a-alert type="info" show-icon :message="'说明：当告警到达时，系统将调用 /api/nvr/ipc/audioAlarm/test 以【默认ID】触发摄像头声音；此处的“摄像头端口”仅用于该触发请求，不影响NVR接口。'" />
+            <a-divider />
+            <a-typography-title :level="5" style="color: var(--text-color)">告警联动 · 声光报警</a-typography-title>
+            <div style="margin-bottom:12px; color: rgba(0,0,0,0.65);">
+              直连声光报警器（{{ SOUND_LIGHT_HOST }}:{{ SOUND_LIGHT_PORT }}），发送十六进制指令控制开关。
+            </div>
+            <a-space>
+              <a-button
+                type="primary"
+                @click="triggerSoundLight('activate')"
+                :loading="soundLightLoading==='activate'"
+              >
+                发送声光报警
+              </a-button>
+              <a-button
+                danger
+                @click="triggerSoundLight('deactivate')"
+                :loading="soundLightLoading==='deactivate'"
+              >
+                关闭报警
+              </a-button>
+            </a-space>
+            <a-alert
+              style="margin-top:12px;"
+              type="info"
+              show-icon
+              message="点击按钮后端将通过 Socket 直接与设备通信，请确认网络可达。"
+            />
+            <div v-if="soundLightResult" style="margin-top:12px;">
+              <a-alert
+                :type="soundLightResult?.ok ? 'success' : 'warning'"
+                show-icon
+                :message="soundLightResult?.ok ? '上次声光报警操作成功' : `声光报警操作失败：${soundLightResult?.error || '未知错误'}`"
+              />
+              <a-descriptions
+                size="small"
+                bordered
+                :column="1"
+                style="margin-top:8px;"
+              >
+                <a-descriptions-item label="动作">
+                  {{ soundLightActionLabel(soundLightResult?.action) }}
+                </a-descriptions-item>
+                <a-descriptions-item label="目标">
+                  {{ soundLightResult?.host || SOUND_LIGHT_HOST }}:{{ soundLightResult?.port || SOUND_LIGHT_PORT }}
+                </a-descriptions-item>
+                <a-descriptions-item label="指令">
+                  {{ soundLightResult?.commandHex || soundLightCommandFor(soundLightResult?.action) }}
+                </a-descriptions-item>
+                <a-descriptions-item v-if="soundLightResult?.responseHex" label="响应">
+                  {{ soundLightResult.responseHex }}
+                </a-descriptions-item>
+                <a-descriptions-item v-if="soundLightResult?.elapsedMs" label="耗时">
+                  {{ soundLightResult.elapsedMs }} ms
+                </a-descriptions-item>
+                <a-descriptions-item v-if="soundLightResult?.timestamp" label="时间">
+                  {{ formatSoundLightTimestamp(soundLightResult.timestamp) }}
+                </a-descriptions-item>
+              </a-descriptions>
+            </div>
           </template>
 
           <template v-else-if="sec==='imsi'">
