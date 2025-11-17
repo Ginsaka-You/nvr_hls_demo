@@ -113,7 +113,7 @@ public class CameraEvidenceService {
                                            boolean bypassThrottle) {
         String normalizedChannel = normalizeChannel(channel);
         if (normalizedChannel == null) {
-            log.debug("Skip snapshot trigger {} because channel is empty", trigger);
+            log.debug("Skip snapshot trigger {} because channel {} is invalid", trigger, channel);
             return false;
         }
         Instant effectiveTime = anchorTime != null ? anchorTime : Instant.now();
@@ -325,7 +325,10 @@ public class CameraEvidenceService {
         if (digits.length() >= 3) {
             return digits.substring(0, 3);
         }
-        return digits.isEmpty() ? trimmed : digits;
+        if (!digits.isEmpty()) {
+            log.debug("Channel {} normalized to '{}' which is too short for evidence capture", channel, digits);
+        }
+        return null;
     }
 
     private String trim(String value) {
