@@ -13,13 +13,16 @@
   "webrtcOptions": "transportmode=unicast&profile=Profile_1&forceh264=1&videoCodecType=H264&rtptransport=tcp&timeout=60",
   "webrtcPreferCodec": "video/H264",
   "channelOverrides": "",
-  "audioPass": "YouloveWill",
-  "audioId": 12,
-  "audioHttpPort": 65007,
   "radarHost": "192.168.2.40",
   "radarCtrlPort": 20000,
   "radarDataPort": 20001,
   "radarUseTcp": false,
+  "radarCameraBindings": [
+    {
+      "radarHost": "192.168.2.40",
+      "cameraChannels": [ "701" ]
+    }
+  ],
   "imsiFtpHost": "47.98.168.56",
   "imsiFtpPort": 4721,
   "imsiFtpUser": "ftpuser",

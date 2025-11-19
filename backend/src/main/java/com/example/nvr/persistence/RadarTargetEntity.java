@@ -1,6 +1,11 @@
 package com.example.nvr.persistence;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import javax.persistence.*;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 
 @Entity
@@ -83,6 +88,12 @@ public class RadarTargetEntity {
     @Column(name = "captured_at", nullable = false, updatable = false)
     private Instant capturedAt = Instant.now();
 
+    @Column(name = "cam_channel", length = 32)
+    private String camChannel;
+
+    @Column(name = "snapshot_path", length = 512)
+    private String snapshotPath;
+
     public RadarTargetEntity() {
     }
 
@@ -91,7 +102,8 @@ public class RadarTargetEntity {
                              Integer targetId, Double longitudinalDistance, Double lateralDistance, Double speed,
                              Double range, Double angle, Integer amplitude, Integer snr, Double rcs,
                              Integer elementCount, Integer targetLength, Integer detectionFrames,
-                             Integer trackState, Integer reserve1, Integer reserve2, Instant capturedAt) {
+                             Integer trackState, Integer reserve1, Integer reserve2, Instant capturedAt,
+                             String camChannel, String snapshotPath) {
         this.radarHost = radarHost;
         this.controlPort = controlPort;
         this.dataPort = dataPort;
@@ -116,6 +128,8 @@ public class RadarTargetEntity {
         this.reserve1 = reserve1;
         this.reserve2 = reserve2;
         this.capturedAt = capturedAt == null ? Instant.now() : capturedAt;
+        this.camChannel = camChannel;
+        this.snapshotPath = snapshotPath;
     }
 
     public Long getId() {
@@ -216,5 +230,44 @@ public class RadarTargetEntity {
 
     public Instant getCapturedAt() {
         return capturedAt;
+    }
+
+    public String getCamChannel() {
+        return camChannel;
+    }
+
+    public void setCamChannel(String camChannel) {
+        this.camChannel = camChannel;
+    }
+
+    @JsonIgnore
+    public String getSnapshotPath() {
+        return snapshotPath;
+    }
+
+    public void setSnapshotPath(String snapshotPath) {
+        this.snapshotPath = snapshotPath;
+    }
+
+    @Transient
+    @JsonProperty("snapshotUrl")
+    public String getSnapshotUrl() {
+        if (snapshotPath == null || snapshotPath.isBlank()) {
+            return null;
+        }
+        String normalized = snapshotPath.replace('\\', '/');
+        String[] parts = normalized.split("/");
+        if (parts.length < 3) {
+            return "/api/evidence/snapshots/" + normalized;
+        }
+        String channel = parts[0];
+        String date = parts[1];
+        String filename = parts[parts.length - 1];
+        try {
+            String encodedFilename = URLEncoder.encode(filename, StandardCharsets.UTF_8);
+            return "/api/evidence/snapshots/" + channel + "/" + date + "/" + encodedFilename;
+        } catch (Exception ex) {
+            return "/api/evidence/snapshots/" + channel + "/" + date + "/" + filename;
+        }
     }
 }

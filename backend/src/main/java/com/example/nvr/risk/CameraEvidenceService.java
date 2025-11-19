@@ -23,11 +23,14 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -117,15 +120,8 @@ public class CameraEvidenceService {
             return false;
         }
         Instant effectiveTime = anchorTime != null ? anchorTime : Instant.now();
-        Object lock = lockFor(normalizedChannel);
-        synchronized (lock) {
-            Instant last = lastSnapshotByChannel.get(normalizedChannel);
-            boolean throttled = last != null && Duration.between(last, effectiveTime).compareTo(snapshotThrottle) < 0;
-            if (!bypassThrottle && throttled) {
-                log.debug("Skip snapshot for channel {} due to throttle", normalizedChannel);
-                return false;
-            }
-            lastSnapshotByChannel.put(normalizedChannel, effectiveTime);
+        if (!reserveSnapshotSlot(normalizedChannel, effectiveTime, bypassThrottle)) {
+            return false;
         }
         executor.submit(() -> captureSnapshotInternal(normalizedChannel, effectiveTime, trigger, description, ruleId, score));
         return true;
@@ -137,10 +133,36 @@ public class CameraEvidenceService {
                                          String description,
                                          String ruleId,
                                          double score) {
+        Optional<SnapshotLocation> location = captureSnapshotBlockingInternal(channel, anchorTime, trigger, description, ruleId, score);
+        if (location.isEmpty()) {
+            releaseSnapshotSlot(channel, anchorTime);
+        }
+    }
+
+    private boolean reserveSnapshotSlot(String channel, Instant effectiveTime, boolean bypassThrottle) {
+        Object lock = lockFor(channel);
+        synchronized (lock) {
+            Instant last = lastSnapshotByChannel.get(channel);
+            boolean throttled = last != null && Duration.between(last, effectiveTime).compareTo(snapshotThrottle) < 0;
+            if (!bypassThrottle && throttled) {
+                log.debug("Skip snapshot for channel {} due to throttle", channel);
+                return false;
+            }
+            lastSnapshotByChannel.put(channel, effectiveTime);
+            return true;
+        }
+    }
+
+    private Optional<SnapshotLocation> captureSnapshotBlockingInternal(String channel,
+                                                                       Instant anchorTime,
+                                                                       String trigger,
+                                                                       String description,
+                                                                       String ruleId,
+                                                                       double score) {
         Optional<CameraCredentials> credentials = resolveCredentials();
         if (credentials.isEmpty()) {
-            releaseSnapshotSlot(channel, anchorTime);
-            return;
+            log.debug("Skip snapshot {} because credentials are unavailable", trigger);
+            return Optional.empty();
         }
         CameraCredentials creds = credentials.get();
         String url = buildSnapshotUrl(creds, channel);
@@ -155,14 +177,12 @@ public class CameraEvidenceService {
             HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 log.warn("Snapshot {} failed with HTTP {}", trigger, response.statusCode());
-                releaseSnapshotSlot(channel, anchorTime);
-                return;
+                return Optional.empty();
             }
             byte[] body = response.body();
             if (body == null || body.length == 0) {
                 log.warn("Snapshot {} returned empty body", trigger);
-                releaseSnapshotSlot(channel, anchorTime);
-                return;
+                return Optional.empty();
             }
             SnapshotLocation location = resolveLocation(channel, anchorTime, "snapshot", trigger, "jpg");
             Files.createDirectories(location.absolutePath().getParent());
@@ -179,12 +199,13 @@ public class CameraEvidenceService {
             ));
             rememberSnapshot(channel, location.timestamp(), location.relativePath(), body);
             log.info("Saved snapshot {} for channel {} at {}", trigger, channel, location.absolutePath());
+            return Optional.of(location);
         } catch (IOException | InterruptedException ex) {
             log.warn("Snapshot {} failed: {}", trigger, ex.getMessage());
-            releaseSnapshotSlot(channel, anchorTime);
             if (ex instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
+            return Optional.empty();
         }
     }
 
@@ -211,6 +232,40 @@ public class CameraEvidenceService {
                                                         Duration waitTimeout) {
         submitSnapshotImmediate(channel, anchorTime, trigger, description, ruleId, score);
         return loadSnapshotBytes(channel, anchorTime, waitTimeout == null ? Duration.ofSeconds(3) : waitTimeout);
+    }
+
+    public CompletableFuture<Optional<String>> captureSnapshotPath(String channel,
+                                                                    Instant anchorTime,
+                                                                    String trigger,
+                                                                    String description,
+                                                                    String ruleId,
+                                                                    double score) {
+        CompletableFuture<Optional<String>> future = new CompletableFuture<>();
+        String normalizedChannel = normalizeChannel(channel);
+        if (normalizedChannel == null) {
+            future.complete(Optional.empty());
+            return future;
+        }
+        Instant effectiveTime = anchorTime != null ? anchorTime : Instant.now();
+        executor.submit(() -> {
+            if (!reserveSnapshotSlot(normalizedChannel, effectiveTime, true)) {
+                future.complete(Optional.empty());
+                return;
+            }
+            Optional<SnapshotLocation> location = captureSnapshotBlockingInternal(
+                    normalizedChannel,
+                    effectiveTime,
+                    trigger,
+                    description,
+                    ruleId,
+                    score
+            );
+            if (location.isEmpty()) {
+                releaseSnapshotSlot(normalizedChannel, effectiveTime);
+            }
+            future.complete(location.map(SnapshotLocation::relativePath));
+        });
+        return future;
     }
 
     public Optional<byte[]> loadSnapshotBytes(String channel,
@@ -322,13 +377,21 @@ public class CameraEvidenceService {
             return null;
         }
         String digits = trimmed.replaceAll("[^0-9]", "");
-        if (digits.length() >= 3) {
-            return digits.substring(0, 3);
+        if (digits.length() < 3) {
+            if (!digits.isEmpty()) {
+                log.debug("Channel {} normalized to '{}' which is too short for evidence capture", channel, digits);
+            }
+            return null;
         }
-        if (!digits.isEmpty()) {
-            log.debug("Channel {} normalized to '{}' which is too short for evidence capture", channel, digits);
+        if (digits.length() <= 3) {
+            return digits;
         }
-        return null;
+        String prefix = digits.substring(0, digits.length() - 2);
+        String suffix = digits.substring(digits.length() - 2);
+        if (!suffix.equals("01") && suffix.chars().allMatch(Character::isDigit)) {
+            suffix = "01";
+        }
+        return prefix + suffix;
     }
 
     private String trim(String value) {
@@ -337,6 +400,25 @@ public class CameraEvidenceService {
         }
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    public List<String> resolveRadarChannels(String radarHost) {
+        SettingsConfig config = settingsService.getCurrentConfig();
+        if (config == null) {
+            return List.of();
+        }
+        List<String> channels = config.resolveRadarChannels(radarHost);
+        if (channels == null || channels.isEmpty()) {
+            return List.of();
+        }
+        List<String> normalized = new ArrayList<>();
+        for (String channel : channels) {
+            String normalizedChannel = normalizeChannel(channel);
+            if (normalizedChannel != null) {
+                normalized.add(normalizedChannel);
+            }
+        }
+        return normalized;
     }
 
     private Object lockFor(String channel) {

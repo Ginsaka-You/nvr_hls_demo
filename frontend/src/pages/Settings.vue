@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub, streamMode, hlsOrigin, webrtcServer, webrtcOptions, webrtcPreferCodec, channelOverrides, audioPass, audioId, audioHttpPort, radarHost, radarCtrlPort, radarDataPort, radarUseTcp, imsiFtpHost, imsiFtpPort, imsiFtpUser, imsiFtpPass, imsiSyncInterval, imsiSyncBatchSize, imsiFilenameTemplate, imsiLineTemplate, imsiDeviceFilter, dbType, dbHost, dbPort, dbName, dbUser, dbPass, saveSettings } from '@/store/config'
+import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub, streamMode, hlsOrigin, webrtcServer, webrtcOptions, webrtcPreferCodec, channelOverrides, radarHost, radarCtrlPort, radarDataPort, radarUseTcp, radarCameraBindings, imsiFtpHost, imsiFtpPort, imsiFtpUser, imsiFtpPass, imsiSyncInterval, imsiSyncBatchSize, imsiFilenameTemplate, imsiLineTemplate, imsiDeviceFilter, dbType, dbHost, dbPort, dbName, dbUser, dbPass, saveSettings } from '@/store/config'
 import { message, Modal } from 'ant-design-vue'
 
 const sec = ref<'multicam'|'alarm'|'imsi'|'radar'|'seismic'|'drone'|'database'>('multicam')
@@ -29,35 +29,6 @@ const SOUND_LIGHT_COMMANDS: Record<SoundLightAction, string> = {
 
 const soundLightLoading = ref<SoundLightAction | null>(null)
 const soundLightResult = ref<SoundLightResult | null>(null)
-
-async function testAudio() {
-  try {
-    const host = (nvrHost.value || '').trim()
-    const user = (nvrUser.value || '').trim()
-    const pass = (audioPass.value || nvrPass.value || '').trim()
-    const id = audioId.value
-    if (!host || !user || !pass || !id) {
-      message.error('请先填写 NVR Host、用户名、音频告警密码与默认ID')
-      return
-    }
-    const p = new URLSearchParams({ host, user, pass, scheme: nvrScheme.value, id: String(id) })
-    if (audioHttpPort.value) p.set('httpPort', String(audioHttpPort.value))
-    const resp = await fetch('/api/nvr/ipc/audioAlarm/test', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: p.toString()
-    })
-    const data: any = await resp.json().catch(() => ({}))
-    if (data?.ok) {
-      message.success(`已触发，接口: ${data.used || '未知'}`)
-    } else {
-      const status = data?.status || data?.attempts?.[data?.attempts?.length-1]?.status || '请求失败'
-      message.error(`触发失败：${status}`)
-    }
-  } catch (e: any) {
-    message.error('触发失败：' + (e?.message || e))
-  }
-}
 
 function soundLightActionLabel(action?: string | null): string {
   if (action === 'activate') return '发送声光报警'
@@ -158,6 +129,29 @@ const radarTestHint = computed(() => (
     ? '测试会尝试通过 TCP 握手（版本请求）验证雷达端口连通性。'
     : '测试会通过 UDP 发送启动指令并等待数据帧，验证雷达是否按期返回。'
 ))
+function addRadarBinding() {
+  radarCameraBindings.value.push({ radarHost: '', cameraChannels: [] })
+}
+function removeRadarBinding(index: number) {
+  radarCameraBindings.value.splice(index, 1)
+}
+function updateRadarBindingHost(index: number, value: string) {
+  const binding = radarCameraBindings.value[index]
+  if (!binding) return
+  binding.radarHost = value.trim()
+}
+function updateRadarBindingChannels(index: number, value: string) {
+  const binding = radarCameraBindings.value[index]
+  if (!binding) return
+  const tokens = value
+    .split(',')
+    .map(token => token.trim())
+    .filter(token => token.length > 0)
+  binding.cameraChannels = tokens
+}
+function formatRadarBindingChannels(binding: { cameraChannels: string[] }) {
+  return (binding?.cameraChannels || []).join(',')
+}
 
 const imsiTesting = ref(false)
 const imsiTestResult = ref<any | null>(null)
@@ -430,28 +424,13 @@ async function clearHls() {
           </template>
 
           <template v-else-if="sec==='alarm'">
-            <a-typography-title :level="5" style="color: var(--text-color)">告警联动 · 摄像头声音</a-typography-title>
-            <a-form layout="horizontal" :label-col="{ span: 5 }" :wrapper-col="{ span: 16 }">
-              <a-form-item label="音频告警密码">
-                <a-input-password v-model:value="audioPass" style="width:220px" placeholder="与NVR密码不同时在此设置" />
-              </a-form-item>
-              <a-form-item label="摄像头端口">
-                <a-input-number v-model:value="audioHttpPort" :min="1" :max="65535" style="width:220px" />
-              </a-form-item>
-              <a-form-item label="默认ID">
-                <a-input-number v-model:value="audioId" :min="1" :max="128" style="width:220px" />
-              </a-form-item>
-              <a-form-item :wrapper-col="{ offset: 5 }">
-                <a-space>
-                  <a-button type="primary" @click="saveAndNotify" :loading="saving" :disabled="saving">保存</a-button>
-                  <a-button @click="testAudio">测试声音</a-button>
-                </a-space>
-              </a-form-item>
-            </a-form>
-            <a-alert type="info" show-icon :message="'说明：当告警到达时，系统将调用 /api/nvr/ipc/audioAlarm/test 以【默认ID】触发摄像头声音；此处的“摄像头端口”仅用于该触发请求，不影响NVR接口。'" />
-            <a-divider />
             <a-typography-title :level="5" style="color: var(--text-color)">告警联动 · 声光报警</a-typography-title>
-            <div style="margin-bottom:12px; color: rgba(0,0,0,0.65);">
+            <a-alert
+              type="info"
+              show-icon
+              message="风控模型执行 A2 远程警报时会自动触发声光报警器。"
+            />
+            <div style="margin:12px 0; color: rgba(0,0,0,0.65);">
               直连声光报警器（{{ SOUND_LIGHT_HOST }}:{{ SOUND_LIGHT_PORT }}），发送十六进制指令控制开关。
             </div>
             <a-space>
@@ -608,6 +587,26 @@ async function clearHls() {
               <a-form-item label="数据端口">
                 <a-input-number v-model:value="radarDataPort" :min="1" :max="65535" style="width:220px" />
               </a-form-item>
+              <a-form-item label="摄像头关联">
+                <div class="radar-binding-list">
+                  <div v-for="(binding, idx) in radarCameraBindings" :key="idx" class="radar-binding-row">
+                    <a-input
+                      class="radar-binding-host"
+                      :value="binding.radarHost"
+                      placeholder="雷达 IP"
+                      @update:value="value => updateRadarBindingHost(idx, value)"
+                    />
+                    <a-input
+                      class="radar-binding-channels"
+                      :value="formatRadarBindingChannels(binding)"
+                      placeholder="摄像头通道，逗号分隔，如 701,702"
+                      @update:value="value => updateRadarBindingChannels(idx, value)"
+                    />
+                    <a-button danger @click="removeRadarBinding(idx)">删除</a-button>
+                  </div>
+                  <a-button type="dashed" block @click="addRadarBinding">添加关联</a-button>
+                </div>
+              </a-form-item>
               <a-form-item label="传输协议">
                 <a-radio-group v-model:value="radarUseTcp">
                   <a-radio :value="false">UDP</a-radio>
@@ -705,4 +704,27 @@ async function clearHls() {
 </template>
 
 <style scoped>
+.muted {
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.radar-binding-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.radar-binding-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.radar-binding-host {
+  width: 180px;
+}
+
+.radar-binding-channels {
+  flex: 1;
+}
 </style>

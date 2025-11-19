@@ -27,12 +27,16 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 @Service
 public class EventStorageService {
@@ -162,17 +166,20 @@ public class EventStorageService {
                 return false;
             }
             String status = stringValue(event.get("status"));
-
+            Instant eventInstant = parseEventInstant(eventTime);
             if (camChannel != null) {
                 event.put("camChannel", camChannel);
             }
             AlertEventEntity entity = new AlertEventEntity(eventId, eventType, camChannel, level, eventTime, status);
             if (cameraEvidenceService != null && camChannel != null) {
-                Instant eventInstant = parseEventInstant(eventTime);
                 cameraEvidenceService.findSnapshotPath(camChannel, eventInstant)
                         .ifPresent(entity::setSnapshotPath);
             }
             AlertEventEntity saved = alertEventRepository.save(entity);
+            if (!hasSnapshot(entity.getSnapshotPath()) && camChannel != null && cameraEvidenceService != null) {
+                scheduleSnapshotCapture("alert-event", "自动告警抓拍", camChannel, eventInstant,
+                        path -> updateAlertSnapshot(saved.getId(), path));
+            }
             try {
                 eventPublisher.publishEvent(new AlertEventSavedEvent(saved));
             } catch (Exception publishEx) {
@@ -207,6 +214,7 @@ public class EventStorageService {
             String eventType = normalizeEventType(stringValue(event.get("eventType")));
             String level = stringValue(event.get("level"));
             String eventTime = stringValue(event.get("time"));
+            Instant eventInstant = parseEventInstant(eventTime);
 
             String camChannel = camChannelHint != null ? camChannelHint : deriveCamChannel(channelId, port);
             camChannel = normalizeStreamSuffix(camChannel);
@@ -214,7 +222,15 @@ public class EventStorageService {
                 return false;
             }
             CameraAlarmEntity entity = new CameraAlarmEntity(eventId, eventType, camChannel, level, eventTime);
+            if (cameraEvidenceService != null) {
+                cameraEvidenceService.findSnapshotPath(camChannel, eventInstant)
+                        .ifPresent(entity::setSnapshotPath);
+            }
             CameraAlarmEntity saved = cameraAlarmRepository.save(entity);
+            if (!hasSnapshot(entity.getSnapshotPath()) && cameraEvidenceService != null) {
+                scheduleSnapshotCapture("camera-alarm", "摄像头智能告警抓拍", camChannel, eventInstant,
+                        path -> updateCameraAlarmSnapshot(saved.getId(), path));
+            }
             runAfterCommit("risk assessment after camera alarm",
                     () -> riskAssessmentService.processCameraAlarmSaved(saved));
             return true;
@@ -235,6 +251,15 @@ public class EventStorageService {
         }
         try {
             Instant capturedAt = response.getTimestamp();
+            List<String> radarChannels = cameraEvidenceService != null
+                    ? cameraEvidenceService.resolveRadarChannels(response.getHost())
+                    : Collections.emptyList();
+            String snapshotChannel = radarChannels.isEmpty() ? null : radarChannels.get(0);
+            String snapshotPath = null;
+            if (cameraEvidenceService != null && snapshotChannel != null) {
+                snapshotPath = cameraEvidenceService.findSnapshotPath(snapshotChannel, capturedAt)
+                        .orElse(null);
+            }
             List<RadarTargetEntity> entities = new ArrayList<>(targets.size());
             for (RadarController.RadarTargetDto dto : targets) {
                 RadarTargetEntity entity = new RadarTargetEntity(
@@ -261,11 +286,32 @@ public class EventStorageService {
                         dto.getTrackState(),
                         dto.getReserve1(),
                         dto.getReserve2(),
-                        capturedAt
+                        capturedAt,
+                        snapshotChannel,
+                        snapshotPath
                 );
                 entities.add(entity);
             }
             List<RadarTargetEntity> saved = radarTargetRepository.saveAll(entities);
+            for (RadarTargetEntity entity : saved) {
+                createRadarAlertForTarget(entity);
+            }
+            if (cameraEvidenceService != null && !radarChannels.isEmpty()) {
+                List<Long> ids = saved.stream()
+                        .map(RadarTargetEntity::getId)
+                        .filter(Objects::nonNull)
+                        .collect(Collectors.toList());
+                if (!ids.isEmpty()) {
+                    for (String channel : radarChannels) {
+                        String finalChannel = channel;
+                        scheduleSnapshotCapture("radar-target", "雷达触发抓拍", finalChannel, capturedAt,
+                                path -> {
+                                    updateRadarSnapshotPaths(ids, path);
+                                    updateRadarAlertSnapshots(ids, path);
+                                });
+                    }
+                }
+            }
             runAfterCommit("risk assessment after radar targets",
                     () -> riskAssessmentService.processRadarTargetsSaved(saved));
         } catch (Exception ex) {
@@ -282,8 +328,17 @@ public class EventStorageService {
             if (CameraChannelBlocklist.shouldIgnore(channelId, port, camChannel)) {
                 return;
             }
+            Instant eventInstant = parseEventInstant(eventTime);
             AlertEventEntity entity = new AlertEventEntity(normalizedId, normalizeEventType(eventType), camChannel, level, eventTime, null);
-            alertEventRepository.save(entity);
+            if (cameraEvidenceService != null && camChannel != null) {
+                cameraEvidenceService.findSnapshotPath(camChannel, eventInstant)
+                        .ifPresent(entity::setSnapshotPath);
+            }
+            AlertEventEntity saved = alertEventRepository.save(entity);
+            if (!hasSnapshot(entity.getSnapshotPath()) && camChannel != null && cameraEvidenceService != null) {
+                scheduleSnapshotCapture("manual-alert", "手动告警抓拍", camChannel, eventInstant,
+                        path -> updateAlertSnapshot(saved.getId(), path));
+            }
         } catch (Exception ex) {
             log.warn("Failed to persist manual alert", ex);
         }
@@ -295,6 +350,152 @@ public class EventStorageService {
         }
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private boolean hasSnapshot(String path) {
+        return path != null && !path.isBlank();
+    }
+
+    private void scheduleSnapshotCapture(String trigger,
+                                         String description,
+                                         String camChannel,
+                                         Instant anchorTime,
+                                         Consumer<String> onSnapshotReady) {
+        if (cameraEvidenceService == null || camChannel == null || camChannel.isBlank() || onSnapshotReady == null) {
+            return;
+        }
+        Instant anchor = anchorTime != null ? anchorTime : Instant.now();
+        String normalizedChannel = normalizeStreamSuffix(camChannel);
+        if (normalizedChannel == null) {
+            return;
+        }
+        runAfterCommit("snapshot-" + trigger, () -> cameraEvidenceService.captureSnapshotPath(
+                        normalizedChannel,
+                        anchor,
+                        trigger,
+                        description,
+                        trigger,
+                        100.0)
+                .whenComplete((optionalPath, throwable) -> {
+                    if (throwable != null) {
+                        log.warn("Snapshot {} scheduling failed: {}", trigger, throwable.getMessage());
+                        return;
+                    }
+                    if (optionalPath == null || optionalPath.isEmpty()) {
+                        return;
+                    }
+                    try {
+                        onSnapshotReady.accept(optionalPath.get());
+                    } catch (Exception ex) {
+                        log.warn("Failed to assign snapshot for {}: {}", trigger, ex.getMessage());
+                    }
+                }));
+    }
+
+    private void updateAlertSnapshot(Long id, String path) {
+        if (id == null || !hasSnapshot(path)) {
+            return;
+        }
+        try {
+            alertEventRepository.findById(id).ifPresent(entity -> {
+                if (!hasSnapshot(entity.getSnapshotPath())) {
+                    entity.setSnapshotPath(path);
+                    alertEventRepository.save(entity);
+                }
+            });
+        } catch (Exception ex) {
+            log.warn("Failed to update alert snapshot for {}: {}", id, ex.getMessage());
+        }
+    }
+
+    private void updateCameraAlarmSnapshot(Long id, String path) {
+        if (id == null || !hasSnapshot(path)) {
+            return;
+        }
+        try {
+            cameraAlarmRepository.findById(id).ifPresent(entity -> {
+                if (!hasSnapshot(entity.getSnapshotPath())) {
+                    entity.setSnapshotPath(path);
+                    cameraAlarmRepository.save(entity);
+                }
+            });
+        } catch (Exception ex) {
+            log.warn("Failed to update camera alarm snapshot for {}: {}", id, ex.getMessage());
+        }
+    }
+
+    private void updateRadarSnapshotPaths(List<Long> ids, String path) {
+        if (!hasSnapshot(path) || ids == null || ids.isEmpty()) {
+            return;
+        }
+        try {
+            List<RadarTargetEntity> entities = radarTargetRepository.findAllById(ids);
+            boolean updated = false;
+            for (RadarTargetEntity entity : entities) {
+                if (entity != null && !hasSnapshot(entity.getSnapshotPath())) {
+                    entity.setSnapshotPath(path);
+                    updated = true;
+                }
+            }
+            if (updated) {
+                radarTargetRepository.saveAll(entities);
+            }
+        } catch (Exception ex) {
+            log.warn("Failed to update radar snapshot paths: {}", ex.getMessage());
+        }
+    }
+
+    private void updateRadarAlertSnapshots(List<Long> radarTargetIds, String path) {
+        if (!hasSnapshot(path) || radarTargetIds == null || radarTargetIds.isEmpty()) {
+            return;
+        }
+        for (Long radarId : radarTargetIds) {
+            if (radarId == null) continue;
+            String eventId = "radar-" + radarId;
+            try {
+                alertEventRepository.findByEventId(eventId).ifPresent(alert -> {
+                    if (!hasSnapshot(alert.getSnapshotPath())) {
+                        alert.setSnapshotPath(path);
+                        alertEventRepository.save(alert);
+                    }
+                });
+            } catch (Exception ex) {
+                log.warn("Failed to update radar alert snapshot for {}: {}", eventId, ex.getMessage());
+            }
+        }
+    }
+
+    private void createRadarAlertForTarget(RadarTargetEntity target) {
+        if (target == null || target.getId() == null) {
+            return;
+        }
+        String eventId = "radar-" + target.getId();
+        try {
+            if (alertEventRepository.existsByEventId(eventId)) {
+                if (hasSnapshot(target.getSnapshotPath())) {
+                    alertEventRepository.findByEventId(eventId).ifPresent(alert -> {
+                        if (!hasSnapshot(alert.getSnapshotPath())) {
+                            alert.setSnapshotPath(target.getSnapshotPath());
+                            alertEventRepository.save(alert);
+                        }
+                    });
+                }
+                return;
+            }
+            String eventTime = target.getCapturedAt() != null ? target.getCapturedAt().toString() : Instant.now().toString();
+            AlertEventEntity alert = new AlertEventEntity(eventId, "雷达目标", target.getCamChannel(), null, eventTime, "未处理");
+            if (hasSnapshot(target.getSnapshotPath())) {
+                alert.setSnapshotPath(target.getSnapshotPath());
+            }
+            AlertEventEntity saved = alertEventRepository.save(alert);
+            try {
+                eventPublisher.publishEvent(new AlertEventSavedEvent(saved));
+            } catch (Exception publishEx) {
+                log.debug("Failed to publish radar alert event: {}", publishEx.getMessage());
+            }
+        } catch (Exception ex) {
+            log.warn("Failed to create radar alert {}: {}", eventId, ex.getMessage());
+        }
     }
 
     private String stringValue(Object value) {

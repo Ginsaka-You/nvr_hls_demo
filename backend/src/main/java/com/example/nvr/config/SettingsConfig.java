@@ -3,6 +3,12 @@ package com.example.nvr.config;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
+
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class SettingsConfig {
@@ -22,14 +28,11 @@ public class SettingsConfig {
     private String webrtcPreferCodec;
     private String channelOverrides;
 
-    private String audioPass;
-    private Integer audioId;
-    private Integer audioHttpPort;
-
     private String radarHost;
     private Integer radarCtrlPort;
     private Integer radarDataPort;
     private Boolean radarUseTcp;
+    private List<RadarCameraBinding> radarCameraBindings;
 
     private String imsiFtpHost;
     private Integer imsiFtpPort;
@@ -66,14 +69,15 @@ public class SettingsConfig {
         config.webrtcPreferCodec = "video/H264";
         config.channelOverrides = "";
 
-        config.audioPass = "YouloveWill";
-        config.audioId = 12;
-        config.audioHttpPort = 65007;
-
         config.radarHost = "192.168.2.40";
         config.radarCtrlPort = 20000;
         config.radarDataPort = 20001;
         config.radarUseTcp = Boolean.FALSE;
+        config.radarCameraBindings = new ArrayList<>();
+        RadarCameraBinding binding = new RadarCameraBinding();
+        binding.setRadarHost(config.radarHost);
+        binding.setCameraChannels(Collections.singletonList("701"));
+        config.radarCameraBindings.add(binding);
 
         config.imsiFtpHost = "47.98.168.56";
         config.imsiFtpPort = 4721;
@@ -112,14 +116,13 @@ public class SettingsConfig {
         if (webrtcPreferCodec == null) webrtcPreferCodec = defaults.webrtcPreferCodec;
         if (channelOverrides == null) channelOverrides = defaults.channelOverrides;
 
-        if (audioPass == null) audioPass = defaults.audioPass;
-        if (audioId == null) audioId = defaults.audioId;
-        if (audioHttpPort == null) audioHttpPort = defaults.audioHttpPort;
-
         if (radarHost == null) radarHost = defaults.radarHost;
         if (radarCtrlPort == null) radarCtrlPort = defaults.radarCtrlPort;
         if (radarDataPort == null) radarDataPort = defaults.radarDataPort;
         if (radarUseTcp == null) radarUseTcp = defaults.radarUseTcp;
+        if (radarCameraBindings == null || radarCameraBindings.isEmpty()) {
+            radarCameraBindings = cloneBindings(defaults.radarCameraBindings);
+        }
 
         if (imsiFtpHost == null) imsiFtpHost = defaults.imsiFtpHost;
         if (imsiFtpPort == null) imsiFtpPort = defaults.imsiFtpPort;
@@ -254,30 +257,6 @@ public class SettingsConfig {
         this.channelOverrides = channelOverrides;
     }
 
-    public String getAudioPass() {
-        return audioPass;
-    }
-
-    public void setAudioPass(String audioPass) {
-        this.audioPass = audioPass;
-    }
-
-    public Integer getAudioId() {
-        return audioId;
-    }
-
-    public void setAudioId(Integer audioId) {
-        this.audioId = audioId;
-    }
-
-    public Integer getAudioHttpPort() {
-        return audioHttpPort;
-    }
-
-    public void setAudioHttpPort(Integer audioHttpPort) {
-        this.audioHttpPort = audioHttpPort;
-    }
-
     public String getRadarHost() {
         return radarHost;
     }
@@ -308,6 +287,14 @@ public class SettingsConfig {
 
     public void setRadarUseTcp(Boolean radarUseTcp) {
         this.radarUseTcp = radarUseTcp;
+    }
+
+    public List<RadarCameraBinding> getRadarCameraBindings() {
+        return radarCameraBindings;
+    }
+
+    public void setRadarCameraBindings(List<RadarCameraBinding> radarCameraBindings) {
+        this.radarCameraBindings = radarCameraBindings;
     }
 
     public String getImsiFtpHost() {
@@ -436,5 +423,93 @@ public class SettingsConfig {
 
     public void setDbPass(String dbPass) {
         this.dbPass = dbPass;
+    }
+
+    public List<String> resolveRadarChannels(String host) {
+        List<RadarCameraBinding> bindings = radarCameraBindings;
+        if (bindings == null || bindings.isEmpty()) {
+            return Collections.emptyList();
+        }
+        String normalizedHost = normalizeHost(host);
+        List<String> fallback = Collections.emptyList();
+        for (RadarCameraBinding binding : bindings) {
+            if (binding == null || binding.getCameraChannels() == null || binding.getCameraChannels().isEmpty()) {
+                continue;
+            }
+            String bindingHost = normalizeHost(binding.getRadarHost());
+            if (bindingHost == null && fallback.isEmpty()) {
+                fallback = binding.getCameraChannels();
+            }
+            if (normalizedHost != null && normalizedHost.equalsIgnoreCase(bindingHost)) {
+                return binding.getCameraChannels();
+            }
+        }
+        return fallback;
+    }
+
+    private String normalizeHost(String host) {
+        if (host == null) {
+            return null;
+        }
+        String trimmed = host.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        return trimmed.toLowerCase(Locale.ROOT);
+    }
+
+    private List<RadarCameraBinding> cloneBindings(List<RadarCameraBinding> source) {
+        if (source == null || source.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<RadarCameraBinding> clone = new ArrayList<>(source.size());
+        for (RadarCameraBinding binding : source) {
+            if (binding == null) continue;
+            RadarCameraBinding copy = new RadarCameraBinding();
+            copy.setRadarHost(binding.getRadarHost());
+            copy.setCameraChannels(binding.getCameraChannels() == null
+                    ? new ArrayList<>()
+                    : new ArrayList<>(binding.getCameraChannels()));
+            clone.add(copy);
+        }
+        return clone;
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class RadarCameraBinding {
+        private String radarHost;
+        private List<String> cameraChannels;
+
+        public String getRadarHost() {
+            return radarHost;
+        }
+
+        public void setRadarHost(String radarHost) {
+            this.radarHost = radarHost;
+        }
+
+        public List<String> getCameraChannels() {
+            if (cameraChannels == null) {
+                return new ArrayList<>();
+            }
+            return cameraChannels;
+        }
+
+        public void setCameraChannels(List<String> cameraChannels) {
+            if (cameraChannels == null) {
+                this.cameraChannels = new ArrayList<>();
+            } else {
+                List<String> cleaned = new ArrayList<>();
+                for (String channel : cameraChannels) {
+                    if (channel == null) continue;
+                    String trimmed = channel.trim();
+                    if (!trimmed.isEmpty()) {
+                        cleaned.add(trimmed);
+                    }
+                }
+                this.cameraChannels = cleaned;
+            }
+        }
     }
 }

@@ -232,7 +232,7 @@ public class RadarController {
                 }
             }
         } catch (SocketTimeoutException timeout) {
-            return RadarTargetsResponse.heartbeat(host, ctrlPort, dataPort, timeoutMs, timeoutMs, 0, dataPort, useTcp);
+                return RadarTargetsResponse.heartbeat(host, ctrlPort, dataPort, timeoutMs, timeoutMs, 0, dataPort, useTcp);
         } catch (Exception e) {
             return RadarTargetsResponse.error(host, ctrlPort, dataPort, "雷达连接失败: " + e.getMessage(), useTcp);
         }
@@ -746,6 +746,7 @@ public class RadarController {
         public void setUseTcp(Boolean useTcp) {
             this.useTcp = useTcp;
         }
+
     }
 
     public static class RadarTargetsResponse {
@@ -794,7 +795,8 @@ public class RadarController {
                     null, 0, List.of(), null, payloadLength, actualPort, tcp);
         }
 
-        public static RadarTargetsResponse error(String host, int controlPort, int dataPort, String message, boolean tcp) {
+        public static RadarTargetsResponse error(String host, int controlPort, int dataPort, String message,
+                                                 boolean tcp) {
             return new RadarTargetsResponse(false, host, controlPort, dataPort, 0, 0,
                     null, null, List.of(), message, null, null, tcp);
         }
@@ -854,6 +856,7 @@ public class RadarController {
         public boolean isTcp() {
             return tcp;
         }
+
     }
 
     public static class RadarTestRequest {

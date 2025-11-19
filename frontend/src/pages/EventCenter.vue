@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, h } from 'vue'
 import { message } from 'ant-design-vue'
 
 type AlertRecord = {
@@ -12,6 +12,7 @@ type AlertRecord = {
   eventTime: string | null
   createdAt: string
   device: string
+  snapshotUrl: string | null
 }
 
 type CameraAlarmRecord = AlertRecord
@@ -35,6 +36,8 @@ type RadarRecord = {
   snr: number | null
   rcs: number | null
   capturedAt: string
+  camChannel: string | null
+  snapshotUrl: string | null
 }
 
 type TabKey = 'alerts' | 'camera' | 'radar'
@@ -46,6 +49,8 @@ const loaded = reactive<Record<TabKey, boolean>>({ alerts: false, camera: false,
 const alerts = ref<AlertRecord[]>([])
 const camera = ref<CameraAlarmRecord[]>([])
 const radar = ref<RadarRecord[]>([])
+const previewVisible = ref(false)
+const previewUrl = ref<string | null>(null)
 
 function formatDate(value: string | null | undefined) {
   if (!value) return '-'
@@ -67,7 +72,7 @@ async function fetchData(kind: TabKey) {
     if (kind === 'alerts') {
       alerts.value = data.map(mapAlert)
     } else if (kind === 'camera') {
-      camera.value = data.map(mapAlert)
+      camera.value = data.map(mapCameraAlarm)
     } else {
       radar.value = data.map(mapRadar)
     }
@@ -79,21 +84,42 @@ async function fetchData(kind: TabKey) {
   }
 }
 
-function mapAlert(item: any): AlertRecord {
+function mapCameraAlarm(item: any): CameraAlarmRecord {
   const channelId = item?.channelId ?? item?.channel_id ?? null
   const port = item?.port ?? item?.camPort ?? null
   const fallbackChannel = channelId != null ? String(channelId) : port != null ? String(port) : null
   const eventType = translateEventType(item?.eventType)
   return {
     id: Number(item?.id ?? 0),
-    eventId: String(item?.id ?? item?.eventId ?? '-'),
+    eventId: String(item?.eventId ?? item?.id ?? '-'),
     eventType,
     camChannel: item?.camChannel ?? item?.cam_channel ?? fallbackChannel,
     level: item?.level ?? null,
     status: item?.status ?? '未处理',
     eventTime: item?.eventTime ?? null,
     createdAt: item?.createdAt ?? item?.created_at ?? new Date().toISOString(),
-    device: eventType === '检测到入侵' ? '雷达' : '摄像头'
+    device: '摄像头',
+    snapshotUrl: item?.snapshotUrl ?? item?.snapshot_url ?? null
+  }
+}
+
+function mapAlert(item: any): AlertRecord {
+  const channelId = item?.channelId ?? item?.channel_id ?? null
+  const port = item?.port ?? item?.camPort ?? null
+  const fallbackChannel = channelId != null ? String(channelId) : port != null ? String(port) : null
+  const eventType = translateEventType(item?.eventType)
+  const device = eventType && eventType.includes('雷达') ? '雷达' : '摄像头'
+  return {
+    id: Number(item?.id ?? 0),
+    eventId: String(item?.eventId ?? item?.id ?? '-'),
+    eventType,
+    camChannel: item?.camChannel ?? item?.cam_channel ?? fallbackChannel,
+    level: item?.level ?? null,
+    status: item?.status ?? '未处理',
+    eventTime: item?.eventTime ?? null,
+    createdAt: item?.createdAt ?? item?.created_at ?? new Date().toISOString(),
+    device,
+    snapshotUrl: item?.snapshotUrl ?? item?.snapshot_url ?? null
   }
 }
 
@@ -116,7 +142,9 @@ function mapRadar(item: any): RadarRecord {
     amplitude: item?.amplitude ?? null,
     snr: item?.snr ?? null,
     rcs: item?.rcs ?? null,
-    capturedAt: item?.capturedAt ?? item?.captured_at ?? new Date().toISOString()
+    capturedAt: item?.capturedAt ?? item?.captured_at ?? new Date().toISOString(),
+    camChannel: item?.camChannel ?? item?.cam_channel ?? null,
+    snapshotUrl: item?.snapshotUrl ?? item?.snapshot_url ?? null
   }
 }
 
@@ -130,19 +158,61 @@ onMounted(() => {
   ensureLoaded(activeKey.value)
 })
 
+function openPreview(url: string | null) {
+  if (!url) return
+  previewUrl.value = url
+  previewVisible.value = true
+}
+
+function renderSnapshotCell(url: string | null) {
+  if (!url) {
+    return h('span', { class: 'snapshot-placeholder' }, '—')
+  }
+  return h(
+    'button',
+    {
+      type: 'button',
+      class: 'snapshot-link',
+      onClick: () => openPreview(url)
+    },
+    [
+      h('img', {
+        src: url,
+        alt: 'snapshot',
+        class: 'snapshot-thumb',
+        style: {
+          width: '80px',
+          height: '45px'
+        }
+      })
+    ]
+  )
+}
+
+const snapshotColumn = {
+  title: '抓拍',
+  key: 'snapshot',
+  width: 150,
+  customRender: ({ record }: { record: { snapshotUrl?: string | null } }) => renderSnapshotCell(record?.snapshotUrl ?? null)
+}
+
 const alertColumns = computed(() => [
+  snapshotColumn,
   { title: '事件ID', dataIndex: 'eventId', key: 'eventId', width: 160 },
   { title: '事件类型', dataIndex: 'eventType', key: 'eventType', width: 180 },
   { title: '设备', dataIndex: 'device', key: 'device', width: 100 },
   { title: '摄像头通道', dataIndex: 'camChannel', key: 'camChannel', width: 140 },
   { title: '等级', dataIndex: 'level', key: 'level', width: 100 },
   { title: '状态', dataIndex: 'status', key: 'status', width: 100 },
-  { title: '时间', key: 'timeline', width: 220, customRender: ({ record }: { record: AlertRecord }) => formatTimeline(record) }
+  { title: '事件时间', dataIndex: 'eventTime', key: 'eventTime', width: 180, customRender: ({ text }: any) => formatDate(text) },
+  { title: '收到时间', dataIndex: 'createdAt', key: 'createdAt', width: 180, customRender: ({ text }: any) => formatDate(text) }
 ])
 
 const radarColumns = computed(() => [
+  snapshotColumn,
   { title: '设备', dataIndex: 'device', key: 'device', width: 100 },
   { title: '雷达', dataIndex: 'radarHost', key: 'radarHost', width: 140 },
+  { title: '摄像头通道', dataIndex: 'camChannel', key: 'camChannel', width: 120 },
   { title: '控制端口', dataIndex: 'controlPort', key: 'controlPort', width: 100 },
   { title: '数据端口', dataIndex: 'dataPort', key: 'dataPort', width: 100 },
   { title: '目标ID', dataIndex: 'targetId', key: 'targetId', width: 100 },
@@ -221,6 +291,11 @@ function translateEventType(value: any): string | null {
         />
       </a-tab-pane>
     </a-tabs>
+    <a-modal v-model:visible="previewVisible" :footer="null" width="60vw" centered destroy-on-close @cancel="previewVisible = false">
+      <div class="preview-body">
+        <img v-if="previewUrl" :src="previewUrl" alt="snapshot preview" />
+      </div>
+    </a-modal>
   </div>
 </template>
 
@@ -233,5 +308,37 @@ function translateEventType(value: any): string | null {
 
 table {
   width: 100%;
+}
+
+.snapshot-link {
+  display: inline-flex;
+  border: none;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.snapshot-thumb {
+  width: 88px;
+  height: 50px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.snapshot-placeholder {
+  color: rgba(0, 0, 0, 0.35);
+}
+
+.preview-body {
+  width: 100%;
+  text-align: center;
+}
+
+.preview-body img {
+  max-width: 100%;
+  border-radius: 6px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.28);
 }
 </style>

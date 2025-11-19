@@ -3,6 +3,10 @@ import { ref } from 'vue'
 export type NvrScheme = 'http' | 'https'
 export type StreamMode = 'hls' | 'webrtc'
 export type DbType = 'mysql' | 'postgres' | 'sqlserver'
+export interface RadarCameraBinding {
+  radarHost: string
+  cameraChannels: string[]
+}
 
 export interface SettingsPayload {
   nvrHost: string
@@ -19,13 +23,11 @@ export interface SettingsPayload {
   webrtcOptions: string
   webrtcPreferCodec: string
   channelOverrides: string
-  audioPass: string
-  audioId: number
-  audioHttpPort: number | null
   radarHost: string
   radarCtrlPort: number
   radarDataPort: number
   radarUseTcp: boolean
+  radarCameraBindings: RadarCameraBinding[]
   imsiFtpHost: string
   imsiFtpPort: number
   imsiFtpUser: string
@@ -59,13 +61,11 @@ const defaultSettings: SettingsPayload = {
   webrtcOptions: 'transportmode=unicast&profile=Profile_1&forceh264=1&videoCodecType=H264&rtptransport=tcp&timeout=60',
   webrtcPreferCodec: 'video/H264',
   channelOverrides: '',
-  audioPass: 'YouloveWill',
-  audioId: 12,
-  audioHttpPort: 65007,
   radarHost: '192.168.2.40',
   radarCtrlPort: 20000,
   radarDataPort: 20001,
   radarUseTcp: false,
+  radarCameraBindings: [{ radarHost: '192.168.2.40', cameraChannels: ['701'] }],
   imsiFtpHost: '47.98.168.56',
   imsiFtpPort: 4721,
   imsiFtpUser: 'ftpuser',
@@ -101,14 +101,11 @@ export const webrtcOptions = ref<string>(defaultSettings.webrtcOptions)
 export const webrtcPreferCodec = ref<string>(defaultSettings.webrtcPreferCodec)
 export const channelOverrides = ref<string>(defaultSettings.channelOverrides)
 
-export const audioPass = ref<string>(defaultSettings.audioPass)
-export const audioId = ref<number>(defaultSettings.audioId)
-export const audioHttpPort = ref<number | null>(defaultSettings.audioHttpPort)
-
 export const radarHost = ref<string>(defaultSettings.radarHost)
 export const radarCtrlPort = ref<number>(defaultSettings.radarCtrlPort)
 export const radarDataPort = ref<number>(defaultSettings.radarDataPort)
 export const radarUseTcp = ref<boolean>(defaultSettings.radarUseTcp)
+export const radarCameraBindings = ref<RadarCameraBinding[]>(cloneRadarBindings(defaultSettings.radarCameraBindings))
 
 export const imsiFtpHost = ref<string>(defaultSettings.imsiFtpHost)
 export const imsiFtpPort = ref<number>(defaultSettings.imsiFtpPort)
@@ -223,15 +220,6 @@ function applySettings(payload: Record<string, unknown> | null | undefined) {
       case 'channelOverrides':
         channelOverrides.value = toStringValue(raw, defaultSettings.channelOverrides)
         break
-      case 'audioPass':
-        audioPass.value = toStringValue(raw, defaultSettings.audioPass)
-        break
-      case 'audioId':
-        audioId.value = toInt(raw, defaultSettings.audioId)
-        break
-      case 'audioHttpPort':
-        audioHttpPort.value = toNullableInt(raw)
-        break
       case 'radarHost':
         radarHost.value = toStringValue(raw, defaultSettings.radarHost)
         break
@@ -243,6 +231,9 @@ function applySettings(payload: Record<string, unknown> | null | undefined) {
         break
       case 'radarUseTcp':
         radarUseTcp.value = toBoolean(raw, defaultSettings.radarUseTcp)
+        break
+      case 'radarCameraBindings':
+        radarCameraBindings.value = parseRadarBindings(raw, defaultSettings.radarCameraBindings)
         break
       case 'imsiFtpHost':
         imsiFtpHost.value = toStringValue(raw, defaultSettings.imsiFtpHost)
@@ -299,6 +290,16 @@ function applySettings(payload: Record<string, unknown> | null | undefined) {
   extraSettings = unknown
 }
 
+function cloneRadarBindings(list: RadarCameraBinding[] | undefined | null): RadarCameraBinding[] {
+  if (!Array.isArray(list)) return []
+  return list.map(binding => ({
+    radarHost: sanitizeString(binding?.radarHost, true),
+    cameraChannels: Array.isArray(binding?.cameraChannels)
+      ? binding.cameraChannels.map(channel => sanitizeString(channel, true)).filter(text => text.length > 0)
+      : []
+  }))
+}
+
 function sanitizeString(value: unknown, trim = false): string {
   const text = value === null || value === undefined ? '' : String(value)
   return trim ? text.trim() : text
@@ -313,6 +314,30 @@ function sanitizeOptionalInt(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null
   const num = Number(value)
   return Number.isFinite(num) ? Math.trunc(num) : null
+}
+
+function parseRadarBindings(raw: unknown, fallback: RadarCameraBinding[]): RadarCameraBinding[] {
+  if (!Array.isArray(raw)) {
+    return cloneRadarBindings(fallback)
+  }
+  return raw.map(item => {
+    const obj = typeof item === 'object' && item !== null ? item as Record<string, unknown> : {}
+    const host = toStringValue(obj.radarHost ?? obj.host, '')
+    const channelsRaw = obj.cameraChannels ?? obj.channels
+    const channels: string[] = []
+    if (Array.isArray(channelsRaw)) {
+      channelsRaw.forEach(entry => {
+        const text = sanitizeString(entry, true)
+        if (text) channels.push(text)
+      })
+    } else if (typeof channelsRaw === 'string') {
+      channelsRaw.split(',').forEach(part => {
+        const text = part.trim()
+        if (text) channels.push(text)
+      })
+    }
+    return { radarHost: host, cameraChannels: channels }
+  }).filter(binding => binding.radarHost.length > 0 || binding.cameraChannels.length > 0)
 }
 
 function buildPayload(): SettingsPayload & Record<string, unknown> {
@@ -331,13 +356,16 @@ function buildPayload(): SettingsPayload & Record<string, unknown> {
     webrtcOptions: sanitizeString(webrtcOptions.value),
     webrtcPreferCodec: sanitizeString(webrtcPreferCodec.value),
     channelOverrides: sanitizeString(channelOverrides.value),
-    audioPass: sanitizeString(audioPass.value),
-    audioId: sanitizeInt(audioId.value, defaultSettings.audioId),
-    audioHttpPort: sanitizeOptionalInt(audioHttpPort.value),
     radarHost: sanitizeString(radarHost.value, true),
     radarCtrlPort: sanitizeInt(radarCtrlPort.value, defaultSettings.radarCtrlPort),
     radarDataPort: sanitizeInt(radarDataPort.value, defaultSettings.radarDataPort),
     radarUseTcp: !!radarUseTcp.value,
+    radarCameraBindings: radarCameraBindings.value.map(binding => ({
+      radarHost: sanitizeString(binding?.radarHost, true),
+      cameraChannels: (binding?.cameraChannels || [])
+        .map(channel => sanitizeString(channel, true))
+        .filter(channel => channel.length > 0)
+    })),
     imsiFtpHost: sanitizeString(imsiFtpHost.value, true),
     imsiFtpPort: sanitizeInt(imsiFtpPort.value, defaultSettings.imsiFtpPort),
     imsiFtpUser: sanitizeString(imsiFtpUser.value, true),

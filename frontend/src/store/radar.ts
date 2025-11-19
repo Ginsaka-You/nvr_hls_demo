@@ -164,7 +164,14 @@ async function loadTargets(forceImmediate = false) {
     const resp = await fetch('/api/radar/targets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host, port: ctrlPort, dataPort, useTcp, timeoutMs: 1200, maxFrames: 6 })
+      body: JSON.stringify({
+        host,
+        port: ctrlPort,
+        dataPort,
+        useTcp,
+        timeoutMs: 1200,
+        maxFrames: 6
+      })
     })
     if (!resp.ok) throw new Error(`请求失败 (${resp.status})`)
 

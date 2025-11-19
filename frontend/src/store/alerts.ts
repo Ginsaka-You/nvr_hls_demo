@@ -1,5 +1,5 @@
 import { ref, Ref, watch } from 'vue'
-import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, audioPass, audioId, audioHttpPort } from './config'
+import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort } from './config'
 
 export type Alarm = {
   id: string
@@ -30,10 +30,17 @@ function deriveCamChannel(channelId?: number, port?: number): string | undefined
   return undefined
 }
 
-function pushAlarm(a: Alarm, options: { playAudio?: boolean } = {}) {
+type SoundLightAction = 'activate' | 'deactivate'
+const SOUND_LIGHT_AUTO_OFF_MS = 8000
+let soundLightOffTimer: number | null = null
+
+function pushAlarm(a: Alarm, options: { triggerSoundLight?: boolean } = {}) {
   const existed = alarms.value.some(item => item.id === a.id)
   alarms.value = [a, ...alarms.value.filter(item => item.id !== a.id)].slice(0, 200)
-  if (!existed && options.playAudio) void triggerCameraAudio()
+  if (!existed && options.triggerSoundLight) {
+    void triggerSoundLightAlarm('activate')
+    scheduleSoundLightAutoOff()
+  }
 }
 
 let esPush: EventSource | null = null
@@ -151,7 +158,8 @@ function sanitizeChannels(channels: unknown): string[] {
 
 function pushRiskAlarm(data: any) {
   const id = typeof data?.id === 'string' && data.id ? data.id : `risk-${Date.now().toString(36)}`
-  const actionId = typeof data?.actionId === 'string' && data.actionId ? data.actionId : 'A2'
+  const actionIdRaw = typeof data?.actionId === 'string' && data.actionId ? data.actionId : 'A2'
+  const actionId = actionIdRaw.toUpperCase()
   const classification = typeof data?.classification === 'string' && data.classification ? data.classification : ''
   const scoreValue = typeof data?.score === 'number' && Number.isFinite(data.score)
     ? data.score
@@ -161,15 +169,15 @@ function pushRiskAlarm(data: any) {
   const nightMode = data?.nightMode === true
   const cooldownSecondsRaw = typeof data?.audioCooldownSeconds === 'number' ? data.audioCooldownSeconds : Number(data?.audioCooldownSeconds)
   const cooldownSeconds = Number.isFinite(cooldownSecondsRaw) ? Math.max(0, cooldownSecondsRaw) : null
-  const shouldPlayAudio = data?.triggerAudio !== false
+  const shouldTriggerSoundLight = actionId === 'A2' && data?.triggerAudio !== false
   const summaryText = typeof data?.summary === 'string' && data.summary.trim().length > 0
     ? data.summary.trim()
     : '风控模型触发远程警报'
   const rationale = typeof data?.rationale === 'string' && data.rationale.trim().length > 0
     ? data.rationale.trim()
     : ''
-  const cooldownText = !shouldPlayAudio && cooldownSeconds && cooldownSeconds > 0
-    ? `音频冷却中（约 ${Math.ceil(cooldownSeconds)} 秒）`
+  const cooldownText = actionId === 'A2' && !shouldTriggerSoundLight && cooldownSeconds && cooldownSeconds > 0
+    ? `声光报警冷却中（约 ${Math.ceil(cooldownSeconds)} 秒）`
     : ''
   const upgradeText = upgrade ? '已升级至 A3' : ''
   const nightLabel = nightMode ? '夜间模式' : ''
@@ -192,26 +200,21 @@ function pushRiskAlarm(data: any) {
     summary: detailParts.join(' ｜ '),
     deviceId: `risk:${actionId}`
   }
-  pushAlarm(alarm, { playAudio: shouldPlayAudio })
+  pushAlarm(alarm, { triggerSoundLight: shouldTriggerSoundLight })
 }
 
-export async function triggerCameraAudio() {
-  const id = (audioId.value || 1)
-  const pass = (audioPass.value || nvrPass.value || '').trim()
-  const host = (nvrHost.value || '').trim()
-  const user = (nvrUser.value || '').trim()
-  const scheme = nvrScheme.value || 'http'
-  const httpPort = audioHttpPort.value
-  if (!host || !user || !pass || !id) return
-  const p = new URLSearchParams({ host, user, pass, scheme, id: String(id) })
-  if (httpPort) p.set('httpPort', String(httpPort))
+export async function triggerSoundLightAlarm(action: SoundLightAction = 'activate') {
   try {
-    await fetch('/api/nvr/ipc/audioAlarm/test', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: p.toString()
-    })
+    await fetch(`/api/alarm/sound-light/${action}`, { method: 'POST' })
   } catch {}
+}
+
+function scheduleSoundLightAutoOff() {
+  if (soundLightOffTimer) window.clearTimeout(soundLightOffTimer)
+  soundLightOffTimer = window.setTimeout(() => {
+    soundLightOffTimer = null
+    void triggerSoundLightAlarm('deactivate')
+  }, SOUND_LIGHT_AUTO_OFF_MS)
 }
 
 export function pushRadarAlarm(data: {
@@ -235,29 +238,4 @@ export function pushRadarAlarm(data: {
     summary: `发现目标 距离 ${rangeStr}m 速度 ${speedStr}m/s${angleStr ? ` 角度 ${angleStr}` : ''}`,
   }
   pushAlarm(alarm)
-  persistRadarAlert(alarm, data)
-}
-
-async function persistRadarAlert(alarm: Alarm, data: { range: number; speed: number; angle?: number; id?: string | number }) {
-  try {
-    const payload = JSON.stringify({
-      id: alarm.id,
-      summary: alarm.summary,
-      range: data.range,
-      speed: data.speed,
-      angle: data.angle ?? null
-    })
-    await fetch('/api/alerts/manual', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        eventId: alarm.id,
-        eventType: 'radar',
-        level: alarm.level,
-        payload,
-        data: payload,
-        eventTime: new Date().toISOString()
-      })
-    })
-  } catch {}
 }
