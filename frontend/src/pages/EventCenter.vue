@@ -655,7 +655,7 @@ function renderRiskDetail(record: RiskActionRecord) {
           :scroll="tableScroll"
         />
       </a-tab-pane>
-      <a-tab-pane key="risk" tab="风控动作">
+      <a-tab-pane key="risk" tab="风控告警">
         <a-table
           row-key="id"
           :columns="riskColumns"
@@ -675,7 +675,7 @@ function renderRiskDetail(record: RiskActionRecord) {
           :scroll="tableScroll"
         />
       </a-tab-pane>
-      <a-tab-pane key="radar" tab="雷达目标">
+      <a-tab-pane key="radar" tab="雷达告警">
         <a-table
           row-key="id"
           :columns="radarColumns"
