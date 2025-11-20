@@ -2,6 +2,9 @@ package com.example.nvr.risk;
 
 import com.example.nvr.AlertHub;
 import com.example.nvr.config.TcbProperties;
+import com.example.nvr.events.AlertEventSavedEvent;
+import com.example.nvr.persistence.AlertEventEntity;
+import com.example.nvr.persistence.AlertEventRepository;
 import com.example.nvr.persistence.CameraAlarmEntity;
 import com.example.nvr.persistence.CameraAlarmRepository;
 import com.example.nvr.persistence.ImsiRecordEntity;
@@ -23,6 +26,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -74,6 +78,8 @@ public class RiskAssessmentService {
     private final AlertPublisherService alertPublisherService;
     private final TcbProperties tcbProperties;
     private final CameraEvidenceService cameraEvidenceService;
+    private final AlertEventRepository alertEventRepository;
+    private final ApplicationEventPublisher eventPublisher;
     private final Object audioThrottleLock = new Object();
     private Instant lastA2AudioAt;
     private boolean lastA2AudioNight;
@@ -82,20 +88,24 @@ public class RiskAssessmentService {
                                  ImsiRecordRepository imsiRecordRepository,
                                  CameraAlarmRepository cameraAlarmRepository,
                                  RadarTargetRepository radarTargetRepository,
+                                 AlertEventRepository alertEventRepository,
                                  ObjectMapper objectMapper,
                                  RiskModelConfigLoader configLoader,
                                  AlertPublisherService alertPublisherService,
                                  TcbProperties tcbProperties,
-                                 CameraEvidenceService cameraEvidenceService) {
+                                 CameraEvidenceService cameraEvidenceService,
+                                 ApplicationEventPublisher eventPublisher) {
         this.riskAssessmentRepository = riskAssessmentRepository;
         this.imsiRecordRepository = imsiRecordRepository;
         this.cameraAlarmRepository = cameraAlarmRepository;
         this.radarTargetRepository = radarTargetRepository;
+        this.alertEventRepository = alertEventRepository;
         this.objectMapper = objectMapper;
         this.configLoader = configLoader;
         this.alertPublisherService = alertPublisherService;
         this.tcbProperties = tcbProperties;
         this.cameraEvidenceService = cameraEvidenceService;
+        this.eventPublisher = eventPublisher;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -1124,22 +1134,6 @@ public class RiskAssessmentService {
                               ActionStatus action,
                               boolean night,
                               boolean upgradeTriggered) {
-        if (alertPublisherService == null || tcbProperties == null) {
-            return;
-        }
-        String userId = tcbProperties.getDefaultUserId();
-        if (userId == null || userId.isBlank()) {
-            return;
-        }
-        AlertEvent alert = new AlertEvent();
-        alert.setUserId(userId);
-        alert.setTitle(buildAlertTitle(priority, action, upgradeTriggered));
-        alert.setSeverity(mapPriorityToSeverity(priority));
-        String device = describeDevice(context);
-        alert.setDevice(device);
-        alert.setCamera(device);
-        alert.setLocation(describeLocation(context, night));
-        alert.setOccurAt(formatOccurAt(decidedAt));
         Optional<String> primaryChannel = pickPrimaryChannel(context);
         Instant anchor = decidedAt != null ? decidedAt : Instant.now();
         byte[] snapshotBytes = null;
@@ -1156,14 +1150,34 @@ public class RiskAssessmentService {
                             Duration.ofSeconds(5))
                     .orElse(null);
         }
-        log.info("Prepared alert for TCB channel={} snapshotBytes={}",
-                primaryChannel.orElse("unknown"),
-                snapshotBytes == null ? 0 : snapshotBytes.length);
-        try {
-            alertPublisherService.publish(alert, snapshotBytes);
-        } catch (Exception ex) {
-            log.warn("Failed to publish risk alert to TCB", ex);
+        if (alertPublisherService != null && tcbProperties != null) {
+            String userId = tcbProperties.getDefaultUserId();
+            if (userId != null && !userId.isBlank()) {
+                AlertEvent alert = new AlertEvent();
+                alert.setUserId(userId);
+                alert.setTitle(buildAlertTitle(priority, action, upgradeTriggered));
+                alert.setSeverity(mapPriorityToSeverity(priority));
+                String device = describeDevice(context);
+                alert.setDevice(device);
+                alert.setCamera(device);
+                alert.setLocation(describeLocation(context, night));
+                alert.setOccurAt(formatOccurAt(decidedAt));
+                log.info("Prepared alert for TCB channel={} snapshotBytes={}",
+                        primaryChannel.orElse("unknown"),
+                        snapshotBytes == null ? 0 : snapshotBytes.length);
+                try {
+                    alertPublisherService.publish(alert, snapshotBytes);
+                } catch (Exception ex) {
+                    log.warn("Failed to publish risk alert to TCB", ex);
+                }
+            }
         }
+        String snapshotPath = null;
+        if (cameraEvidenceService != null && primaryChannel.isPresent()) {
+            snapshotPath = cameraEvidenceService.findSnapshotPath(primaryChannel.get(), anchor).orElse(null);
+        }
+        recordActionAlert(decidedAt, priority, action, context != null ? context.getCameraScore() : 0.0,
+                primaryChannel.orElse(null), snapshotPath);
     }
 
     private String mapPriorityToSeverity(PriorityDefinition priority) {
@@ -1181,6 +1195,74 @@ public class RiskAssessmentService {
             default:
                 return "LOW";
         }
+    }
+
+    private void recordActionAlert(Instant decidedAt,
+                                   PriorityDefinition priority,
+                                   ActionStatus action,
+                                   double score,
+                                   String camChannel,
+                                   String snapshotPath) {
+        if (alertEventRepository == null || action == null || !action.isTriggered()) {
+            return;
+        }
+        Instant eventInstant = decidedAt != null ? decidedAt : Instant.now();
+        String eventId = String.format(Locale.ROOT, "risk-%s-%d",
+                action.getId().toLowerCase(Locale.ROOT), eventInstant.toEpochMilli());
+        try {
+            if (alertEventRepository.existsByEventId(eventId)) {
+                return;
+            }
+            String level = mapPriorityToLevel(priority);
+            AlertEventEntity entity = new AlertEventEntity(eventId, "风控动作 " + action.getId(),
+                    camChannel, level, eventInstant.toString(), "未处理");
+            if (hasSnapshot(snapshotPath)) {
+                entity.setSnapshotPath(snapshotPath);
+            }
+            AlertEventEntity saved = alertEventRepository.save(entity);
+            try {
+                eventPublisher.publishEvent(new AlertEventSavedEvent(saved));
+            } catch (Exception ex) {
+                log.debug("Failed to publish risk action alert: {}", ex.getMessage());
+            }
+            if (!hasSnapshot(snapshotPath) && cameraEvidenceService != null && camChannel != null) {
+                cameraEvidenceService.captureSnapshotPath(
+                                camChannel,
+                                decidedAt,
+                                action.getId(),
+                                "风控动作抓拍",
+                                action.getId(),
+                                score)
+                        .thenAccept(optPath -> optPath.ifPresent(path -> updateActionAlertSnapshot(saved.getId(), path)));
+            }
+        } catch (Exception ex) {
+            log.warn("Failed to persist risk action alert {}", eventId, ex);
+        }
+    }
+
+    private void updateActionAlertSnapshot(Long id, String path) {
+        if (id == null || !hasSnapshot(path)) {
+            return;
+        }
+        try {
+            alertEventRepository.findById(id).ifPresent(entity -> {
+                if (!hasSnapshot(entity.getSnapshotPath())) {
+                    entity.setSnapshotPath(path);
+                    alertEventRepository.save(entity);
+                    try {
+                        eventPublisher.publishEvent(new AlertEventSavedEvent(entity));
+                    } catch (Exception ex) {
+                        log.debug("Failed to publish risk action snapshot update: {}", ex.getMessage());
+                    }
+                }
+            });
+        } catch (Exception ex) {
+            log.warn("Failed to update risk action alert snapshot {}", id, ex);
+        }
+    }
+
+    private boolean hasSnapshot(String path) {
+        return path != null && !path.isBlank();
     }
 
     private String buildAlertTitle(PriorityDefinition priority, ActionStatus action, boolean upgradeTriggered) {
