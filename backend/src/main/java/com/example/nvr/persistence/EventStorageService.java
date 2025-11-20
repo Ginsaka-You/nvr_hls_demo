@@ -482,7 +482,10 @@ public class EventStorageService {
                 return;
             }
             String eventTime = target.getCapturedAt() != null ? target.getCapturedAt().toString() : Instant.now().toString();
-            AlertEventEntity alert = new AlertEventEntity(eventId, "雷达目标", target.getCamChannel(), null, eventTime, "未处理");
+            String eventTypeLabel = target.getTargetId() != null
+                    ? String.format(Locale.ROOT, "雷达目标 #%d", target.getTargetId())
+                    : "雷达目标";
+            AlertEventEntity alert = new AlertEventEntity(eventId, eventTypeLabel, target.getCamChannel(), null, eventTime, "未处理");
             if (hasSnapshot(target.getSnapshotPath())) {
                 alert.setSnapshotPath(target.getSnapshotPath());
             }

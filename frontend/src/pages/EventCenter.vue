@@ -7,12 +7,14 @@ type AlertRecord = {
   eventId: string
   eventType: string | null
   camChannel: string | null
-  level: string | null
-  status: string | null
-  eventTime: string | null
+   level: string | null
+   status: string | null
+   eventTime: string | null
   createdAt: string
   device: string
   snapshotUrl: string | null
+  snapshots: string[]
+  targetId?: number | null
 }
 
 type CameraAlarmRecord = AlertRecord
@@ -50,7 +52,8 @@ const alerts = ref<AlertRecord[]>([])
 const camera = ref<CameraAlarmRecord[]>([])
 const radar = ref<RadarRecord[]>([])
 const previewVisible = ref(false)
-const previewUrl = ref<string | null>(null)
+const previewImages = ref<string[]>([])
+const previewIndex = ref(0)
 
 function formatDate(value: string | null | undefined) {
   if (!value) return '-'
@@ -70,7 +73,7 @@ async function fetchData(kind: TabKey) {
       throw new Error('数据格式异常')
     }
     if (kind === 'alerts') {
-      alerts.value = data.map(mapAlert)
+      alerts.value = aggregateAlertRecords(data.map(mapAlert))
     } else if (kind === 'camera') {
       camera.value = data.map(mapCameraAlarm)
     } else {
@@ -89,6 +92,8 @@ function mapCameraAlarm(item: any): CameraAlarmRecord {
   const port = item?.port ?? item?.camPort ?? null
   const fallbackChannel = channelId != null ? String(channelId) : port != null ? String(port) : null
   const eventType = translateEventType(item?.eventType)
+  const snapshot = item?.snapshotUrl ?? item?.snapshot_url ?? null
+  const snapshots = snapshot ? [snapshot] : []
   return {
     id: Number(item?.id ?? 0),
     eventId: String(item?.eventId ?? item?.id ?? '-'),
@@ -99,7 +104,8 @@ function mapCameraAlarm(item: any): CameraAlarmRecord {
     eventTime: item?.eventTime ?? null,
     createdAt: item?.createdAt ?? item?.created_at ?? new Date().toISOString(),
     device: '摄像头',
-    snapshotUrl: item?.snapshotUrl ?? item?.snapshot_url ?? null
+    snapshotUrl: snapshot,
+    snapshots
   }
 }
 
@@ -108,7 +114,14 @@ function mapAlert(item: any): AlertRecord {
   const port = item?.port ?? item?.camPort ?? null
   const fallbackChannel = channelId != null ? String(channelId) : port != null ? String(port) : null
   const eventType = translateEventType(item?.eventType)
+  const snapshot = item?.snapshotUrl ?? item?.snapshot_url ?? null
+  const snapshots = Array.isArray(item?.snapshots)
+    ? item.snapshots.filter((url: any) => typeof url === 'string' && url.length > 0)
+    : snapshot
+      ? [snapshot]
+      : []
   const device = eventType && eventType.includes('雷达') ? '雷达' : '摄像头'
+  const targetId = normalizeTargetId(item?.targetId ?? item?.target_id ?? parseTargetId(eventType))
   return {
     id: Number(item?.id ?? 0),
     eventId: String(item?.eventId ?? item?.id ?? '-'),
@@ -119,7 +132,9 @@ function mapAlert(item: any): AlertRecord {
     eventTime: item?.eventTime ?? null,
     createdAt: item?.createdAt ?? item?.created_at ?? new Date().toISOString(),
     device,
-    snapshotUrl: item?.snapshotUrl ?? item?.snapshot_url ?? null
+    snapshotUrl: snapshot,
+    snapshots,
+    targetId
   }
 }
 
@@ -148,6 +163,101 @@ function mapRadar(item: any): RadarRecord {
   }
 }
 
+function aggregateAlertRecords(items: AlertRecord[]): AlertRecord[] {
+  const RADAR_MERGE_WINDOW_MS = 8000
+  const dedupe = (list: string[]) => Array.from(new Set(list.filter(Boolean)))
+  const sorted = [...items].sort((a, b) => getTimestamp(a.createdAt) - getTimestamp(b.createdAt))
+  const grouped = new Map<string, { record: AlertRecord; lastTs: number }>()
+  const result: AlertRecord[] = []
+
+  for (const item of sorted) {
+    const snapshots = dedupe((item.snapshots && item.snapshots.length ? item.snapshots : [item.snapshotUrl]).filter(Boolean))
+    item.snapshots = snapshots
+    item.snapshotUrl = snapshots[0] || item.snapshotUrl || null
+    const targetId = item.targetId ?? parseTargetId(item.eventType)
+    const radarKey = targetId != null ? `radar-${targetId}` : null
+    if (!radarKey) {
+      result.push(item)
+      continue
+    }
+    const ts = getTimestamp(item.createdAt || item.eventTime)
+    const existing = grouped.get(radarKey)
+    if (existing && ts - existing.lastTs <= RADAR_MERGE_WINDOW_MS) {
+      existing.record.snapshots = dedupe([...(existing.record.snapshots || []), ...snapshots])
+      existing.record.snapshotUrl = existing.record.snapshots[0] || existing.record.snapshotUrl
+      if (ts > getTimestamp(existing.record.createdAt)) {
+        existing.record.createdAt = item.createdAt
+        existing.record.eventTime = item.eventTime
+        existing.record.status = item.status
+      }
+      existing.lastTs = ts
+      continue
+    }
+    const merged: AlertRecord = {
+      ...item,
+      eventType: item.eventType || (targetId != null ? `雷达目标 #${targetId}` : item.eventType),
+      device: '雷达',
+      snapshots: [...snapshots],
+      snapshotUrl: snapshots[0] || null,
+      targetId
+    }
+    grouped.set(radarKey, { record: merged, lastTs: ts })
+    result.push(merged)
+  }
+
+  return result.sort((a, b) => getTimestamp(b.createdAt) - getTimestamp(a.createdAt))
+}
+
+function normalizeTargetId(value: any): number | null {
+  if (value === null || value === undefined) return null
+  const num = Number(value)
+  return Number.isFinite(num) ? num : null
+}
+
+function parseTargetId(eventType: string | null | undefined): number | null {
+  if (!eventType) return null
+  const match = eventType.match(/#\s*(\d+)/)
+  if (!match) return null
+  return normalizeTargetId(match[1])
+}
+
+function getTimestamp(value: string | null | undefined): number {
+  if (!value) return 0
+  const ts = new Date(value).getTime()
+  return Number.isFinite(ts) ? ts : 0
+}
+
+function renderSnapshotCell(record: AlertRecord) {
+  const images = record.snapshots && record.snapshots.length ? record.snapshots : (record.snapshotUrl ? [record.snapshotUrl] : [])
+  if (!images.length) {
+    return h('span', { class: 'snapshot-placeholder' }, '—')
+  }
+  const thumbs = images.slice(0, 4).map((url, index) =>
+    h('button', {
+      type: 'button',
+      class: 'snapshot-thumb-btn',
+      onClick: () => openPreviewGroup(images, index)
+    }, [
+      h('img', {
+        src: url,
+        alt: 'snapshot',
+        class: 'snapshot-thumb',
+        style: {
+          width: '60px',
+          height: '34px'
+        }
+      })
+    ])
+  )
+  const remaining = images.length - thumbs.length
+  return h('div', { class: 'snapshot-grid' }, [
+    ...thumbs,
+    remaining > 0
+      ? h('span', { class: 'snapshot-more' }, `+${remaining}`)
+      : null
+  ])
+}
+
 function ensureLoaded(key: TabKey) {
   if (!loaded[key]) {
     void fetchData(key)
@@ -158,48 +268,35 @@ onMounted(() => {
   ensureLoaded(activeKey.value)
 })
 
-function openPreview(url: string | null) {
-  if (!url) return
-  previewUrl.value = url
+function openPreviewGroup(images: string[], index = 0) {
+  if (!images.length) return
+  previewImages.value = images
+  previewIndex.value = index
   previewVisible.value = true
 }
 
-function renderSnapshotCell(url: string | null) {
-  if (!url) {
-    return h('span', { class: 'snapshot-placeholder' }, '—')
-  }
-  return h(
-    'button',
-    {
-      type: 'button',
-      class: 'snapshot-link',
-      onClick: () => openPreview(url)
-    },
-    [
-      h('img', {
-        src: url,
-        alt: 'snapshot',
-        class: 'snapshot-thumb',
-        style: {
-          width: '80px',
-          height: '45px'
-        }
-      })
-    ]
-  )
+const currentPreviewImage = computed(() => previewImages.value[previewIndex.value] || null)
+
+function nextPreview() {
+  if (!previewImages.value.length) return
+  previewIndex.value = (previewIndex.value + 1) % previewImages.value.length
+}
+
+function prevPreview() {
+  if (!previewImages.value.length) return
+  previewIndex.value = (previewIndex.value - 1 + previewImages.value.length) % previewImages.value.length
 }
 
 const snapshotColumn = {
   title: '抓拍',
   key: 'snapshot',
   width: 150,
-  customRender: ({ record }: { record: { snapshotUrl?: string | null } }) => renderSnapshotCell(record?.snapshotUrl ?? null)
+  customRender: ({ record }: { record: AlertRecord }) => renderSnapshotCell(record)
 }
 
 const alertColumns = computed(() => [
   snapshotColumn,
-  { title: '事件ID', dataIndex: 'eventId', key: 'eventId', width: 160 },
-  { title: '事件类型', dataIndex: 'eventType', key: 'eventType', width: 180 },
+  { title: '事件类型', dataIndex: 'eventType', key: 'eventType', width: 200 },
   { title: '设备', dataIndex: 'device', key: 'device', width: 100 },
   { title: '摄像头通道', dataIndex: 'camChannel', key: 'camChannel', width: 140 },
   { title: '等级', dataIndex: 'level', key: 'level', width: 100 },
@@ -292,8 +389,13 @@ function translateEventType(value: any): string | null {
       </a-tab-pane>
     </a-tabs>
     <a-modal v-model:visible="previewVisible" :footer="null" width="60vw" centered destroy-on-close @cancel="previewVisible = false">
-      <div class="preview-body">
-        <img v-if="previewUrl" :src="previewUrl" alt="snapshot preview" />
+      <div class="preview-body" v-if="currentPreviewImage">
+        <button class="preview-nav left" type="button" @click="prevPreview" v-if="previewImages.length > 1">‹</button>
+        <img :src="currentPreviewImage" alt="snapshot preview" />
+        <button class="preview-nav right" type="button" @click="nextPreview" v-if="previewImages.length > 1">›</button>
+        <div class="preview-counter" v-if="previewImages.length > 1">
+          {{ previewIndex + 1 }} / {{ previewImages.length }}
+        </div>
       </div>
     </a-modal>
   </div>
@@ -310,8 +412,13 @@ table {
   width: 100%;
 }
 
-.snapshot-link {
-  display: inline-flex;
+.snapshot-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px;
+}
+
+.snapshot-thumb-btn {
   border: none;
   padding: 0;
   background: transparent;
@@ -319,12 +426,18 @@ table {
 }
 
 .snapshot-thumb {
-  width: 88px;
-  height: 50px;
   object-fit: cover;
   border-radius: 4px;
   border: 1px solid rgba(0, 0, 0, 0.08);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.snapshot-more {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .snapshot-placeholder {
@@ -332,6 +445,7 @@ table {
 }
 
 .preview-body {
+  position: relative;
   width: 100%;
   text-align: center;
 }
@@ -340,5 +454,32 @@ table {
   max-width: 100%;
   border-radius: 6px;
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.28);
+}
+
+.preview-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+  width: 32px;
+  height: 48px;
+  font-size: 24px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.preview-nav.left {
+  left: 8px;
+}
+
+.preview-nav.right {
+  right: 8px;
+}
+
+.preview-counter {
+  margin-top: 8px;
+  color: rgba(0, 0, 0, 0.65);
 }
 </style>
