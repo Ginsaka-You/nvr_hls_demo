@@ -233,7 +233,7 @@ public class RiskAssessmentService {
                 broadcastRiskAction(decidedAt, priority, scoreSummary, context, currentA2, night, audioDecision, upgradeTriggered);
             }
         }
-        persistAssessment(previousAssessment, now, windowStart, priority, scoreSummary, details, summary);
+        persistAssessment(now, windowStart, priority, scoreSummary, details, summary);
     }
 
     private ZoneId resolveZone(Parameters params) {
@@ -989,15 +989,14 @@ public class RiskAssessmentService {
         return details;
     }
 
-    private void persistAssessment(RiskAssessmentEntity existing,
-                                   Instant now,
+    private void persistAssessment(Instant now,
                                    Instant windowStart,
                                    PriorityDefinition priority,
                                    ScoreSummary scores,
                                    Map<String, Object> details,
                                    String summary) {
         String classification = priority != null ? priority.getId() : "P4";
-        RiskAssessmentEntity entity = existing != null ? existing : new RiskAssessmentEntity();
+        RiskAssessmentEntity entity = new RiskAssessmentEntity();
         entity.setClassification(classification);
         entity.setScore((int) Math.round(scores.getTotalScore()));
         entity.setSummary(summary);

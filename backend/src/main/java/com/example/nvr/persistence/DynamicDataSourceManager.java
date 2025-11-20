@@ -98,13 +98,16 @@ public class DynamicDataSourceManager {
                     "cam_channel VARCHAR(32), " +
                     "level VARCHAR(32), " +
                     "event_time VARCHAR(64), " +
-                    "status VARCHAR(32) DEFAULT '未处理'" +
+                    "status VARCHAR(32) DEFAULT '未处理', " +
+                    "snapshot_path VARCHAR(512), " +
+                    "created_at TIMESTAMPTZ DEFAULT NOW()" +
                     ")");
             st.execute("CREATE INDEX IF NOT EXISTS idx_alert_events_event_time ON alert_events(event_time DESC)");
             st.execute("ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS cam_channel VARCHAR(32)");
             st.execute("ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT '未处理'");
             executeSilently(st, "UPDATE alert_events SET cam_channel = COALESCE(cam_channel, channel_id::text, port::text) WHERE cam_channel IS NULL");
             st.execute("UPDATE alert_events SET status = COALESCE(NULLIF(status, ''), '未处理')");
+            st.execute("ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS snapshot_path VARCHAR(512)");
             st.execute("ALTER TABLE alert_events DROP COLUMN IF EXISTS raw_payload");
             st.execute("ALTER TABLE alert_events DROP COLUMN IF EXISTS channel_id");
             st.execute("ALTER TABLE alert_events DROP COLUMN IF EXISTS port");
@@ -119,7 +122,8 @@ public class DynamicDataSourceManager {
                     "cam_channel VARCHAR(32), " +
                     "level VARCHAR(32), " +
                     "event_time VARCHAR(64), " +
-                    "created_at TIMESTAMPTZ DEFAULT NOW()" +
+                    "created_at TIMESTAMPTZ DEFAULT NOW(), " +
+                    "snapshot_path VARCHAR(512)" +
                     ")");
             st.execute("CREATE INDEX IF NOT EXISTS idx_camera_alarms_created_at ON camera_alarms(created_at DESC)");
             st.execute("ALTER TABLE camera_alarms ADD COLUMN IF NOT EXISTS cam_channel VARCHAR(32)");
@@ -127,6 +131,7 @@ public class DynamicDataSourceManager {
             st.execute("ALTER TABLE camera_alarms DROP COLUMN IF EXISTS channel_id");
             st.execute("ALTER TABLE camera_alarms DROP COLUMN IF EXISTS port");
             st.execute("ALTER TABLE camera_alarms DROP COLUMN IF EXISTS raw_payload");
+            st.execute("ALTER TABLE camera_alarms ADD COLUMN IF NOT EXISTS snapshot_path VARCHAR(512)");
 
             st.execute("CREATE TABLE IF NOT EXISTS imsi_records (" +
                     "id SERIAL PRIMARY KEY, " +
@@ -216,9 +221,11 @@ public class DynamicDataSourceManager {
                     "track_state INT, " +
                     "reserve1 INT, " +
                     "reserve2 INT, " +
-                    "captured_at TIMESTAMPTZ DEFAULT NOW()" +
+                    "captured_at TIMESTAMPTZ DEFAULT NOW(), " +
+                    "snapshot_path VARCHAR(512)" +
                     ")");
             st.execute("CREATE INDEX IF NOT EXISTS idx_radar_targets_captured_at ON radar_targets(captured_at DESC)");
+            st.execute("ALTER TABLE radar_targets ADD COLUMN IF NOT EXISTS snapshot_path VARCHAR(512)");
             executeSilently(st, "ALTER TABLE imsi_sync_config ADD COLUMN IF NOT EXISTS device_filter VARCHAR(255)");
         }
     }

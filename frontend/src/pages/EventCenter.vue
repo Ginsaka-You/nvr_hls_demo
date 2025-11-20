@@ -2,6 +2,16 @@
 import { ref, reactive, computed, onMounted, h } from 'vue'
 import { message } from 'ant-design-vue'
 
+type Classification = 'P1' | 'P2' | 'P3' | 'P4' | 'INFO'
+
+const classificationMeta: Record<Classification, { label: string }> = {
+  P1: { label: 'P1 最高优先级' },
+  P2: { label: 'P2 高优先级' },
+  P3: { label: 'P3 中等优先级' },
+  P4: { label: 'P4 低优先级' },
+  INFO: { label: '信息留存' }
+}
+
 type AlertRecord = {
   id: number
   eventId: string
@@ -18,6 +28,27 @@ type AlertRecord = {
 }
 
 type CameraAlarmRecord = AlertRecord
+
+type RiskActionRecord = {
+  id: string | number
+  eventId: string
+  action: string | null
+  eventType: string | null
+  camChannel: string | null
+  level: string | null
+  status: string | null
+  eventTime: string | null
+  createdAt: string
+  snapshotUrl: string | null
+  snapshots: string[]
+  classification: string | null
+  score: number | null
+  summary: string | null
+  details: any
+  windowStart?: string | null
+  windowEnd?: string | null
+  decidedAt?: string | null
+}
 
 type RadarRecord = {
   id: number
@@ -42,13 +73,14 @@ type RadarRecord = {
   snapshotUrl: string | null
 }
 
-type TabKey = 'alerts' | 'camera' | 'radar'
+type TabKey = 'alerts' | 'risk' | 'camera' | 'radar'
 
 const activeKey = ref<TabKey>('alerts')
-const loading = reactive<Record<TabKey, boolean>>({ alerts: false, camera: false, radar: false })
-const loaded = reactive<Record<TabKey, boolean>>({ alerts: false, camera: false, radar: false })
+const loading = reactive<Record<TabKey, boolean>>({ alerts: false, risk: false, camera: false, radar: false })
+const loaded = reactive<Record<TabKey, boolean>>({ alerts: false, risk: false, camera: false, radar: false })
 
 const alerts = ref<AlertRecord[]>([])
+const riskActions = ref<RiskActionRecord[]>([])
 const camera = ref<CameraAlarmRecord[]>([])
 const radar = ref<RadarRecord[]>([])
 const previewVisible = ref(false)
@@ -66,7 +98,14 @@ async function fetchData(kind: TabKey) {
   if (loading[kind]) return
   loading[kind] = true
   try {
-    const resp = await fetch(`/api/events/${kind === 'alerts' ? 'alerts' : kind === 'camera' ? 'camera-alarms' : 'radar-targets'}?limit=200`)
+    const endpoint = kind === 'alerts'
+      ? 'alerts'
+      : kind === 'risk'
+        ? 'risk-actions'
+        : kind === 'camera'
+          ? 'camera-alarms'
+          : 'radar-targets'
+    const resp = await fetch(`/api/events/${endpoint}?limit=200`)
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     const data = await resp.json()
     if (!Array.isArray(data)) {
@@ -74,6 +113,8 @@ async function fetchData(kind: TabKey) {
     }
     if (kind === 'alerts') {
       alerts.value = aggregateAlertRecords(data.map(mapAlert))
+    } else if (kind === 'risk') {
+      riskActions.value = data.map(mapRiskAction)
     } else if (kind === 'camera') {
       camera.value = data.map(mapCameraAlarm)
     } else {
@@ -135,6 +176,40 @@ function mapAlert(item: any): AlertRecord {
     snapshotUrl: snapshot,
     snapshots,
     targetId
+  }
+}
+
+function mapRiskAction(item: any): RiskActionRecord {
+  const action = parseRiskAction(item)
+  const classification = item?.classification ?? null
+  const score = typeof item?.score === 'number' ? item.score : (item?.score != null ? Number(item.score) : null)
+  const summary = item?.summary ?? null
+  const snapshots = Array.isArray(item?.snapshots)
+    ? item.snapshots.filter((url: any) => typeof url === 'string' && url.length > 0)
+    : item?.snapshotUrl
+      ? [item.snapshotUrl]
+      : []
+  const eventId = String(item?.eventId ?? item?.id ?? `risk-${Date.now().toString(36)}`)
+  const eventType = item?.eventType ?? formatRiskEventType(action, classification)
+  return {
+    id: item?.id ?? eventId,
+    eventId,
+    action,
+    eventType,
+    camChannel: item?.camChannel ?? item?.cam_channel ?? null,
+    level: item?.level ?? null,
+    status: item?.status ?? '未处理',
+    eventTime: item?.eventTime ?? item?.decidedAt ?? null,
+    createdAt: item?.createdAt ?? item?.created_at ?? new Date().toISOString(),
+    snapshotUrl: item?.snapshotUrl ?? null,
+    snapshots,
+    classification,
+    score,
+    summary,
+    details: normalizeDetails(item?.details ?? item?.detailsJson ?? item?.details_json),
+    windowStart: item?.windowStart ?? null,
+    windowEnd: item?.windowEnd ?? null,
+    decidedAt: item?.decidedAt ?? null
   }
 }
 
@@ -227,7 +302,7 @@ function getTimestamp(value: string | null | undefined): number {
   return Number.isFinite(ts) ? ts : 0
 }
 
-function renderSnapshotCell(record: AlertRecord) {
+function renderSnapshotCell(record: { snapshotUrl?: string | null; snapshots?: string[] }) {
   const images = record.snapshots && record.snapshots.length ? record.snapshots : (record.snapshotUrl ? [record.snapshotUrl] : [])
   if (!images.length) {
     return h('span', { class: 'snapshot-placeholder' }, '—')
@@ -291,7 +366,7 @@ const snapshotColumn = {
   title: '抓拍',
   key: 'snapshot',
   width: 150,
-  customRender: ({ record }: { record: AlertRecord }) => renderSnapshotCell(record)
+  customRender: ({ record }: { record: any }) => renderSnapshotCell(record)
 }
 
 const alertColumns = computed(() => [
@@ -301,8 +376,17 @@ const alertColumns = computed(() => [
   { title: '摄像头通道', dataIndex: 'camChannel', key: 'camChannel', width: 140 },
   { title: '等级', dataIndex: 'level', key: 'level', width: 100 },
   { title: '状态', dataIndex: 'status', key: 'status', width: 100 },
-  { title: '事件时间', dataIndex: 'eventTime', key: 'eventTime', width: 180, customRender: ({ text }: any) => formatDate(text) },
-  { title: '收到时间', dataIndex: 'createdAt', key: 'createdAt', width: 180, customRender: ({ text }: any) => formatDate(text) }
+  { title: '事件时间', dataIndex: 'eventTime', key: 'eventTime', width: 180, customRender: ({ text }: any) => formatDate(text) }
+])
+
+const riskColumns = computed(() => [
+  snapshotColumn,
+  { title: '风控动作', dataIndex: 'action', key: 'action', width: 100, customRender: ({ record }: any) => record.action || '—' },
+  { title: '优先级', dataIndex: 'classification', key: 'classification', width: 140, customRender: ({ record }: any) => formatClassification(record.classification) },
+  { title: '综合得分', dataIndex: 'score', key: 'score', width: 120, customRender: ({ record }: any) => formatScoreValue(record.score) },
+  { title: '评分详情', key: 'details', width: 520, customRender: ({ record }: any) => renderRiskDetail(record) },
+  { title: '摄像头通道', dataIndex: 'camChannel', key: 'camChannel', width: 140 },
+  { title: '事件时间', dataIndex: 'eventTime', key: 'eventTime', width: 180, customRender: ({ text }: any) => formatDate(text) }
 ])
 
 const radarColumns = computed(() => [
@@ -329,6 +413,7 @@ function onTabChange(key: string) {
 }
 
 const pagination = { pageSize: 20, showSizeChanger: false }
+const tableScroll = { x: 'max-content' as const }
 
 function formatTimeline(record: AlertRecord) {
   const eventTime = formatDate(record.eventTime)
@@ -355,6 +440,206 @@ function translateEventType(value: any): string | null {
   }
   return text
 }
+
+function parseRiskAction(item: any): string | null {
+  const direct = item?.action ?? item?.actionId ?? item?.action_id
+  if (typeof direct === 'string' && direct.trim()) {
+    const match = direct.trim().toUpperCase().match(/A[1-3]/)
+    if (match) return match[0]
+  }
+  const eventId = typeof item?.eventId === 'string' ? item.eventId : (typeof item?.event_id === 'string' ? item.event_id : '')
+  const idMatch = eventId.match(/risk-?a?([1-3])/i)
+  if (idMatch && idMatch[1]) {
+    return `A${idMatch[1]}`
+  }
+  const typeMatch = typeof item?.eventType === 'string' ? item.eventType.match(/A[1-3]/i) : null
+  if (typeMatch && typeMatch[0]) {
+    return typeMatch[0].toUpperCase()
+  }
+  return null
+}
+
+function formatRiskEventType(action: string | null, classification?: string | null) {
+  if (!action) return '风控模型动作'
+  const upper = action.toUpperCase()
+  const cls = classification ? formatClassification(classification) : ''
+  return cls ? `风控动作 ${upper} ｜ ${cls}` : `风控动作 ${upper}`
+}
+
+function normalizeDetails(raw: any) {
+  if (!raw) return {}
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw)
+      return parsed && typeof parsed === 'object' ? parsed : {}
+    } catch (err) {
+      return {}
+    }
+  }
+  return raw
+}
+
+function formatClassification(value: string | null) {
+  if (!value) return '—'
+  const upper = value.toUpperCase() as Classification
+  return classificationMeta[upper]?.label || value
+}
+
+function formatScoreValue(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(Number(value))) {
+    return '0'
+  }
+  const fixed = Number(value).toFixed(1)
+  return fixed.endsWith('.0') ? fixed.slice(0, -2) : fixed
+}
+
+function formatMultiplier(value: number): string {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric === 0) {
+    return '×1'
+  }
+  const formatted = numeric % 1 === 0 ? numeric.toFixed(1) : numeric.toFixed(2)
+  return `×${formatted.replace(/0+$/g, '').replace(/\.$/, '')}`
+}
+
+function formatIsoDuration(value: any): string {
+  if (typeof value !== 'string' || !value.startsWith('P')) return ''
+  const upper = value.toUpperCase()
+  const timeIndex = upper.indexOf('T')
+  const dateSection = timeIndex === -1 ? upper.slice(1) : upper.slice(1, timeIndex)
+  const timeSection = timeIndex === -1 ? '' : upper.slice(timeIndex + 1)
+  const parts: string[] = []
+
+  const dateMap: Record<string, string> = { Y: '年', M: '个月', W: '周', D: '天' }
+  const timeMap: Record<string, string> = { H: '小时', M: '分钟', S: '秒' }
+  const numberPattern = /(\d+(?:\.\d+)?)([A-Z])/g
+  let match
+  if (dateSection) {
+    while ((match = numberPattern.exec(dateSection)) !== null) {
+      const [, num, unit] = match
+      const label = dateMap[unit]
+      if (label) {
+        const formatted = Number(num)
+        parts.push(`${formatted % 1 === 0 ? formatted.toString().replace(/\.0$/, '') : num} ${label}`)
+      }
+    }
+  }
+  if (timeSection) {
+    while ((match = numberPattern.exec(timeSection)) !== null) {
+      const [, num, unit] = match
+      const label = timeMap[unit]
+      if (label) {
+        const formatted = Number(num)
+        parts.push(`${formatted % 1 === 0 ? formatted.toString().replace(/\.0$/, '') : num} ${label}`)
+      }
+    }
+  }
+  return parts.join(' ') || value
+}
+
+function summarizeMetrics(metrics: any): string | null {
+  if (!metrics || typeof metrics !== 'object') return null
+  if (Array.isArray(metrics.newDevices) && metrics.newDevices.length) {
+    return `新设备：${metrics.newDevices.join(', ')}`
+  }
+  if (Array.isArray(metrics.devices) && metrics.devices.length) {
+    return `涉事设备：${metrics.devices.join(', ')}`
+  }
+  if (typeof metrics.events === 'number') {
+    return `事件数：${metrics.events}`
+  }
+  if (typeof metrics.count === 'number') {
+    return `计数：${metrics.count}`
+  }
+  return null
+}
+
+function extractScoreSummary(item: RiskActionRecord) {
+  const raw: any = item.details?.scores
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+  const base = Number(raw.base ?? raw.baseScore ?? 0)
+  const afterMulti = Number(raw.afterMultiSource ?? raw.afterMulti ?? base)
+  const multiSourceApplied = Boolean(raw.multiSourceApplied)
+  const multiSourceMultiplier = multiSourceApplied ? 1.2 : afterMulti === base ? 1.0 : afterMulti / (base || 1)
+  const timeMultiplier = Number(raw.timeMultiplier ?? 1)
+  const total = Number(raw.total ?? raw.totalScore ?? item.score ?? afterMulti * timeMultiplier)
+  return { base, multiSourceMultiplier, afterMulti, timeMultiplier, total }
+}
+
+function extractFRuleBreakdown(item: RiskActionRecord) {
+  const details: any = item.details
+  const fRules = Array.isArray(details?.fRules) ? details.fRules : []
+  return fRules
+    .filter((rule: any) => rule?.triggered)
+    .map((rule: any, index: number) => {
+      const id = typeof rule?.id === 'string' && rule.id ? rule.id : `rule-${index}`
+      const name = typeof rule?.definition?.name === 'string' && rule.definition.name ? rule.definition.name : id
+      const reason = typeof rule?.reason === 'string' && rule.reason ? rule.reason : name
+      const occurrences = Number(rule?.occurrences ?? 0)
+      const occText = occurrences > 1 ? `触发 ${occurrences} 次` : null
+      const duration = formatIsoDuration(rule?.duration)
+      const durationText = duration ? `持续时长：${duration}` : null
+      const score = typeof rule?.score === 'number' ? Number(rule.score) : null
+      const scoreText = score !== null ? `得分 +${formatScoreValue(score)} 分` : null
+      const contributions = Array.isArray(rule?.contributions) ? rule.contributions : []
+      const contributionRows =
+        contributions.length > 0
+          ? contributions.map((entry: any, idx: number) => {
+              const value = typeof entry?.value === 'number' ? Number(entry.value) : null
+              const desc = typeof entry?.description === 'string' && entry.description ? entry.description : ''
+              const scoreLabel = value !== null ? `${formatScoreValue(value)} 分` : ''
+              return { id: `${id}-contrib-${idx}`, text: desc ? `${scoreLabel}（${desc}）` : scoreLabel }
+            })
+          : []
+      const metricsText = summarizeMetrics(rule?.metrics)
+      const baseParts = [reason, occText, metricsText, durationText].filter(Boolean)
+      return {
+        id,
+        text: baseParts.join(' ｜ '),
+        score: scoreText,
+        contributions: contributionRows,
+      }
+    })
+}
+
+function renderRiskDetail(record: RiskActionRecord) {
+  const scoreSummary = extractScoreSummary(record)
+  const rules = extractFRuleBreakdown(record)
+  const headParts = [
+    `综合得分 ${formatScoreValue(scoreSummary?.total ?? record.score ?? 0)}`,
+    record.classification ? `→ ${formatClassification(record.classification)}` : '',
+    record.summary || ''
+  ].filter(Boolean)
+
+  const header = h('div', { class: 'risk-detail-head' }, headParts.join(' ｜ '))
+
+  const scoreBody = scoreSummary
+    ? h('div', { class: 'risk-score-grid' }, [
+        ['基础得分', formatScoreValue(scoreSummary.base)],
+        ['协同系数', formatMultiplier(scoreSummary.multiSourceMultiplier)],
+        ['协同后', formatScoreValue(scoreSummary.afterMulti)],
+        ['昼夜系数', formatMultiplier(scoreSummary.timeMultiplier)],
+        ['综合得分', formatScoreValue(scoreSummary.total)]
+      ].map(([label, value]) => h('div', { class: 'score-line' }, [
+        h('span', { class: 'score-label' }, label as string),
+        h('span', { class: 'score-value' }, value as string)
+      ])))
+    : null
+
+  const ruleNodes = rules.length
+    ? h('div', { class: 'risk-rules' }, rules.map(rule => h('div', { class: 'rule-row', key: rule.id }, [
+        h('div', { class: 'rule-main' }, rule.text),
+        rule.score ? h('div', { class: 'rule-score' }, rule.score) : null,
+        rule.contributions && rule.contributions.length
+          ? h('div', { class: 'rule-contrib' }, rule.contributions.map((c: any) => h('div', { class: 'contrib-row', key: c.id }, c.text)))
+          : null
+      ])))
+    : null
+
+  return h('div', { class: 'risk-detail-cell' }, [header, scoreBody, ruleNodes].filter(Boolean))
+}
 </script>
 
 <template>
@@ -367,6 +652,17 @@ function translateEventType(value: any): string | null {
           :data-source="alerts"
           :loading="loading.alerts"
           :pagination="pagination"
+          :scroll="tableScroll"
+        />
+      </a-tab-pane>
+      <a-tab-pane key="risk" tab="风控动作">
+        <a-table
+          row-key="id"
+          :columns="riskColumns"
+          :data-source="riskActions"
+          :loading="loading.risk"
+          :pagination="pagination"
+          :scroll="tableScroll"
         />
       </a-tab-pane>
       <a-tab-pane key="camera" tab="摄像头告警">
@@ -376,6 +672,7 @@ function translateEventType(value: any): string | null {
           :data-source="camera"
           :loading="loading.camera"
           :pagination="pagination"
+          :scroll="tableScroll"
         />
       </a-tab-pane>
       <a-tab-pane key="radar" tab="雷达目标">
@@ -385,6 +682,7 @@ function translateEventType(value: any): string | null {
           :data-source="radar"
           :loading="loading.radar"
           :pagination="pagination"
+          :scroll="tableScroll"
         />
       </a-tab-pane>
     </a-tabs>
@@ -481,5 +779,77 @@ table {
 .preview-counter {
   margin-top: 8px;
   color: rgba(0, 0, 0, 0.65);
+}
+
+.risk-detail-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  line-height: 1.4;
+}
+
+.risk-detail-head {
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.risk-score-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 4px 12px;
+  background: #f7f9fc;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+.score-line {
+  display: flex;
+  justify-content: space-between;
+  color: #334155;
+  font-size: 13px;
+}
+
+.score-label {
+  color: #475569;
+}
+
+.score-value {
+  font-weight: 600;
+}
+
+.risk-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rule-row {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #fafafa;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+.rule-main {
+  color: #0f172a;
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+
+.rule-score {
+  color: #e11d48;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.rule-contrib {
+  margin-top: 4px;
+  color: #475569;
+  font-size: 12px;
+}
+
+.contrib-row + .contrib-row {
+  margin-top: 2px;
 }
 </style>
