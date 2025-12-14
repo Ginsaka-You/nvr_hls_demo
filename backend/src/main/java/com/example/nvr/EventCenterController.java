@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -62,7 +63,7 @@ public class EventCenterController {
 
     @GetMapping("/risk-actions")
     public List<RiskActionView> listRiskActions(@RequestParam(name = "limit", defaultValue = "100") int limit) {
-        int size = Math.max(1, Math.min(limit, 200));
+        int size = Math.max(1, Math.min(limit, 1000));
         List<RiskAssessmentEntity> assessments = riskAssessmentRepository
                 .findAll(PageRequest.of(0, size, Sort.by(Sort.Direction.DESC, "updatedAt")))
                 .getContent();
@@ -84,7 +85,7 @@ public class EventCenterController {
     }
 
     private PageRequest page(int limit, Sort sort) {
-        int size = Math.max(1, Math.min(limit, 500));
+        int size = Math.max(1, Math.min(limit, 1000));
         return PageRequest.of(0, size, sort);
     }
 
@@ -115,13 +116,14 @@ public class EventCenterController {
         if (actionId == null) {
             return Optional.empty();
         }
-        Instant decidedAt = parseInstant(stringValue(action.get("decidedAt")));
+        Instant decidedAt = parseInstant(action.get("decidedAt"));
         String eventId = buildEventId(actionId, decidedAt);
-        AlertEventEntity alert = eventId != null
-                ? alertEventRepository.findByEventId(eventId).orElse(null)
-                : null;
+        AlertEventEntity alert = findMatchingAlert(actionId, eventId, decidedAt);
+        String resolvedEventId = eventId != null ? eventId : (alert != null ? alert.getEventId() : null);
         String camChannel = alert != null ? alert.getCamChannel() : null;
-        String level = classificationToLevel(assessment.getClassification());
+        String level = alert != null && alert.getLevel() != null
+                ? alert.getLevel()
+                : classificationToLevel(assessment.getClassification());
         String status = alert != null ? alert.getStatus() : "未处理";
         String eventType = alert != null && alert.getEventType() != null
                 ? alert.getEventType()
@@ -130,8 +132,8 @@ public class EventCenterController {
         Instant createdAt = alert != null ? alert.getCreatedAt() : Optional.ofNullable(assessment.getUpdatedAt()).orElse(Instant.now());
         String snapshotUrl = alert != null ? alert.getSnapshotUrl() : null;
         return Optional.of(new RiskActionView(
-                eventId != null ? eventId : assessment.getId() + "-" + actionId,
-                eventId,
+                resolvedEventId != null ? resolvedEventId : assessment.getId() + "-" + actionId,
+                resolvedEventId,
                 actionId,
                 eventType,
                 camChannel,
@@ -161,17 +163,30 @@ public class EventCenterController {
         }
     }
 
-    private Instant parseInstant(String value) {
-        if (value == null || value.isBlank()) return null;
+    private Instant parseInstant(Object raw) {
+        if (raw == null) {
+            return null;
+        }
+        if (raw instanceof Instant) {
+            return (Instant) raw;
+        }
+        if (raw instanceof Number) {
+            return epochToInstant(((Number) raw).longValue(), String.valueOf(raw).length());
+        }
+        String value = raw.toString().trim();
+        if (value.isEmpty()) {
+            return null;
+        }
         try {
             return Instant.parse(value);
         } catch (Exception ex) {
-            return null;
+            try {
+                long epoch = Long.parseLong(value);
+                return epochToInstant(epoch, value.length());
+            } catch (Exception ignored) {
+                return null;
+            }
         }
-    }
-
-    private String stringValue(Object value) {
-        return value == null ? null : value.toString();
     }
 
     private String buildEventId(String actionId, Instant decidedAt) {
@@ -179,6 +194,43 @@ public class EventCenterController {
             return null;
         }
         return String.format(Locale.ROOT, "risk-%s-%d", actionId.toLowerCase(Locale.ROOT), decidedAt.toEpochMilli());
+    }
+
+    private AlertEventEntity findMatchingAlert(String actionId, String eventId, Instant decidedAt) {
+        if (eventId != null) {
+            Optional<AlertEventEntity> direct = alertEventRepository.findByEventId(eventId);
+            if (direct.isPresent()) {
+                return direct.get();
+            }
+        }
+        if (actionId == null || actionId.isBlank()) {
+            return null;
+        }
+        String prefix = String.format(Locale.ROOT, "risk-%s-", actionId.toLowerCase(Locale.ROOT));
+        List<AlertEventEntity> recent = alertEventRepository
+                .findByEventIdStartingWith(prefix, PageRequest.of(0, 5, Sort.by(Sort.Direction.DESC, "createdAt")))
+                .getContent();
+        if (recent.isEmpty()) {
+            return null;
+        }
+        if (decidedAt == null) {
+            return recent.get(0);
+        }
+        long target = decidedAt.toEpochMilli();
+        return recent.stream()
+                .min(Comparator.comparingLong(entity -> {
+                    Instant created = entity.getCreatedAt();
+                    long ts = created != null ? created.toEpochMilli() : 0L;
+                    return Math.abs(ts - target);
+                }))
+                .orElse(recent.get(0));
+    }
+
+    private Instant epochToInstant(long epoch, int digits) {
+        if (epoch <= 0L) {
+            return null;
+        }
+        return digits <= 10 ? Instant.ofEpochSecond(epoch) : Instant.ofEpochMilli(epoch);
     }
 
     private String classificationToLevel(String classification) {

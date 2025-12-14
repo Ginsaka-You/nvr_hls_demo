@@ -29,6 +29,12 @@ type ScenarioGroup = {
   buttons: ScenarioButton[]
 }
 
+type NightModeStatus = {
+  nightMode: boolean
+  forced: boolean
+  naturalNight: boolean
+}
+
 const REFRESH_INTERVAL = 15000
 const loading = ref(false)
 const assessments = ref<RiskAssessment[]>([])
@@ -36,6 +42,8 @@ const errorMessage = ref<string | null>(null)
 const pollingTimer = ref<number | null>(null)
 const scenarioLoading = ref<string | null>(null)
 const resetLoading = ref(false)
+const nightModeLoading = ref(false)
+const nightModeStatus = ref<NightModeStatus | null>(null)
 
 const scenarioButtons: ScenarioButton[] = [
   {
@@ -246,6 +254,44 @@ const scenarioGroups = computed<ScenarioGroup[]>(() => {
   }
   return groups
 })
+
+const nightModeDisplay = computed(() => {
+  const status = nightModeStatus.value
+  if (!status) {
+    return {
+      color: 'default',
+      label: '昼夜自动',
+      description: '按配置自动判断昼夜系数。',
+    }
+  }
+  if (status.forced) {
+    return {
+      color: 'magenta',
+      label: '夜间模式（演示）',
+      description: '所有触发和乘子均按夜间计算。',
+    }
+  }
+  if (status.naturalNight) {
+    return {
+      color: 'blue',
+      label: '当前时段：夜间',
+      description: '依据配置判定为夜间时段。',
+    }
+  }
+  return {
+    color: 'cyan',
+    label: '当前时段：白天',
+    description: '依据配置判定为白天时段。',
+  }
+})
+
+function normalizeNightModeStatus(raw: any): NightModeStatus {
+  return {
+    nightMode: raw?.nightMode === true,
+    forced: raw?.forced === true,
+    naturalNight: raw?.naturalNight === true,
+  }
+}
 
 const classificationOrder: Classification[] = ['P1', 'P2', 'P3', 'P4']
 const classificationMeta: Record<Classification, { label: string; tag: string; empty: string; description: string }> = {
@@ -621,13 +667,66 @@ function extractActionSummaries(item: RiskAssessment): ActionSummary[] {
   })
 }
 
+async function fetchNightModeStatus(showToast = false) {
+  try {
+    const resp = await fetch('/api/risk/night-mode', { cache: 'no-store' })
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`)
+    }
+    const data = await resp.json()
+    nightModeStatus.value = normalizeNightModeStatus(data)
+  } catch (err: any) {
+    const msg = err?.message || String(err)
+    if (showToast) {
+      message.error(`夜间模式状态获取失败：${msg}`)
+    }
+  }
+}
+
+async function setNightMode(forceNight: boolean) {
+  if (nightModeLoading.value) {
+    return
+  }
+  nightModeLoading.value = true
+  const url = forceNight ? '/api/risk/night-mode/enable' : '/api/risk/night-mode/disable'
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    })
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`)
+    }
+    let data: any = null
+    try {
+      data = await resp.json()
+    } catch (err) {
+      console.debug('Failed to parse night mode response', err)
+    }
+    nightModeStatus.value = normalizeNightModeStatus(data)
+    const tip =
+      typeof data?.message === 'string' && data.message
+        ? data.message
+        : forceNight
+          ? '夜间模式已开启（演示）'
+          : '已恢复昼夜自动判断'
+    message.success(tip)
+    await fetchAssessments(true)
+  } catch (err: any) {
+    const msg = err?.message || String(err)
+    message.error(`切换夜间模式失败：${msg}`)
+  } finally {
+    nightModeLoading.value = false
+  }
+}
+
 async function fetchAssessments(showToast = false) {
   const shouldSpin = assessments.value.length === 0 && !loading.value
   if (shouldSpin) {
     loading.value = true
   }
   try {
-    const resp = await fetch('/api/risk/assessments?limit=150', { cache: 'no-store' })
+    const resp = await fetch('/api/risk/assessments?limit=1', { cache: 'no-store' })
     if (!resp.ok) {
       throw new Error(`HTTP ${resp.status}`)
     }
@@ -716,6 +815,7 @@ async function resetModelData() {
 }
 
 onMounted(() => {
+  void fetchNightModeStatus(false)
   void fetchAssessments(true)
   pollingTimer.value = window.setInterval(() => {
     void fetchAssessments(false)
@@ -742,15 +842,27 @@ onUnmounted(() => {
       <h2>虚拟场景注入</h2>
       <p class="section-note">点击下方按钮向数据库写入模拟数据，快速验证各类 F/P/A/G 流程。</p>
       <div class="scenario-toolbar">
-        <a-popconfirm
-          title="确认清空最近风控数据？"
-          ok-text="确认"
-          cancel-text="取消"
-          :disabled="resetLoading"
-          @confirm="resetModelData"
-        >
-          <a-button danger :loading="resetLoading">清空模型数据</a-button>
-        </a-popconfirm>
+        <div class="night-mode-hint">
+          <a-tag :color="nightModeDisplay.color">{{ nightModeDisplay.label }}</a-tag>
+          <span class="night-mode-desc">{{ nightModeDisplay.description }}</span>
+        </div>
+        <div class="toolbar-actions">
+          <a-button type="primary" ghost :loading="nightModeLoading" @click="setNightMode(true)">
+            夜间模式
+          </a-button>
+          <a-button :loading="nightModeLoading" @click="setNightMode(false)">
+            取消夜间模式
+          </a-button>
+          <a-popconfirm
+            title="确认清空最近风控数据？"
+            ok-text="确认"
+            cancel-text="取消"
+            :disabled="resetLoading"
+            @confirm="resetModelData"
+          >
+            <a-button danger :loading="resetLoading">清空模型数据</a-button>
+          </a-popconfirm>
+        </div>
       </div>
       <div class="scenario-groups">
         <div v-for="group in scenarioGroups" :key="group.name" class="scenario-group">
@@ -1269,8 +1381,29 @@ onUnmounted(() => {
 
 .scenario-toolbar {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
   margin-top: 12px;
+}
+
+.toolbar-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.night-mode-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.night-mode-desc {
+  color: rgba(255, 255, 255, 0.65);
 }
 
 .scenario-groups {

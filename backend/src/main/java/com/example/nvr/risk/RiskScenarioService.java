@@ -659,7 +659,9 @@ public class RiskScenarioService {
                 0,
                 0,
                 0,
-                capturedAt
+                capturedAt,
+                null,
+                null
         );
         radarTargetRepository.save(entity);
     }

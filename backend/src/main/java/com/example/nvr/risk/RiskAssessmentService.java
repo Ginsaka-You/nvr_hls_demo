@@ -51,6 +51,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 风控模型服务（综合得分 + G 闸门 + A 动作）。
@@ -83,6 +84,7 @@ public class RiskAssessmentService {
     private final Object audioThrottleLock = new Object();
     private Instant lastA2AudioAt;
     private boolean lastA2AudioNight;
+    private final AtomicBoolean nightModeOverride = new AtomicBoolean(false);
 
     public RiskAssessmentService(RiskAssessmentRepository riskAssessmentRepository,
                                  ImsiRecordRepository imsiRecordRepository,
@@ -202,7 +204,7 @@ public class RiskAssessmentService {
         double baseScore = fEvaluations.values().stream().mapToDouble(FRuleEvaluation::getScore).sum();
         boolean multiSource = fEvaluations.values().stream().filter(FRuleEvaluation::isTriggered).count() >= 2;
         double afterMulti = multiSource ? baseScore * MULTI_SOURCE_MULTIPLIER : baseScore;
-        boolean night = isNight(now, zone, params);
+        boolean night = resolveNightMode(now, zone, params);
         double timeMultiplier = night ? NIGHT_MULTIPLIER : 1.0;
         double finalScore = afterMulti * timeMultiplier;
         ScoreSummary scoreSummary = new ScoreSummary(baseScore, multiSource, afterMulti, timeMultiplier, finalScore);
@@ -260,6 +262,13 @@ public class RiskAssessmentService {
             return hour >= nightStart || hour < nightEnd;
         }
         return hour >= nightStart && hour < nightEnd;
+    }
+
+    private boolean resolveNightMode(Instant now, ZoneId zone, Parameters params) {
+        if (nightModeOverride.get()) {
+            return true;
+        }
+        return isNight(now, zone, params);
     }
 
     private PriorityDefinition determinePriority(double score, RiskModelConfig config) {
@@ -360,6 +369,25 @@ public class RiskAssessmentService {
 
         String reason = String.format(Locale.CHINA, "未知 IMSI %d 个，重复 %d 个", newCount, repeatCount);
         return new FRuleEvaluation("F1", score > 0, newCount + repeatCount, first, last, reason, metrics, contributions, null, score);
+    }
+
+    public void enableNightModeOverride() {
+        nightModeOverride.set(true);
+    }
+
+    public void disableNightModeOverride() {
+        nightModeOverride.set(false);
+    }
+
+    public NightModeStatus getNightModeStatus() {
+        Instant now = Instant.now();
+        RiskModelConfig config = configLoader.getConfig();
+        Parameters params = config.getParameters();
+        ZoneId zone = resolveZone(params);
+        boolean naturalNight = isNight(now, zone, params);
+        boolean forced = nightModeOverride.get();
+        boolean effectiveNight = resolveNightMode(now, zone, params);
+        return new NightModeStatus(effectiveNight, forced, naturalNight, now);
     }
 
     private FRuleEvaluation evaluateF2(List<RadarTargetEntity> window,
@@ -2326,6 +2354,36 @@ public class RiskAssessmentService {
                 map.put("definition", definition);
             }
             return map;
+        }
+    }
+
+    public static class NightModeStatus {
+        private final boolean effectiveNight;
+        private final boolean forced;
+        private final boolean naturalNight;
+        private final Instant evaluatedAt;
+
+        public NightModeStatus(boolean effectiveNight, boolean forced, boolean naturalNight, Instant evaluatedAt) {
+            this.effectiveNight = effectiveNight;
+            this.forced = forced;
+            this.naturalNight = naturalNight;
+            this.evaluatedAt = evaluatedAt;
+        }
+
+        public boolean isEffectiveNight() {
+            return effectiveNight;
+        }
+
+        public boolean isForced() {
+            return forced;
+        }
+
+        public boolean isNaturalNight() {
+            return naturalNight;
+        }
+
+        public Instant getEvaluatedAt() {
+            return evaluatedAt;
         }
     }
 }

@@ -78,9 +78,16 @@ type TabKey = 'alerts' | 'risk' | 'camera' | 'radar'
 const activeKey = ref<TabKey>('alerts')
 const loading = reactive<Record<TabKey, boolean>>({ alerts: false, risk: false, camera: false, radar: false })
 const loaded = reactive<Record<TabKey, boolean>>({ alerts: false, risk: false, camera: false, radar: false })
+const FETCH_LIMIT = 500
 
 const alerts = ref<AlertRecord[]>([])
 const riskActions = ref<RiskActionRecord[]>([])
+const showA1 = ref(false)
+const filteredRiskActions = computed(() =>
+  showA1.value
+    ? riskActions.value
+    : riskActions.value.filter(item => (item.action || '').toString().toUpperCase() !== 'A1')
+)
 const camera = ref<CameraAlarmRecord[]>([])
 const radar = ref<RadarRecord[]>([])
 const previewVisible = ref(false)
@@ -105,7 +112,7 @@ async function fetchData(kind: TabKey) {
         : kind === 'camera'
           ? 'camera-alarms'
           : 'radar-targets'
-    const resp = await fetch(`/api/events/${endpoint}?limit=200`)
+    const resp = await fetch(`/api/events/${endpoint}?limit=${FETCH_LIMIT}`)
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     const data = await resp.json()
     if (!Array.isArray(data)) {
@@ -656,10 +663,13 @@ function renderRiskDetail(record: RiskActionRecord) {
         />
       </a-tab-pane>
       <a-tab-pane key="risk" tab="风控告警">
+        <div class="table-toolbar">
+          <a-checkbox v-model:checked="showA1">显示 A1 取证</a-checkbox>
+        </div>
         <a-table
           row-key="id"
           :columns="riskColumns"
-          :data-source="riskActions"
+          :data-source="filteredRiskActions"
           :loading="loading.risk"
           :pagination="pagination"
           :scroll="tableScroll"
@@ -786,6 +796,12 @@ table {
   flex-direction: column;
   gap: 6px;
   line-height: 1.4;
+}
+
+.table-toolbar {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
 }
 
 .risk-detail-head {

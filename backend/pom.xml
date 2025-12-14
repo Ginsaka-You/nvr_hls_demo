@@ -60,11 +60,12 @@
       <scope>test</scope>
     </dependency>
   </dependencies>
-  <build>
+<build>
     <plugins>
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
+        <version>${spring-boot.version}</version>
         <configuration>
           <excludes>
             <exclude>
@@ -73,7 +74,15 @@
             </exclude>
           </excludes>
         </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>repackage</goal>
+            </goals>
+          </execution>
+        </executions>
       </plugin>
+      
       <plugin>
         <artifactId>maven-compiler-plugin</artifactId>
         <configuration>

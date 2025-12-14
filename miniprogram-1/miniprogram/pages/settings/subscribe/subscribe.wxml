@@ -1,7 +1,0 @@
-<view class="page">
-  <view class="card">
-    <view class="title">订阅告警通知</view>
-    <view class="tips">当前绑定用户：{{userId}}，点击按钮将授权订阅并更新 userId ↔ openid。</view>
-    <button type="primary" bindtap="onSubscribeTap">订阅并绑定</button>
-  </view>
-</view>

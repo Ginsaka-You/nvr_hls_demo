@@ -51,6 +51,25 @@ public class RiskAssessmentController {
         }
     }
 
+    @GetMapping("/night-mode")
+    public Map<String, Object> nightModeStatus() {
+        return toNightModeResponse("当前夜间模式状态");
+    }
+
+    @PostMapping("/night-mode/enable")
+    public ResponseEntity<Map<String, Object>> enableNightMode() {
+        riskAssessmentService.enableNightModeOverride();
+        riskAssessmentService.recomputeAt(Instant.now());
+        return ResponseEntity.ok(toNightModeResponse("夜间模式演示已开启"));
+    }
+
+    @PostMapping("/night-mode/disable")
+    public ResponseEntity<Map<String, Object>> disableNightMode() {
+        riskAssessmentService.disableNightModeOverride();
+        riskAssessmentService.recomputeAt(Instant.now());
+        return ResponseEntity.ok(toNightModeResponse("已取消夜间模式演示，恢复昼夜自动判断"));
+    }
+
     private AssessmentResponse toResponse(RiskAssessmentEntity entity) {
         Map<String, Object> details = parseDetails(entity.getDetailsJson());
         return new AssessmentResponse(
@@ -76,6 +95,17 @@ public class RiskAssessmentController {
             log.debug("Failed to parse risk assessment details: {}", json, ex);
             return Collections.emptyMap();
         }
+    }
+
+    private Map<String, Object> toNightModeResponse(String message) {
+        RiskAssessmentService.NightModeStatus status = riskAssessmentService.getNightModeStatus();
+        return Map.of(
+                "nightMode", status.isEffectiveNight(),
+                "forced", status.isForced(),
+                "naturalNight", status.isNaturalNight(),
+                "evaluatedAt", status.getEvaluatedAt(),
+                "message", message
+        );
     }
 
     public static class AssessmentResponse {

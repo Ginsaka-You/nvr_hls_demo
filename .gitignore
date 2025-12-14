@@ -1,14 +1,45 @@
-# Ignore HLS output directories
-backend/streams/
+# ========================
+# 1. Java & Maven (后端)
+# ========================
+target/
+*.class
+*.jar
+*.war
+.m2repo/
+*.log
+
+# ========================
+# 2. Node.js & 前端
+# ========================
+# 忽略所有 node_modules (防止漏网之鱼)
+**/node_modules/
+frontend/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ========================
+# 3. 媒体与数据 (NVR专用)
+# ========================
 streams/
+backend/streams/
 evidence/
 backend/camera_evidence/
-.m2repo/
+*.jpg
+*.png
+*.sql
+*.db
 
-# Build and dependency artifacts
-backend/target/
-frontend/node_modules/
-frontend/dist/
-
-# Editor config
+# ========================
+# 4. 系统与工具
+# ========================
+.DS_Store
 .vscode/
+.idea/
+*.bak
+
+# ========================
+# 5. 忽略整个目录 (不再需要的部分)
+# ========================
+bigdata/
+miniprogram-1/
