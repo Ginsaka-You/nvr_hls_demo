@@ -33,11 +33,12 @@ function deriveCamChannel(channelId?: number, port?: number): string | undefined
 type SoundLightAction = 'activate' | 'deactivate'
 const SOUND_LIGHT_AUTO_OFF_MS = 8000
 let soundLightOffTimer: number | null = null
+export const soundLightMuted: Ref<boolean> = ref(false)
 
 function pushAlarm(a: Alarm, options: { triggerSoundLight?: boolean } = {}) {
   const existed = alarms.value.some(item => item.id === a.id)
   alarms.value = [a, ...alarms.value.filter(item => item.id !== a.id)].slice(0, 200)
-  if (!existed && options.triggerSoundLight) {
+  if (!existed && options.triggerSoundLight && !soundLightMuted.value) {
     void triggerSoundLightAlarm('activate')
     scheduleSoundLightAutoOff()
   }
@@ -204,6 +205,9 @@ function pushRiskAlarm(data: any) {
 }
 
 export async function triggerSoundLightAlarm(action: SoundLightAction = 'activate') {
+  if (soundLightMuted.value) {
+    return
+  }
   try {
     await fetch(`/api/alarm/sound-light/${action}`, { method: 'POST' })
   } catch {}
@@ -238,4 +242,18 @@ export function pushRadarAlarm(data: {
     summary: `发现目标 距离 ${rangeStr}m 速度 ${speedStr}m/s${angleStr ? ` 角度 ${angleStr}` : ''}`,
   }
   pushAlarm(alarm)
+}
+
+export async function refreshSoundLightStatus() {
+  try {
+    const resp = await fetch('/api/alarm/sound-light/status')
+    const data = await resp.json()
+    soundLightMuted.value = !!data?.muted
+  } catch {
+    // keep existing status on failure
+  }
+}
+
+export function setSoundLightMuted(muted: boolean) {
+  soundLightMuted.value = muted
 }

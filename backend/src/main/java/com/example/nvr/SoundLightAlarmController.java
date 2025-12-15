@@ -2,6 +2,7 @@ package com.example.nvr;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -16,6 +17,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @RestController
 @RequestMapping("/api/alarm/sound-light")
@@ -27,6 +29,18 @@ public class SoundLightAlarmController {
     private static final String DEACTIVATE_HEX = "0110001A0001000FD8";
     private static final int CONNECT_TIMEOUT_MS = 2000;
     private static final int READ_TIMEOUT_MS = 1500;
+    private final AtomicBoolean muted = new AtomicBoolean(false);
+
+    @GetMapping("/status")
+    public Map<String, Object> status() {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("ok", true);
+        payload.put("host", TARGET_HOST);
+        payload.put("port", TARGET_PORT);
+        payload.put("muted", muted.get());
+        payload.put("enabled", !muted.get());
+        return payload;
+    }
 
     @PostMapping("/activate")
     public ResponseEntity<Map<String, Object>> activate() {
@@ -38,15 +52,35 @@ public class SoundLightAlarmController {
         return sendCommand("deactivate", DEACTIVATE_HEX);
     }
 
+    @PostMapping("/disable")
+    public ResponseEntity<Map<String, Object>> disable() {
+        muted.set(true);
+        return ResponseEntity.ok(status());
+    }
+
+    @PostMapping("/enable")
+    public ResponseEntity<Map<String, Object>> enable() {
+        muted.set(false);
+        return ResponseEntity.ok(status());
+    }
+
     private ResponseEntity<Map<String, Object>> sendCommand(String action, String hexCommand) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("action", action);
         payload.put("host", TARGET_HOST);
         payload.put("port", TARGET_PORT);
         payload.put("commandHex", hexCommand);
+        payload.put("muted", muted.get());
 
         Instant start = Instant.now();
         payload.put("timestamp", start.toString());
+
+        if (muted.get()) {
+            payload.put("ok", true);
+            payload.put("message", "声光报警器已彻底关闭，未发送指令");
+            payload.put("elapsedMs", Duration.between(start, Instant.now()).toMillis());
+            return ResponseEntity.ok(payload);
+        }
 
         byte[] bytes = hexToBytes(hexCommand);
         try (Socket socket = new Socket()) {

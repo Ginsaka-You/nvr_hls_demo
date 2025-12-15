@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub, streamMode, hlsOrigin, webrtcServer, webrtcOptions, webrtcPreferCodec, channelOverrides, radarHost, radarCtrlPort, radarDataPort, radarUseTcp, radarCameraBindings, imsiFtpHost, imsiFtpPort, imsiFtpUser, imsiFtpPass, imsiSyncInterval, imsiSyncBatchSize, imsiFilenameTemplate, imsiLineTemplate, imsiDeviceFilter, dbType, dbHost, dbPort, dbName, dbUser, dbPass, saveSettings } from '@/store/config'
 import { message, Modal } from 'ant-design-vue'
+import { setSoundLightMuted } from '@/store/alerts'
 
 const sec = ref<'multicam'|'alarm'|'imsi'|'radar'|'seismic'|'drone'|'database'>('multicam')
 const saving = ref(false)
@@ -20,6 +21,9 @@ type SoundLightResult = {
   responseHex?: string
   elapsedMs?: number
   timestamp?: string
+  muted?: boolean
+  enabled?: boolean
+  message?: string
 }
 
 const SOUND_LIGHT_COMMANDS: Record<SoundLightAction, string> = {
@@ -29,6 +33,12 @@ const SOUND_LIGHT_COMMANDS: Record<SoundLightAction, string> = {
 
 const soundLightLoading = ref<SoundLightAction | null>(null)
 const soundLightResult = ref<SoundLightResult | null>(null)
+const soundLightStatus = ref<{ muted: boolean; enabled: boolean } | null>(null)
+const soundLightToggleLoading = ref(false)
+const soundLightStatusText = computed(() => {
+  if (!soundLightStatus.value) return '状态未知'
+  return soundLightStatus.value.muted ? '已彻底关闭' : '已开启'
+})
 
 function soundLightActionLabel(action?: string | null): string {
   if (action === 'activate') return '发送声光报警'
@@ -41,6 +51,24 @@ function soundLightCommandFor(action?: string | null): string {
   return SOUND_LIGHT_COMMANDS.activate
 }
 
+function applySoundLightStatus(data: any) {
+  const muted = !!data?.muted
+  soundLightStatus.value = { muted, enabled: !muted }
+  setSoundLightMuted(muted)
+}
+
+async function loadSoundLightStatus(showError = false) {
+  try {
+    const resp = await fetch('/api/alarm/sound-light/status')
+    const data = await resp.json()
+    applySoundLightStatus(data)
+  } catch (e: any) {
+    if (showError) {
+      message.warning('获取声光报警状态失败：' + (e?.message || e))
+    }
+  }
+}
+
 function formatSoundLightTimestamp(ts?: string | null): string {
   if (!ts) return ''
   const d = new Date(ts)
@@ -49,6 +77,10 @@ function formatSoundLightTimestamp(ts?: string | null): string {
 
 async function triggerSoundLight(action: SoundLightAction) {
   if (soundLightLoading.value) return
+  if (soundLightStatus.value?.muted) {
+    message.warning('声光报警已被彻底关闭，无法发送指令')
+    return
+  }
   const label = soundLightActionLabel(action)
   soundLightLoading.value = action
   try {
@@ -58,6 +90,13 @@ async function triggerSoundLight(action: SoundLightAction) {
     if (!resp.ok || data?.ok === false) {
       const err = data?.error || `请求失败（${resp.status}）`
       message.error(`${label}失败：${err}`)
+      return
+    }
+    if (data?.muted !== undefined) {
+      applySoundLightStatus(data)
+    }
+    if (data?.muted) {
+      message.warning('声光报警已被彻底关闭，未发送指令')
       return
     }
     message.success(`${label}指令已发送`)
@@ -73,6 +112,22 @@ async function triggerSoundLight(action: SoundLightAction) {
     message.error('声光报警操作失败：' + (e?.message || e))
   } finally {
     soundLightLoading.value = null
+  }
+}
+
+async function toggleSoundLightEnabled(enabled: boolean) {
+  if (soundLightToggleLoading.value) return
+  soundLightToggleLoading.value = true
+  const action = enabled ? 'enable' : 'disable'
+  try {
+    const resp = await fetch(`/api/alarm/sound-light/${action}`, { method: 'POST' })
+    const data = await resp.json()
+    applySoundLightStatus(data)
+    message.success(enabled ? '声光报警器已打开' : '声光报警器已彻底关闭')
+  } catch (e: any) {
+    message.error((enabled ? '打开' : '关闭') + '声光报警器失败：' + (e?.message || e))
+  } finally {
+    soundLightToggleLoading.value = false
   }
 }
 
@@ -152,6 +207,16 @@ function updateRadarBindingChannels(index: number, value: string) {
 function formatRadarBindingChannels(binding: { cameraChannels: string[] }) {
   return (binding?.cameraChannels || []).join(',')
 }
+
+onMounted(() => {
+  void loadSoundLightStatus()
+})
+
+watch(sec, (v) => {
+  if (v === 'alarm') {
+    void loadSoundLightStatus()
+  }
+})
 
 const imsiTesting = ref(false)
 const imsiTestResult = ref<any | null>(null)
@@ -433,7 +498,15 @@ async function clearHls() {
             <div style="margin:12px 0; color: rgba(0,0,0,0.65);">
               直连声光报警器（{{ SOUND_LIGHT_HOST }}:{{ SOUND_LIGHT_PORT }}），发送十六进制指令控制开关。
             </div>
-            <a-space>
+            <a-space align="center" wrap style="margin-bottom:8px;">
+              <a-tag :color="soundLightStatus?.muted ? 'red' : 'green'">
+                当前状态：{{ soundLightStatusText }}
+              </a-tag>
+              <span style="color: rgba(0,0,0,0.55);">
+                {{ soundLightStatus?.muted ? '已彻底关闭，所有指令都会被忽略' : '开启状态，可正常联动' }}
+              </span>
+            </a-space>
+            <a-space wrap>
               <a-button
                 type="primary"
                 @click="triggerSoundLight('activate')"
@@ -447,6 +520,23 @@ async function clearHls() {
                 :loading="soundLightLoading==='deactivate'"
               >
                 关闭报警
+              </a-button>
+              <a-button
+                type="default"
+                @click="toggleSoundLightEnabled(true)"
+                :loading="soundLightToggleLoading"
+                :disabled="soundLightStatus?.enabled"
+              >
+                打开声光报警
+              </a-button>
+              <a-button
+                danger
+                ghost
+                @click="toggleSoundLightEnabled(false)"
+                :loading="soundLightToggleLoading"
+                :disabled="soundLightStatus?.muted"
+              >
+                彻底关闭声光报警
               </a-button>
             </a-space>
             <a-alert
