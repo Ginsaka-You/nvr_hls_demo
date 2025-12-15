@@ -93,9 +93,9 @@ public class SettingsConfig {
         config.dbType = "postgres";
         config.dbHost = "127.0.0.1";
         config.dbPort = 5432;
-        config.dbName = "nvr_demo";
-        config.dbUser = "nvr_app";
-        config.dbPass = "nvrdemo";
+        config.dbName = "nvr_db";
+        config.dbUser = "admin";
+        config.dbPass = "000000";
         return config;
     }
 

@@ -10,8 +10,6 @@ import com.example.nvr.persistence.RiskAssessmentEntity;
 import com.example.nvr.persistence.RiskAssessmentRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -20,7 +18,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
-import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -51,7 +49,7 @@ public class EventCenterController {
 
     @GetMapping("/alerts")
     public List<AlertEventEntity> listAlerts(@RequestParam(name = "limit", defaultValue = "100") int limit) {
-        return alertEventRepository.findAll(page(limit, Sort.by(Sort.Direction.DESC, "id"))).getContent();
+        return alertEventRepository.findAllByOrderByIdDesc(page(limit, "id")).getContent();
     }
 
     @GetMapping("/alerts/{id}")
@@ -63,30 +61,39 @@ public class EventCenterController {
 
     @GetMapping("/risk-actions")
     public List<RiskActionView> listRiskActions(@RequestParam(name = "limit", defaultValue = "100") int limit) {
-        int size = Math.max(1, Math.min(limit, 1000));
-        List<RiskAssessmentEntity> assessments = riskAssessmentRepository
-                .findAll(PageRequest.of(0, size, Sort.by(Sort.Direction.DESC, "updatedAt")))
-                .getContent();
-        return assessments.stream()
-                .flatMap(assessment -> extractRiskActions(assessment).stream())
-                .sorted((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt()))
-                .limit(size)
-                .collect(Collectors.toList());
+        int size = clampLimit(limit);
+        List<RiskAssessmentEntity> assessments = riskAssessmentRepository.findTop200ByOrderByUpdatedAtDesc();
+        List<RiskActionView> actions = new ArrayList<>();
+        for (RiskAssessmentEntity assessment : assessments) {
+            if (actions.size() >= size) {
+                break;
+            }
+            actions.addAll(extractRiskActions(assessment));
+        }
+        actions.sort((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt()));
+        if (actions.size() > size) {
+            return actions.subList(0, size);
+        }
+        return actions;
     }
 
     @GetMapping("/camera-alarms")
     public List<CameraAlarmEntity> listCameraAlarms(@RequestParam(name = "limit", defaultValue = "100") int limit) {
-        return cameraAlarmRepository.findAll(page(limit, Sort.by(Sort.Direction.DESC, "createdAt"))).getContent();
+        return cameraAlarmRepository.findAllByOrderByCreatedAtDesc(page(limit, "createdAt")).getContent();
     }
 
     @GetMapping("/radar-targets")
     public List<RadarTargetEntity> listRadarTargets(@RequestParam(name = "limit", defaultValue = "100") int limit) {
-        return radarTargetRepository.findAll(page(limit, Sort.by(Sort.Direction.DESC, "capturedAt"))).getContent();
+        return radarTargetRepository.findAllByOrderByCapturedAtDesc(page(limit, "capturedAt")).getContent();
     }
 
-    private PageRequest page(int limit, Sort sort) {
-        int size = Math.max(1, Math.min(limit, 1000));
-        return PageRequest.of(0, size, sort);
+    private org.springframework.data.domain.Pageable page(int limit, String sortField) {
+        return org.springframework.data.domain.PageRequest.of(0, clampLimit(limit),
+                org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, sortField));
+    }
+
+    private int clampLimit(int limit) {
+        return Math.max(1, Math.min(limit, 200));
     }
 
     private List<RiskActionView> extractRiskActions(RiskAssessmentEntity assessment) {
@@ -118,30 +125,23 @@ public class EventCenterController {
         }
         Instant decidedAt = parseInstant(action.get("decidedAt"));
         String eventId = buildEventId(actionId, decidedAt);
-        AlertEventEntity alert = findMatchingAlert(actionId, eventId, decidedAt);
-        String resolvedEventId = eventId != null ? eventId : (alert != null ? alert.getEventId() : null);
-        String camChannel = alert != null ? alert.getCamChannel() : null;
-        String level = alert != null && alert.getLevel() != null
-                ? alert.getLevel()
-                : classificationToLevel(assessment.getClassification());
-        String status = alert != null ? alert.getStatus() : "未处理";
-        String eventType = alert != null && alert.getEventType() != null
-                ? alert.getEventType()
-                : "风控动作 " + actionId;
-        String eventTime = decidedAt != null ? decidedAt.toString() : (alert != null ? alert.getEventTime() : null);
-        Instant createdAt = alert != null ? alert.getCreatedAt() : Optional.ofNullable(assessment.getUpdatedAt()).orElse(Instant.now());
-        String snapshotUrl = alert != null ? alert.getSnapshotUrl() : null;
+        String resolvedEventId = eventId != null ? eventId : assessment.getId() + "-" + actionId;
+        String level = classificationToLevel(assessment.getClassification());
+        String status = "未处理";
+        String eventType = "风控动作 " + actionId;
+        String eventTime = decidedAt != null ? decidedAt.toString() : null;
+        Instant createdAt = Optional.ofNullable(assessment.getUpdatedAt()).orElse(Instant.now());
         return Optional.of(new RiskActionView(
                 resolvedEventId != null ? resolvedEventId : assessment.getId() + "-" + actionId,
                 resolvedEventId,
                 actionId,
                 eventType,
-                camChannel,
+                null,
                 level,
                 status,
                 eventTime,
                 createdAt,
-                snapshotUrl,
+                null,
                 assessment.getClassification(),
                 assessment.getSummary(),
                 assessment.getScore(),
@@ -194,36 +194,6 @@ public class EventCenterController {
             return null;
         }
         return String.format(Locale.ROOT, "risk-%s-%d", actionId.toLowerCase(Locale.ROOT), decidedAt.toEpochMilli());
-    }
-
-    private AlertEventEntity findMatchingAlert(String actionId, String eventId, Instant decidedAt) {
-        if (eventId != null) {
-            Optional<AlertEventEntity> direct = alertEventRepository.findByEventId(eventId);
-            if (direct.isPresent()) {
-                return direct.get();
-            }
-        }
-        if (actionId == null || actionId.isBlank()) {
-            return null;
-        }
-        String prefix = String.format(Locale.ROOT, "risk-%s-", actionId.toLowerCase(Locale.ROOT));
-        List<AlertEventEntity> recent = alertEventRepository
-                .findByEventIdStartingWith(prefix, PageRequest.of(0, 5, Sort.by(Sort.Direction.DESC, "createdAt")))
-                .getContent();
-        if (recent.isEmpty()) {
-            return null;
-        }
-        if (decidedAt == null) {
-            return recent.get(0);
-        }
-        long target = decidedAt.toEpochMilli();
-        return recent.stream()
-                .min(Comparator.comparingLong(entity -> {
-                    Instant created = entity.getCreatedAt();
-                    long ts = created != null ? created.toEpochMilli() : 0L;
-                    return Math.abs(ts - target);
-                }))
-                .orElse(recent.get(0));
     }
 
     private Instant epochToInstant(long epoch, int digits) {

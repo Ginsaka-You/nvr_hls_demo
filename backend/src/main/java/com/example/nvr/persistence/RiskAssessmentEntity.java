@@ -23,8 +23,7 @@ public class RiskAssessmentEntity {
     @Column(name = "summary", length = 255)
     private String summary;
 
-    @Lob
-    @Column(name = "details_json")
+    @Column(name = "details_json", columnDefinition = "text")
     private String detailsJson;
 
     @Column(name = "window_start")

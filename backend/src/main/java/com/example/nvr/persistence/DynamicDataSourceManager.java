@@ -19,13 +19,15 @@ import java.util.Objects;
 public class DynamicDataSourceManager {
 
     private static final Logger log = LoggerFactory.getLogger(DynamicDataSourceManager.class);
+    private static final int INIT_MAX_RETRIES = 5;
+    private static final long INIT_RETRY_DELAY_MS = 2000L;
 
     private final Object lock = new Object();
     private volatile HikariDataSource dataSource;
     private volatile DatabaseConfig currentConfig;
 
     public DynamicDataSourceManager(Environment environment) {
-        DatabaseConfig config = new DatabaseConfig(
+        this.currentConfig = new DatabaseConfig(
                 environment.getProperty("DB_TYPE", "postgres"),
                 environment.getProperty("DB_HOST", "127.0.0.1"),
                 parseInt(environment.getProperty("DB_PORT"), 5432),
@@ -33,11 +35,6 @@ public class DynamicDataSourceManager {
                 environment.getProperty("DB_USER", "nvr_app"),
                 environment.getProperty("DB_PASS", "nvrdemo")
         );
-        try {
-            reset(config);
-        } catch (SQLException e) {
-            log.error("Failed to initialise database connection: {}", e.getMessage());
-        }
     }
 
     public DatabaseConfig getCurrentConfig() {
@@ -49,6 +46,13 @@ public class DynamicDataSourceManager {
     }
 
     public synchronized DatabaseConfig update(DatabaseConfig config) throws SQLException {
+        if (config == null) {
+            throw new SQLException("数据库配置不能为空");
+        }
+        if (dataSource != null && sameConfig(config, currentConfig)) {
+            log.info("Database configuration unchanged, skipping reinitialisation");
+            return currentConfig;
+        }
         reset(config);
         return currentConfig;
     }
@@ -56,9 +60,11 @@ public class DynamicDataSourceManager {
     private void reset(DatabaseConfig config) throws SQLException {
         HikariDataSource newDataSource = createDataSource(config);
         try {
-            initSchema(newDataSource);
+            initSchemaWithRetry(newDataSource);
         } catch (SQLException ex) {
-            log.warn("Failed to initialise database schema: {}", ex.getMessage());
+            closeQuietly(newDataSource);
+            log.warn("Failed to initialise database schema after retries: {}", ex.getMessage());
+            throw ex;
         }
         synchronized (lock) {
             HikariDataSource old = this.dataSource;
@@ -84,9 +90,39 @@ public class DynamicDataSourceManager {
         hikariConfig.setDriverClassName("org.postgresql.Driver");
         hikariConfig.setMinimumIdle(0);
         hikariConfig.setMaximumPoolSize(5);
+        hikariConfig.setConnectionTimeout(5000);
         hikariConfig.setPoolName("nvr-event-pool");
         hikariConfig.setInitializationFailTimeout(-1);
         return new HikariDataSource(hikariConfig);
+    }
+
+    private void initSchemaWithRetry(DataSource ds) throws SQLException {
+        SQLException last = null;
+        for (int attempt = 1; attempt <= INIT_MAX_RETRIES; attempt++) {
+            try {
+                initSchema(ds);
+                if (attempt > 1) {
+                    log.info("Database became ready after {} attempt(s)", attempt);
+                }
+                return;
+            } catch (SQLException ex) {
+                last = ex;
+                if (attempt == INIT_MAX_RETRIES) {
+                    throw ex;
+                }
+                log.info("Database not ready yet (attempt {}/{}): {}. Retrying in {} ms",
+                        attempt, INIT_MAX_RETRIES, ex.getMessage(), INIT_RETRY_DELAY_MS);
+                try {
+                    Thread.sleep(INIT_RETRY_DELAY_MS);
+                } catch (InterruptedException interruptedEx) {
+                    Thread.currentThread().interrupt();
+                    throw ex;
+                }
+            }
+        }
+        if (last != null) {
+            throw last;
+        }
     }
 
     private void initSchema(DataSource ds) throws SQLException {
@@ -185,6 +221,10 @@ public class DynamicDataSourceManager {
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS score INT");
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS summary VARCHAR(255)");
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS details_json TEXT");
+            // prefer TEXT over PostgreSQL large object to avoid auto-commit issues
+            executeSilently(st, "ALTER TABLE risk_assessments ALTER COLUMN details_json TYPE TEXT USING convert_from(lo_get(details_json), 'UTF8')");
+            executeSilently(st, "ALTER TABLE risk_assessments ALTER COLUMN details_json TYPE TEXT USING details_json::text");
+            executeSilently(st, "UPDATE risk_assessments SET details_json = convert_from(lo_get(details_json::oid), 'UTF8') WHERE details_json ~ '^[0-9]+$'");
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS window_start TIMESTAMPTZ");
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS window_end TIMESTAMPTZ");
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ");
@@ -235,6 +275,31 @@ public class DynamicDataSourceManager {
             st.execute(sql);
         } catch (SQLException ex) {
             log.debug("Skipping optional schema statement '{}': {}", sql, ex.getMessage());
+        }
+    }
+
+    private boolean sameConfig(DatabaseConfig a, DatabaseConfig b) {
+        if (a == b) {
+            return true;
+        }
+        if (a == null || b == null) {
+            return false;
+        }
+        return Objects.equals(a.type(), b.type())
+                && Objects.equals(a.host(), b.host())
+                && a.port() == b.port()
+                && Objects.equals(a.name(), b.name())
+                && Objects.equals(a.username(), b.username())
+                && Objects.equals(a.password(), b.password());
+    }
+
+    private void closeQuietly(HikariDataSource ds) {
+        if (ds != null) {
+            try {
+                ds.close();
+            } catch (Exception ignored) {
+                // already closed
+            }
         }
     }
 

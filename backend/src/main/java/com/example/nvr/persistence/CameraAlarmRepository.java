@@ -1,6 +1,8 @@
 package com.example.nvr.persistence;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
 
 import java.time.Instant;
 import java.util.List;
@@ -18,4 +20,6 @@ public interface CameraAlarmRepository extends JpaRepository<CameraAlarmEntity, 
     boolean existsByEventId(String eventId);
 
     long countByEventIdStartingWith(String prefix);
+
+    Slice<CameraAlarmEntity> findAllByOrderByCreatedAtDesc(Pageable pageable);
 }

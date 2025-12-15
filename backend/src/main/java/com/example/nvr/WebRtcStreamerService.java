@@ -11,6 +11,8 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -92,6 +94,11 @@ public class WebRtcStreamerService {
         }
 
         try {
+            String normalizedHostPort = hostPort == null ? "" : hostPort.trim();
+            if (!normalizedHostPort.isBlank() && !isPortAvailable(normalizedHostPort)) {
+                return;
+            }
+
             Path binary = resolve(binaryPath);
             if (binary == null) {
                 throw new IOException("WebRTC streamer binary not found for path " + binaryPath);
@@ -217,6 +224,33 @@ public class WebRtcStreamerService {
             tokens.add(tokenizer.nextToken());
         }
         return tokens;
+    }
+
+    private boolean isPortAvailable(String hostPortValue) {
+        int idx = hostPortValue.lastIndexOf(':');
+        if (idx <= 0 || idx == hostPortValue.length() - 1) {
+            return true;
+        }
+        String host = hostPortValue.substring(0, idx);
+        String portStr = hostPortValue.substring(idx + 1);
+        int port;
+        try {
+            port = Integer.parseInt(portStr.trim());
+        } catch (NumberFormatException ex) {
+            return true;
+        }
+        try (ServerSocket socket = new ServerSocket()) {
+            socket.setReuseAddress(true);
+            socket.bind(new InetSocketAddress(host, port));
+            return true;
+        } catch (IOException ex) {
+            log.warn("WebRTC streamer port {} unavailable: {}", hostPortValue, ex.getMessage());
+            recordFailure("system", "port-in-use", Map.of(
+                "hostPort", hostPortValue,
+                "message", ex.getMessage() == null ? "in use" : ex.getMessage()
+            ));
+            return false;
+        }
     }
 
     public List<Map<String, Object>> listRecentFailures(long windowMs) {
