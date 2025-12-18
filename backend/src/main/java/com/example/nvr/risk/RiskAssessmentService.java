@@ -30,6 +30,8 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -229,6 +231,7 @@ public class RiskAssessmentService {
         if (a2Status.filter(ActionStatus::isTriggered).isPresent()) {
             ActionStatus currentA2 = a2Status.get();
             Instant decidedAt = Optional.ofNullable(currentA2.getDecidedAt()).orElse(now);
+            recordActionAlertFromContext(decidedAt, priority, scoreSummary, context, currentA2);
             AudioDecision audioDecision = evaluateA2Audio(decidedAt, night, upgradeTriggered);
             boolean shouldEmit = !previousA2.isTriggered() || audioDecision.shouldTrigger() || upgradeTriggered;
             if (shouldEmit) {
@@ -1237,7 +1240,11 @@ public class RiskAssessmentService {
         String eventId = String.format(Locale.ROOT, "risk-%s-%d",
                 action.getId().toLowerCase(Locale.ROOT), eventInstant.toEpochMilli());
         try {
-            if (alertEventRepository.existsByEventId(eventId)) {
+            AlertEventEntity existing = alertEventRepository.findByEventId(eventId).orElse(null);
+            if (existing != null) {
+                if (!hasSnapshot(existing.getSnapshotPath()) && cameraEvidenceService != null && camChannel != null) {
+                    scheduleRiskSnapshotCapture(existing.getId(), camChannel, decidedAt, action.getId(), score);
+                }
                 return;
             }
             String level = mapPriorityToLevel(priority);
@@ -1253,18 +1260,51 @@ public class RiskAssessmentService {
                 log.debug("Failed to publish risk action alert: {}", ex.getMessage());
             }
             if (!hasSnapshot(snapshotPath) && cameraEvidenceService != null && camChannel != null) {
-                cameraEvidenceService.captureSnapshotPath(
-                                camChannel,
-                                decidedAt,
-                                action.getId(),
-                                "风控动作抓拍",
-                                action.getId(),
-                                score)
-                        .thenAccept(optPath -> optPath.ifPresent(path -> updateActionAlertSnapshot(saved.getId(), path)));
+                scheduleRiskSnapshotCapture(saved.getId(), camChannel, decidedAt, action.getId(), score);
             }
         } catch (Exception ex) {
             log.warn("Failed to persist risk action alert {}", eventId, ex);
         }
+    }
+
+    private void scheduleRiskSnapshotCapture(Long alertId,
+                                             String camChannel,
+                                             Instant decidedAt,
+                                             String trigger,
+                                             double score) {
+        if (alertId == null || cameraEvidenceService == null || camChannel == null) {
+            return;
+        }
+        Instant anchor = decidedAt != null ? decidedAt : Instant.now();
+        String safeTrigger = trigger != null ? trigger : "A2";
+        runAfterCommit("risk-action-snapshot", () -> cameraEvidenceService.captureSnapshotPath(
+                        camChannel,
+                        anchor,
+                        safeTrigger,
+                        "风控动作抓拍",
+                        safeTrigger,
+                        score)
+                .thenAccept(optPath -> optPath.ifPresent(path -> updateActionAlertSnapshot(alertId, path))));
+    }
+
+    private void recordActionAlertFromContext(Instant decidedAt,
+                                              PriorityDefinition priority,
+                                              ScoreSummary scores,
+                                              EvaluationContext context,
+                                              ActionStatus action) {
+        if (action == null || !action.isTriggered()) {
+            return;
+        }
+        Optional<String> primaryChannel = pickPrimaryChannel(context);
+        Instant anchor = decidedAt != null ? decidedAt : Instant.now();
+        String snapshotPath = null;
+        if (cameraEvidenceService != null && primaryChannel.isPresent()) {
+            snapshotPath = cameraEvidenceService.findSnapshotPath(primaryChannel.get(), anchor).orElse(null);
+        }
+        recordActionAlert(decidedAt, priority, action,
+                context != null ? context.getCameraScore() : 0.0,
+                primaryChannel.orElse(null),
+                snapshotPath);
     }
 
     private void updateActionAlertSnapshot(Long id, String path) {
@@ -1290,6 +1330,34 @@ public class RiskAssessmentService {
 
     private boolean hasSnapshot(String path) {
         return path != null && !path.isBlank();
+    }
+
+    private void runAfterCommit(String description, Runnable action) {
+        if (action == null) {
+            return;
+        }
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            safeRun(description, action);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                safeRun(description, action);
+            }
+        });
+    }
+
+    private void safeRun(String description, Runnable action) {
+        try {
+            action.run();
+        } catch (Exception ex) {
+            if (description == null || description.isBlank()) {
+                log.warn("Deferred action failed: {}", ex.getMessage(), ex);
+            } else {
+                log.warn("Failed to execute {}: {}", description, ex.getMessage(), ex);
+            }
+        }
     }
 
     private String buildAlertTitle(PriorityDefinition priority, ActionStatus action, boolean upgradeTriggered) {

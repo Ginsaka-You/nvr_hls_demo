@@ -422,14 +422,6 @@ function onTabChange(key: string) {
 const pagination = { pageSize: 20, showSizeChanger: false }
 const tableScroll = { x: 'max-content' as const }
 
-function formatTimeline(record: AlertRecord) {
-  const eventTime = formatDate(record.eventTime)
-  if (eventTime && eventTime !== '-') {
-    return eventTime
-  }
-  return '-'
-}
-
 function translateEventType(value: any): string | null {
   if (value == null) return null
   const text = String(value).trim()
