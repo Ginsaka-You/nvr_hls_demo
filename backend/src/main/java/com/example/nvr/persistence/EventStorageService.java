@@ -151,7 +151,11 @@ public class EventStorageService {
             if (eventId != null && alertEventRepository.existsByEventId(eventId)) {
                 return false;
             }
-            String eventType = normalizeEventType(stringValue(event.get("eventType")));
+            String rawEventType = stringValue(event.get("eventType"));
+            if (isIgnoredEventType(rawEventType)) {
+                return false;
+            }
+            String eventType = normalizeEventType(rawEventType);
             Integer channelId = intValue(event.get("channelID"));
             Integer port = intValue(event.get("port"));
             String level = stringValue(event.get("level"));
@@ -210,7 +214,11 @@ public class EventStorageService {
             if (cameraAlarmRepository.existsByEventId(eventId)) {
                 return false;
             }
-            String eventType = normalizeEventType(stringValue(event.get("eventType")));
+            String rawEventType = stringValue(event.get("eventType"));
+            if (isIgnoredEventType(rawEventType)) {
+                return false;
+            }
+            String eventType = normalizeEventType(rawEventType);
             String level = stringValue(event.get("level"));
             String eventTime = stringValue(event.get("time"));
             Instant eventInstant = parseEventInstant(eventTime);
@@ -328,6 +336,9 @@ public class EventStorageService {
                 return;
             }
             Instant eventInstant = parseEventInstant(eventTime);
+            if (isIgnoredEventType(eventType)) {
+                return;
+            }
             AlertEventEntity entity = new AlertEventEntity(normalizedId, normalizeEventType(eventType), camChannel, level, eventTime, null);
             if (cameraEvidenceService != null && camChannel != null) {
                 cameraEvidenceService.findSnapshotPath(camChannel, eventInstant)
@@ -579,6 +590,14 @@ public class EventStorageService {
             return "检测到区域入侵";
         }
         return trimmed;
+    }
+
+    private boolean isIgnoredEventType(String value) {
+        if (value == null) {
+            return false;
+        }
+        String lowered = value.trim().toLowerCase(Locale.ROOT);
+        return lowered.contains("videoloss") || lowered.contains("video loss");
     }
 
     private void broadcastImsiUpdate(List<ImsiRecordEntity> saved) {

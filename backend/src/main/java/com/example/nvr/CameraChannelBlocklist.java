@@ -1,5 +1,7 @@
 package com.example.nvr;
 
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
@@ -9,8 +11,11 @@ import java.util.Set;
  */
 public final class CameraChannelBlocklist {
 
-    private static final Set<Integer> BLOCKED_PHYSICAL_CHANNELS = Set.of(1);
-    private static final Set<Integer> BLOCKED_RAW_CHANNEL_IDS = Set.of(0);
+    private static final String ENV_BLOCKED_PHYSICAL_CHANNELS = "NVR_BLOCKED_PHYSICAL_CHANNELS";
+    private static final String ENV_BLOCKED_RAW_CHANNEL_IDS = "NVR_BLOCKED_RAW_CHANNEL_IDS";
+
+    private static final Set<Integer> BLOCKED_PHYSICAL_CHANNELS = loadBlockedChannels(ENV_BLOCKED_PHYSICAL_CHANNELS, false);
+    private static final Set<Integer> BLOCKED_RAW_CHANNEL_IDS = loadBlockedChannels(ENV_BLOCKED_RAW_CHANNEL_IDS, true);
 
     private CameraChannelBlocklist() {
     }
@@ -46,6 +51,24 @@ public final class CameraChannelBlocklist {
         }
         Integer physical = resolvePhysicalChannel(channelId, port, camChannel);
         return physical != null && BLOCKED_PHYSICAL_CHANNELS.contains(physical);
+    }
+
+    private static Set<Integer> loadBlockedChannels(String envKey, boolean allowZero) {
+        String raw = System.getenv(envKey);
+        if (raw == null || raw.isBlank()) {
+            return Set.of();
+        }
+        Set<Integer> parsed = new HashSet<>();
+        for (String token : raw.split(",")) {
+            Integer value = allowZero ? parseInteger(token) : parsePositiveInt(token);
+            if (value != null) {
+                parsed.add(value);
+            }
+        }
+        if (parsed.isEmpty()) {
+            return Set.of();
+        }
+        return Collections.unmodifiableSet(parsed);
     }
 
     private static Integer resolvePhysicalChannel(Integer channelId, Integer port, String camChannel) {

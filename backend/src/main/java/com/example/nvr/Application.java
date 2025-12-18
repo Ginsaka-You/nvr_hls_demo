@@ -21,6 +21,9 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 })
 public class Application {
     public static void main(String[] args) {
+        if (System.getProperty("http.auth.digest.reEnabledAlgorithms") == null) {
+            System.setProperty("http.auth.digest.reEnabledAlgorithms", "MD5,MD5-sess");
+        }
         SpringApplication.run(Application.class, args);
     }
 }
