@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, h } from 'vue'
+import { ref, reactive, computed, onMounted, h, watch } from 'vue'
 import { message } from 'ant-design-vue'
 
 type Classification = 'P1' | 'P2' | 'P3' | 'P4' | 'INFO'
@@ -80,18 +80,20 @@ type RadarRecord = {
 
 type TabKey = 'alerts' | 'risk' | 'camera' | 'radar'
 
-const activeKey = ref<TabKey>('alerts')
+const activeKey = ref<TabKey>('risk')
 const loading = reactive<Record<TabKey, boolean>>({ alerts: false, risk: false, camera: false, radar: false })
 const loaded = reactive<Record<TabKey, boolean>>({ alerts: false, risk: false, camera: false, radar: false })
 const FETCH_LIMIT = 500
 
 const alerts = ref<AlertRecord[]>([])
-const riskActions = ref<RiskActionRecord[]>([])
+const riskActionsRaw = ref<RiskActionRecord[]>([])
+const riskActionsA1Loaded = ref(false)
+const mergedRiskActions = computed(() => mergeRiskActions(riskActionsRaw.value))
 const showA1 = ref(false)
 const filteredRiskActions = computed(() =>
   showA1.value
-    ? riskActions.value
-    : riskActions.value.filter(item => {
+    ? mergedRiskActions.value
+    : mergedRiskActions.value.filter(item => {
         const actions = getRecordActions(item)
         if (!actions.length) return true
         return actions.some(action => action !== 'A1')
@@ -102,6 +104,13 @@ const radar = ref<RadarRecord[]>([])
 const previewVisible = ref(false)
 const previewImages = ref<string[]>([])
 const previewIndex = ref(0)
+
+watch(showA1, async (value) => {
+  if (!value) {
+    return
+  }
+  await appendRiskActionsA1()
+})
 
 function formatDate(value: string | null | undefined) {
   if (!value) return '-'
@@ -114,29 +123,33 @@ async function fetchData(kind: TabKey) {
   if (loading[kind]) return
   loading[kind] = true
   try {
-    const endpoint = kind === 'alerts'
-      ? 'alerts'
-      : kind === 'risk'
-        ? 'risk-actions'
+    if (kind === 'risk') {
+      riskActionsRaw.value = await fetchRiskActionsByTypes(['A2', 'A3'])
+      riskActionsA1Loaded.value = false
+      if (showA1.value) {
+        await appendRiskActionsA1()
+      }
+    } else {
+      const endpoint = kind === 'alerts'
+        ? 'alerts'
         : kind === 'camera'
           ? 'camera-alarms'
           : 'radar-targets'
-    const resp = await fetch(`/api/events/${endpoint}?limit=${FETCH_LIMIT}`)
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    const data = await resp.json()
-    if (!Array.isArray(data)) {
-      throw new Error('数据格式异常')
-    }
-    if (kind === 'alerts') {
-      const riskForMerge = await fetchRiskActionsForMerge()
-      const riskIndex = buildRiskActionTriggerIndex(riskForMerge)
-      alerts.value = aggregateAlertRecords(data.map(mapAlert), riskIndex)
-    } else if (kind === 'risk') {
-      riskActions.value = mergeRiskActions(data.map(mapRiskAction))
-    } else if (kind === 'camera') {
-      camera.value = data.map(mapCameraAlarm)
-    } else {
-      radar.value = data.map(mapRadar)
+      const resp = await fetch(`/api/events/${endpoint}?limit=${FETCH_LIMIT}`)
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      const data = await resp.json()
+      if (!Array.isArray(data)) {
+        throw new Error('数据格式异常')
+      }
+      if (kind === 'alerts') {
+        const riskForMerge = await fetchRiskActionsForMerge()
+        const riskIndex = buildRiskActionTriggerIndex(riskForMerge)
+        alerts.value = aggregateAlertRecords(data.map(mapAlert), riskIndex)
+      } else if (kind === 'camera') {
+        camera.value = data.map(mapCameraAlarm)
+      } else {
+        radar.value = data.map(mapRadar)
+      }
     }
     loaded[kind] = true
   } catch (err: any) {
@@ -147,8 +160,16 @@ async function fetchData(kind: TabKey) {
 }
 
 async function fetchRiskActionsForMerge(): Promise<RiskActionRecord[]> {
+  return fetchRiskActionsByTypes(['A2', 'A3'])
+}
+
+async function fetchRiskActionsByTypes(types: string[]): Promise<RiskActionRecord[]> {
   try {
-    const resp = await fetch(`/api/events/risk-actions?limit=${FETCH_LIMIT}`)
+    const params = new URLSearchParams({ limit: String(FETCH_LIMIT) })
+    if (types.length) {
+      params.set('actions', types.join(','))
+    }
+    const resp = await fetch(`/api/events/risk-actions?${params.toString()}`)
     if (!resp.ok) return []
     const data = await resp.json()
     if (!Array.isArray(data)) return []
@@ -156,6 +177,17 @@ async function fetchRiskActionsForMerge(): Promise<RiskActionRecord[]> {
   } catch {
     return []
   }
+}
+
+async function appendRiskActionsA1() {
+  if (riskActionsA1Loaded.value) {
+    return
+  }
+  const a1Items = await fetchRiskActionsByTypes(['A1'])
+  if (a1Items.length) {
+    riskActionsRaw.value = [...riskActionsRaw.value, ...a1Items]
+  }
+  riskActionsA1Loaded.value = true
 }
 
 function mapCameraAlarm(item: any): CameraAlarmRecord {
@@ -1062,16 +1094,6 @@ function renderRiskDetail(record: RiskActionRecord) {
 <template>
   <div class="event-center">
     <a-tabs v-model:activeKey="activeKey" type="card" @change="onTabChange">
-      <a-tab-pane key="alerts" tab="告警事件">
-        <a-table
-          row-key="id"
-          :columns="alertColumns"
-          :data-source="alerts"
-          :loading="loading.alerts"
-          :pagination="pagination"
-          :scroll="tableScroll"
-        />
-      </a-tab-pane>
       <a-tab-pane key="risk" tab="风控告警">
         <div class="table-toolbar">
           <a-checkbox v-model:checked="showA1">显示 A1 取证</a-checkbox>
@@ -1085,6 +1107,16 @@ function renderRiskDetail(record: RiskActionRecord) {
           :pagination="pagination"
           :scroll="riskTableScroll"
           table-layout="fixed"
+        />
+      </a-tab-pane>
+      <a-tab-pane key="alerts" tab="所有告警事件">
+        <a-table
+          row-key="id"
+          :columns="alertColumns"
+          :data-source="alerts"
+          :loading="loading.alerts"
+          :pagination="pagination"
+          :scroll="tableScroll"
         />
       </a-tab-pane>
       <a-tab-pane key="camera" tab="摄像头告警">

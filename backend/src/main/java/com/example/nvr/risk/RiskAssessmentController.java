@@ -75,6 +75,7 @@ public class RiskAssessmentController {
         return new AssessmentResponse(
                 entity.getId(),
                 entity.getClassification(),
+                entity.getActionType(),
                 entity.getScore(),
                 entity.getSummary(),
                 entity.getWindowStart(),
@@ -111,6 +112,7 @@ public class RiskAssessmentController {
     public static class AssessmentResponse {
         private final Long id;
         private final String classification;
+        private final String actionType;
         private final Integer score;
         private final String summary;
         private final Instant windowStart;
@@ -120,6 +122,7 @@ public class RiskAssessmentController {
 
         public AssessmentResponse(Long id,
                                   String classification,
+                                  String actionType,
                                   Integer score,
                                   String summary,
                                   Instant windowStart,
@@ -128,6 +131,7 @@ public class RiskAssessmentController {
                                   Map<String, Object> details) {
             this.id = id;
             this.classification = classification;
+            this.actionType = actionType;
             this.score = score;
             this.summary = summary;
             this.windowStart = windowStart;
@@ -142,6 +146,10 @@ public class RiskAssessmentController {
 
         public String getClassification() {
             return classification;
+        }
+
+        public String getActionType() {
+            return actionType;
         }
 
         public Integer getScore() {

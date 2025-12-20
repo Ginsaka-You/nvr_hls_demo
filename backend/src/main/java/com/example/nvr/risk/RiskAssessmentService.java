@@ -253,7 +253,7 @@ public class RiskAssessmentService {
         String classification = priority != null ? priority.getId() : "P4";
         PersistDecision decision = evaluatePersistDecision(scoreSummary, actions, context, now, classification);
         if (decision.shouldPersist()) {
-            persistAssessment(now, windowStart, priority, scoreSummary, details, summary,
+            persistAssessment(now, windowStart, priority, decision.actionId, scoreSummary, details, summary,
                     remoteAlarmGateTriggered, soundLightTriggered);
             recordAssessmentSnapshot(decision);
         } else if (log.isDebugEnabled()) {
@@ -1201,6 +1201,7 @@ public class RiskAssessmentService {
     private void persistAssessment(Instant now,
                                    Instant windowStart,
                                    PriorityDefinition priority,
+                                   String actionType,
                                    ScoreSummary scores,
                                    Map<String, Object> details,
                                    String summary,
@@ -1209,6 +1210,7 @@ public class RiskAssessmentService {
         String classification = priority != null ? priority.getId() : "P4";
         RiskAssessmentEntity entity = new RiskAssessmentEntity();
         entity.setClassification(classification);
+        entity.setActionType(actionType);
         entity.setScore((int) Math.round(scores.getTotalScore()));
         entity.setSummary(trimSummary(summary));
         entity.setWindowStart(windowStart);

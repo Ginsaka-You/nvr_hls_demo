@@ -6,7 +6,8 @@ import java.time.Instant;
 @Entity
 @Table(name = "risk_assessments",
         indexes = {
-                @Index(name = "idx_risk_updated_at", columnList = "updated_at")
+                @Index(name = "idx_risk_updated_at", columnList = "updated_at"),
+                @Index(name = "idx_risk_action_type", columnList = "action_type")
         })
 public class RiskAssessmentEntity {
 
@@ -16,6 +17,9 @@ public class RiskAssessmentEntity {
 
     @Column(name = "classification", nullable = false, length = 32)
     private String classification;
+
+    @Column(name = "action_type", length = 8)
+    private String actionType;
 
     @Column(name = "score")
     private Integer score;
@@ -54,6 +58,14 @@ public class RiskAssessmentEntity {
 
     public void setClassification(String classification) {
         this.classification = classification;
+    }
+
+    public String getActionType() {
+        return actionType;
+    }
+
+    public void setActionType(String actionType) {
+        this.actionType = actionType;
     }
 
     public Integer getScore() {

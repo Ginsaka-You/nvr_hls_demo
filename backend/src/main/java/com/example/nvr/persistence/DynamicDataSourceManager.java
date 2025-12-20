@@ -209,6 +209,7 @@ public class DynamicDataSourceManager {
             st.execute("CREATE TABLE IF NOT EXISTS risk_assessments (" +
                     "id SERIAL PRIMARY KEY, " +
                     "classification VARCHAR(32) NOT NULL, " +
+                    "action_type VARCHAR(8), " +
                     "score INT, " +
                     "summary VARCHAR(255), " +
                     "details_json TEXT, " +
@@ -219,7 +220,9 @@ public class DynamicDataSourceManager {
                     "sound_light_triggered BOOLEAN DEFAULT FALSE" +
                     ")");
             st.execute("CREATE INDEX IF NOT EXISTS idx_risk_assessments_updated_at ON risk_assessments(updated_at DESC)");
+            st.execute("CREATE INDEX IF NOT EXISTS idx_risk_assessments_action_type ON risk_assessments(action_type)");
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS classification VARCHAR(32)");
+            st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS action_type VARCHAR(8)");
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS score INT");
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS summary VARCHAR(255)");
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS details_json TEXT");

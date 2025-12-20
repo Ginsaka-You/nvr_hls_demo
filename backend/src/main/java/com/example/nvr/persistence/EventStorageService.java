@@ -43,7 +43,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class EventStorageService {
 
     private static final Logger log = LoggerFactory.getLogger(EventStorageService.class);
-    private static final Duration RADAR_SNAPSHOT_MIN_INTERVAL = Duration.ofSeconds(1);
+    private static final Duration RADAR_SNAPSHOT_MIN_INTERVAL = Duration.ofSeconds(2);
     private final AlertEventRepository alertEventRepository;
     private final CameraAlarmRepository cameraAlarmRepository;
     private final RadarTargetRepository radarTargetRepository;

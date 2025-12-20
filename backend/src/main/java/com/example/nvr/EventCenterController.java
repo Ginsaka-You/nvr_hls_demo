@@ -35,6 +35,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @RestController
@@ -81,18 +82,25 @@ public class EventCenterController {
     }
 
     @GetMapping("/risk-actions")
-    public List<RiskActionView> listRiskActions(@RequestParam(name = "limit", defaultValue = "100") int limit) {
+    public List<RiskActionView> listRiskActions(@RequestParam(name = "limit", defaultValue = "100") int limit,
+                                                @RequestParam(name = "actions", required = false) String actionTypes) {
         int size = clampLimit(limit);
-        List<RiskAssessmentEntity> assessments = riskAssessmentRepository.findTop200ByOrderByUpdatedAtDesc();
-        List<RiskActionView> actions = new ArrayList<>();
+        Set<String> actionFilter = parseActionFilter(actionTypes);
+        List<RiskAssessmentEntity> assessments;
+        if (actionFilter.isEmpty()) {
+            assessments = riskAssessmentRepository.findTop200ByOrderByUpdatedAtDesc();
+        } else {
+            assessments = riskAssessmentRepository.findByActionTypeIn(actionFilter, page(limit, "updatedAt")).getContent();
+        }
+        List<RiskActionView> results = new ArrayList<>();
         for (RiskAssessmentEntity assessment : assessments) {
-            if (actions.size() >= size) {
+            if (results.size() >= size) {
                 break;
             }
-            actions.addAll(extractRiskActions(assessment));
+            results.addAll(extractRiskActions(assessment, actionFilter));
         }
-        actions.sort((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt()));
-        List<RiskActionView> filtered = filterRiskActions(actions);
+        results.sort((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt()));
+        List<RiskActionView> filtered = filterRiskActions(results);
         if (filtered.size() > size) {
             return filtered.subList(0, size);
         }
@@ -332,12 +340,30 @@ public class EventCenterController {
         return Math.max(1, Math.min(limit, 200));
     }
 
-    private List<RiskActionView> extractRiskActions(RiskAssessmentEntity assessment) {
+    private Set<String> parseActionFilter(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return Set.of();
+        }
+        Set<String> result = new LinkedHashSet<>();
+        String[] parts = raw.split("[,\\s]+");
+        for (String part : parts) {
+            if (part == null) {
+                continue;
+            }
+            String trimmed = part.trim().toUpperCase(Locale.ROOT);
+            if (trimmed.matches("A[1-3]")) {
+                result.add(trimmed);
+            }
+        }
+        return result;
+    }
+
+    private List<RiskActionView> extractRiskActions(RiskAssessmentEntity assessment, Set<String> allowedActions) {
         Map<String, Object> details = parseDetails(assessment.getDetailsJson());
         List<?> actions = details != null && details.get("actions") instanceof List ? (List<?>) details.get("actions") : List.of();
         SnapshotBundle snapshots = buildSnapshotBundle(assessment);
         return actions.stream()
-                .map(obj -> buildRiskView(assessment, details, obj, snapshots))
+                .map(obj -> buildRiskView(assessment, details, obj, snapshots, allowedActions))
                 .filter(Optional::isPresent)
                 .map(Optional::get)
                 .collect(Collectors.toList());
@@ -346,7 +372,8 @@ public class EventCenterController {
     private Optional<RiskActionView> buildRiskView(RiskAssessmentEntity assessment,
                                                    Map<String, Object> details,
                                                    Object rawAction,
-                                                   SnapshotBundle snapshots) {
+                                                   SnapshotBundle snapshots,
+                                                   Set<String> allowedActions) {
         if (!(rawAction instanceof Map)) {
             return Optional.empty();
         }
@@ -359,6 +386,9 @@ public class EventCenterController {
                 ? action.get("id").toString().toUpperCase(Locale.ROOT)
                 : null;
         if (actionId == null) {
+            return Optional.empty();
+        }
+        if (allowedActions != null && !allowedActions.isEmpty() && !allowedActions.contains(actionId)) {
             return Optional.empty();
         }
         Instant decidedAt = parseInstant(action.get("decidedAt"));
