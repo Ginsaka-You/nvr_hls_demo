@@ -3,6 +3,7 @@ import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import AlertPanel from '@/components/AlertPanel.vue'
 import { loadAmap } from '@/lib/loadAmap'
 import { radarDeviceState, cameraDeviceState, imsiDeviceState } from '@/store/devices'
+import { alarms } from '@/store/alerts'
 
 type Cam = { id: string, name: string, lat?: number, lng?: number }
 type Alarm = { id: string, level: 'info'|'minor'|'major'|'critical', source: string, place: string, time: string, summary: string, deviceId?: string }
@@ -37,6 +38,37 @@ const camStatusClass = computed(() => ({ ok: camState.value.status === 'ok', err
 const camStatusMessage = computed(() => camState.value.message)
 const imsiStatusClass = computed(() => ({ ok: imsiState.value.status === 'ok', error: imsiState.value.status === 'error' }))
 const imsiStatusMessage = computed(() => imsiState.value.message)
+
+const alarmPriority: Record<Alarm['level'], number> = {
+  info: 0,
+  minor: 1,
+  major: 2,
+  critical: 3
+}
+
+function isRiskAction(a: Alarm) {
+  const deviceId = a.deviceId || ''
+  if (!deviceId.startsWith('risk:')) return false
+  const actionId = deviceId.split(':')[1]?.toUpperCase()
+  return actionId === 'A2' || actionId === 'A3'
+}
+
+const riskAlarms = computed(() => alarms.value.filter(isRiskAction))
+
+const topAlarm = computed(() => {
+  if (!riskAlarms.value.length) return null
+  let picked = riskAlarms.value[0]
+  let pickedScore = alarmPriority[picked.level]
+  for (let i = 1; i < riskAlarms.value.length; i += 1) {
+    const current = riskAlarms.value[i]
+    const score = alarmPriority[current.level]
+    if (score > pickedScore) {
+      picked = current
+      pickedScore = score
+    }
+  }
+  return picked
+})
 
 async function initMap() {
   try {
@@ -131,16 +163,26 @@ onBeforeUnmount(() => {
               </div>
             </div>
         </div>
-        <!-- 右侧悬浮面板（告警队列 + 预警事件统计） -->
+        <!-- 右侧悬浮面板（A:高危弹窗 / B:待处理任务 / C:数据态势） -->
         <div class="right-panels">
-          <div class="panel-card tall">
-            <div class="panel-header">告警队列</div>
-            <div class="panel-body" style="padding:8px;">
-              <AlertPanel />
+          <div class="panel-card alert-hero" :class="{ active: topAlarm }">
+            <div class="panel-header">实时高危弹窗</div>
+            <div class="panel-body alert-hero-body">
+              <div v-if="topAlarm" class="alert-hero-content">
+                <div class="alert-hero-title">{{ topAlarm.summary }}</div>
+                <div class="alert-hero-meta">{{ topAlarm.place }} · {{ topAlarm.source }} · {{ topAlarm.time }}</div>
+              </div>
+              <div v-else class="muted">暂无高危报警</div>
             </div>
           </div>
-          <div class="panel-card">
-            <div class="panel-header">预警事件统计</div>
+          <div class="panel-card queue-card">
+            <div class="panel-header">待处理任务列表</div>
+            <div class="panel-body queue-body">
+              <AlertPanel :items="riskAlarms" />
+            </div>
+          </div>
+          <div class="panel-card stats-card">
+            <div class="panel-header">数据态势</div>
             <div class="panel-body"><div class="muted">暂无数据</div></div>
           </div>
         </div>
@@ -173,6 +215,53 @@ onBeforeUnmount(() => {
 .status-item .value { font-size:14px; }
 .muted { color: var(--text-muted); }
 /* 右侧三个悬浮面板栈 */
-.right-panels { position:absolute; right:12px; top:12px; width:380px; display:flex; flex-direction:column; gap:12px; }
-.panel-card.tall { min-height:260px; }
+.right-panels {
+  position:absolute;
+  right:12px;
+  top:12px;
+  bottom:12px;
+  width:380px;
+  display:grid;
+  grid-template-rows: 2fr 5fr 3fr;
+  gap:12px;
+}
+.right-panels .panel-card {
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+}
+.right-panels .panel-body {
+  flex:1;
+  min-height:0;
+}
+.alert-hero { transition: box-shadow 0.2s ease, border-color 0.2s ease; }
+.alert-hero.active {
+  border:2px solid rgba(255,77,79,0.85);
+  background: rgba(255,77,79,0.08);
+  box-shadow: 0 6px 22px rgba(255,77,79,0.25);
+}
+.alert-hero.active .panel-header {
+  color: var(--danger-color);
+  border-bottom-color: rgba(255,77,79,0.4);
+}
+.alert-hero-body {
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  gap:8px;
+}
+.alert-hero-title {
+  font-size:20px;
+  font-weight:700;
+  color: var(--text-color);
+}
+.alert-hero-meta {
+  font-size:13px;
+  color: var(--text-muted);
+}
+.queue-body {
+  padding:8px 6px 8px 8px;
+  max-height:100%;
+  overflow-y:auto;
+}
 </style>
