@@ -18,6 +18,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -151,6 +153,7 @@ public class EventCenterController {
         return Optional.of(new RiskActionView(
                 resolvedEventId != null ? resolvedEventId : assessment.getId() + "-" + actionId,
                 resolvedEventId,
+                assessment.getId(),
                 actionId,
                 eventType,
                 camChannel,
@@ -163,6 +166,8 @@ public class EventCenterController {
                 assessment.getClassification(),
                 assessment.getSummary(),
                 assessment.getScore(),
+                assessment.getRemoteAlarmGateTriggered(),
+                assessment.getSoundLightTriggered(),
                 details,
                 assessment.getWindowStart(),
                 assessment.getWindowEnd(),
@@ -317,15 +322,67 @@ public class EventCenterController {
     private List<String> mergeSnapshots(String primary,
                                         SnapshotBundle snapshots,
                                         String camChannel) {
-        LinkedHashSet<String> merged = new LinkedHashSet<>();
-        if (primary != null && !primary.isBlank()) {
-            merged.add(primary);
-        }
+        LinkedHashMap<String, String> merged = new LinkedHashMap<>();
+        addSnapshot(merged, primary);
         if (snapshots != null) {
-            merged.addAll(snapshots.getByChannel(camChannel));
-            merged.addAll(snapshots.getAll());
+            for (String url : snapshots.getByChannel(camChannel)) {
+                addSnapshot(merged, url);
+            }
+            for (String url : snapshots.getAll()) {
+                addSnapshot(merged, url);
+            }
         }
-        return new ArrayList<>(merged);
+        return new ArrayList<>(merged.values());
+    }
+
+    private void addSnapshot(LinkedHashMap<String, String> merged, String url) {
+        if (merged == null || url == null) {
+            return;
+        }
+        String trimmed = url.trim();
+        if (trimmed.isEmpty()) {
+            return;
+        }
+        String key = normalizeSnapshotKey(trimmed);
+        if (key == null || key.isEmpty()) {
+            return;
+        }
+        merged.putIfAbsent(key, trimmed);
+    }
+
+    private String normalizeSnapshotKey(String url) {
+        if (url == null) {
+            return null;
+        }
+        String trimmed = url.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        int cut = trimmed.length();
+        int queryIdx = trimmed.indexOf('?');
+        int hashIdx = trimmed.indexOf('#');
+        if (queryIdx >= 0) {
+            cut = Math.min(cut, queryIdx);
+        }
+        if (hashIdx >= 0) {
+            cut = Math.min(cut, hashIdx);
+        }
+        if (cut != trimmed.length()) {
+            trimmed = trimmed.substring(0, cut);
+        }
+        trimmed = trimmed.replace('\\', '/');
+        int lastSlash = trimmed.lastIndexOf('/');
+        if (lastSlash < 0 || lastSlash == trimmed.length() - 1) {
+            return trimmed;
+        }
+        String prefix = trimmed.substring(0, lastSlash + 1);
+        String filename = trimmed.substring(lastSlash + 1);
+        try {
+            filename = URLDecoder.decode(filename, StandardCharsets.UTF_8);
+        } catch (Exception ignored) {
+            // keep original filename on decode failure
+        }
+        return prefix + filename;
     }
 
     private boolean channelsMatch(String a, String b) {
@@ -422,6 +479,7 @@ public class EventCenterController {
     public static class RiskActionView {
         private final String id;
         private final String eventId;
+        private final Long assessmentId;
         private final String action;
         private final String eventType;
         private final String camChannel;
@@ -434,6 +492,8 @@ public class EventCenterController {
         private final String classification;
         private final String summary;
         private final Integer score;
+        private final Boolean remoteAlarmGateTriggered;
+        private final Boolean soundLightTriggered;
         private final Map<String, Object> details;
         private final Instant windowStart;
         private final Instant windowEnd;
@@ -441,6 +501,7 @@ public class EventCenterController {
 
         public RiskActionView(String id,
                               String eventId,
+                              Long assessmentId,
                               String action,
                               String eventType,
                               String camChannel,
@@ -453,12 +514,15 @@ public class EventCenterController {
                               String classification,
                               String summary,
                               Integer score,
+                              Boolean remoteAlarmGateTriggered,
+                              Boolean soundLightTriggered,
                               Map<String, Object> details,
                               Instant windowStart,
                               Instant windowEnd,
                               String decidedAt) {
             this.id = id;
             this.eventId = eventId;
+            this.assessmentId = assessmentId;
             this.action = action;
             this.eventType = eventType;
             this.camChannel = camChannel;
@@ -471,6 +535,8 @@ public class EventCenterController {
             this.classification = classification;
             this.summary = summary;
             this.score = score;
+            this.remoteAlarmGateTriggered = remoteAlarmGateTriggered;
+            this.soundLightTriggered = soundLightTriggered;
             this.details = details;
             this.windowStart = windowStart;
             this.windowEnd = windowEnd;
@@ -483,6 +549,10 @@ public class EventCenterController {
 
         public String getEventId() {
             return eventId;
+        }
+
+        public Long getAssessmentId() {
+            return assessmentId;
         }
 
         public String getAction() {
@@ -531,6 +601,14 @@ public class EventCenterController {
 
         public Integer getScore() {
             return score;
+        }
+
+        public Boolean getRemoteAlarmGateTriggered() {
+            return remoteAlarmGateTriggered;
+        }
+
+        public Boolean getSoundLightTriggered() {
+            return soundLightTriggered;
         }
 
         public Map<String, Object> getDetails() {

@@ -32,7 +32,10 @@ type CameraAlarmRecord = AlertRecord
 type RiskActionRecord = {
   id: string | number
   eventId: string
+  assessmentId?: number | string | null
   action: string | null
+  actions?: string[]
+  eventTimeRange?: { start: string | null; end: string | null }
   eventType: string | null
   camChannel: string | null
   level: string | null
@@ -44,6 +47,8 @@ type RiskActionRecord = {
   classification: string | null
   score: number | null
   summary: string | null
+  remoteAlarmGateTriggered?: boolean | null
+  soundLightTriggered?: boolean | null
   details: any
   windowStart?: string | null
   windowEnd?: string | null
@@ -86,7 +91,11 @@ const showA1 = ref(false)
 const filteredRiskActions = computed(() =>
   showA1.value
     ? riskActions.value
-    : riskActions.value.filter(item => (item.action || '').toString().toUpperCase() !== 'A1')
+    : riskActions.value.filter(item => {
+        const actions = getRecordActions(item)
+        if (!actions.length) return true
+        return actions.some(action => action !== 'A1')
+      })
 )
 const camera = ref<CameraAlarmRecord[]>([])
 const radar = ref<RadarRecord[]>([])
@@ -119,9 +128,11 @@ async function fetchData(kind: TabKey) {
       throw new Error('数据格式异常')
     }
     if (kind === 'alerts') {
-      alerts.value = aggregateAlertRecords(data.map(mapAlert))
+      const riskForMerge = await fetchRiskActionsForMerge()
+      const riskIndex = buildRiskActionTriggerIndex(riskForMerge)
+      alerts.value = aggregateAlertRecords(data.map(mapAlert), riskIndex)
     } else if (kind === 'risk') {
-      riskActions.value = data.map(mapRiskAction)
+      riskActions.value = mergeRiskActions(data.map(mapRiskAction))
     } else if (kind === 'camera') {
       camera.value = data.map(mapCameraAlarm)
     } else {
@@ -132,6 +143,18 @@ async function fetchData(kind: TabKey) {
     message.error(`加载失败：${err?.message || err}`)
   } finally {
     loading[kind] = false
+  }
+}
+
+async function fetchRiskActionsForMerge(): Promise<RiskActionRecord[]> {
+  try {
+    const resp = await fetch(`/api/events/risk-actions?limit=${FETCH_LIMIT}`)
+    if (!resp.ok) return []
+    const data = await resp.json()
+    if (!Array.isArray(data)) return []
+    return data.map(mapRiskAction)
+  } catch {
+    return []
   }
 }
 
@@ -187,32 +210,44 @@ function mapAlert(item: any): AlertRecord {
 }
 
 function mapRiskAction(item: any): RiskActionRecord {
-  const action = parseRiskAction(item)
+  const action = normalizeAction(parseRiskAction(item))
   const classification = item?.classification ?? null
   const score = typeof item?.score === 'number' ? item.score : (item?.score != null ? Number(item.score) : null)
   const summary = item?.summary ?? null
+  const remoteAlarmGateTriggered = typeof item?.remoteAlarmGateTriggered === 'boolean'
+    ? item.remoteAlarmGateTriggered
+    : (item?.remote_alarm_gate_triggered != null ? Boolean(item.remote_alarm_gate_triggered) : null)
+  const soundLightTriggered = typeof item?.soundLightTriggered === 'boolean'
+    ? item.soundLightTriggered
+    : (item?.sound_light_triggered != null ? Boolean(item.sound_light_triggered) : null)
   const snapshots = Array.isArray(item?.snapshots)
     ? item.snapshots.filter((url: any) => typeof url === 'string' && url.length > 0)
     : item?.snapshotUrl
       ? [item.snapshotUrl]
       : []
+  const dedupedSnapshots = dedupeSnapshots(snapshots)
   const eventId = String(item?.eventId ?? item?.id ?? `risk-${Date.now().toString(36)}`)
   const eventType = item?.eventType ?? formatRiskEventType(action, classification)
+  const eventTime = item?.eventTime ?? item?.decidedAt ?? null
   return {
     id: item?.id ?? eventId,
     eventId,
+    assessmentId: item?.assessmentId ?? item?.assessment_id ?? null,
     action,
+    actions: action ? [action] : [],
     eventType,
     camChannel: item?.camChannel ?? item?.cam_channel ?? null,
     level: item?.level ?? null,
     status: item?.status ?? '未处理',
-    eventTime: item?.eventTime ?? item?.decidedAt ?? null,
+    eventTime,
     createdAt: item?.createdAt ?? item?.created_at ?? new Date().toISOString(),
-    snapshotUrl: item?.snapshotUrl ?? null,
-    snapshots,
+    snapshotUrl: dedupedSnapshots[0] ?? item?.snapshotUrl ?? null,
+    snapshots: dedupedSnapshots,
     classification,
     score,
     summary,
+    remoteAlarmGateTriggered,
+    soundLightTriggered,
     details: normalizeDetails(item?.details ?? item?.detailsJson ?? item?.details_json),
     windowStart: item?.windowStart ?? null,
     windowEnd: item?.windowEnd ?? null,
@@ -245,7 +280,23 @@ function mapRadar(item: any): RadarRecord {
   }
 }
 
-function aggregateAlertRecords(items: AlertRecord[]): AlertRecord[] {
+function buildRiskActionTriggerIndex(items: RiskActionRecord[]): Map<string, boolean> {
+  const index = new Map<string, boolean>()
+  for (const item of items) {
+    const key = typeof item.eventId === 'string' ? item.eventId : null
+    if (!key) {
+      continue
+    }
+    if (item.soundLightTriggered === true) {
+      index.set(key, true)
+    } else if (!index.has(key)) {
+      index.set(key, false)
+    }
+  }
+  return index
+}
+
+function aggregateAlertRecords(items: AlertRecord[], riskIndex?: Map<string, boolean>): AlertRecord[] {
   const RADAR_MERGE_WINDOW_MS = 8000
   const dedupe = (list: string[]) => Array.from(new Set(list.filter(Boolean)))
   const sorted = [...items].sort((a, b) => getTimestamp(a.createdAt) - getTimestamp(b.createdAt))
@@ -287,7 +338,131 @@ function aggregateAlertRecords(items: AlertRecord[]): AlertRecord[] {
     result.push(merged)
   }
 
-  return result.sort((a, b) => getTimestamp(b.createdAt) - getTimestamp(a.createdAt))
+  const mergedRisk = mergeRiskAlertRecords(result, riskIndex)
+  return mergedRisk.sort((a, b) => getTimestamp(b.createdAt) - getTimestamp(a.createdAt))
+}
+
+function mergeRiskAlertRecords(items: AlertRecord[], riskIndex?: Map<string, boolean>): AlertRecord[] {
+  const COOLDOWN_WINDOW_MS = 10 * 60 * 1000
+  const riskItems = items.filter(isRiskAlertRecord)
+  if (!riskItems.length) {
+    return items
+  }
+  const otherItems = items.filter(item => !isRiskAlertRecord(item))
+  const sorted = [...riskItems].sort((a, b) => getAlertTimestamp(a) - getAlertTimestamp(b))
+  const groups: AlertRecord[][] = []
+  let currentGroup: AlertRecord[] | null = null
+  let currentLastTime = 0
+
+  for (const item of sorted) {
+    const action = extractRiskActionFromAlert(item)
+    const timeMs = getAlertTimestamp(item)
+    if (!action || timeMs <= 0) {
+      groups.push([item])
+      currentGroup = null
+      currentLastTime = 0
+      continue
+    }
+    const soundLightTriggered = riskIndex ? riskIndex.get(item.eventId) === true : false
+    const startNewByTrigger = action === 'A2' && soundLightTriggered
+    const startNewByGap = currentGroup && timeMs - currentLastTime > COOLDOWN_WINDOW_MS
+    if (!currentGroup || startNewByTrigger || startNewByGap) {
+      currentGroup = [item]
+      groups.push(currentGroup)
+    } else {
+      currentGroup.push(item)
+    }
+    currentLastTime = timeMs
+  }
+
+  const mergedRisk = groups.map(group => (group.length > 1 ? buildMergedRiskAlert(group) : group[0]))
+  return [...otherItems, ...mergedRisk]
+}
+
+function buildMergedRiskAlert(groupItems: AlertRecord[]): AlertRecord {
+  const actions = Array.from(new Set(groupItems.map(extractRiskActionFromAlert).filter(Boolean))) as string[]
+  actions.sort((a, b) => actionPriority(a) - actionPriority(b))
+  const snapshotMap = new Map<string, string>()
+  for (const item of groupItems) {
+    const list = item.snapshots && item.snapshots.length ? item.snapshots : (item.snapshotUrl ? [item.snapshotUrl] : [])
+    list.filter(Boolean).forEach(url => {
+      const key = normalizeSnapshotKey(url)
+      if (!key) return
+      if (!snapshotMap.has(key)) {
+        snapshotMap.set(key, url)
+      }
+    })
+  }
+  const snapshots = Array.from(snapshotMap.values())
+  const primary = pickPrimaryRiskAlert(groupItems)
+  const latestEventTime = pickLatestValue(groupItems, item => item.eventTime ?? item.createdAt)
+  const latestCreatedAt = pickLatestValue(groupItems, item => item.createdAt)
+  return {
+    ...primary,
+    eventType: actions.length ? `风控动作 ${actions.join('/')}` : primary.eventType,
+    snapshots,
+    snapshotUrl: snapshots[0] ?? primary.snapshotUrl ?? null,
+    eventTime: latestEventTime ?? primary.eventTime,
+    createdAt: latestCreatedAt ?? primary.createdAt,
+  }
+}
+
+function pickLatestValue(items: AlertRecord[], pick: (item: AlertRecord) => string | null | undefined): string | null {
+  let best: string | null = null
+  let bestTs = -1
+  for (const item of items) {
+    const value = pick(item)
+    const ts = getTimestamp(value)
+    if (ts > bestTs) {
+      bestTs = ts
+      best = value ?? null
+    }
+  }
+  return best
+}
+
+function pickPrimaryRiskAlert(items: AlertRecord[]): AlertRecord {
+  return items.reduce((best, current) => {
+    const bestAction = extractRiskActionFromAlert(best)
+    const currentAction = extractRiskActionFromAlert(current)
+    const bestRank = actionPriority(bestAction)
+    const currentRank = actionPriority(currentAction)
+    if (currentRank > bestRank) {
+      return current
+    }
+    if (currentRank < bestRank) {
+      return best
+    }
+    const bestTs = getAlertTimestamp(best)
+    const currentTs = getAlertTimestamp(current)
+    return currentTs > bestTs ? current : best
+  }, items[0])
+}
+
+function getAlertTimestamp(item: AlertRecord): number {
+  return getTimestamp(item.eventTime ?? item.createdAt)
+}
+
+function isRiskAlertRecord(item: AlertRecord): boolean {
+  const eventId = typeof item.eventId === 'string' ? item.eventId : ''
+  if (eventId.toLowerCase().startsWith('risk-')) return true
+  if (typeof item.eventType === 'string' && item.eventType.includes('风控动作')) return true
+  return false
+}
+
+function extractRiskActionFromAlert(item: AlertRecord): string | null {
+  const eventId = typeof item.eventId === 'string' ? item.eventId : ''
+  const idMatch = eventId.match(/risk-?a?([1-3])/i)
+  if (idMatch && idMatch[1]) {
+    return `A${idMatch[1]}`
+  }
+  if (typeof item.eventType === 'string') {
+    const typeMatch = item.eventType.match(/A[1-3]/i)
+    if (typeMatch && typeMatch[0]) {
+      return typeMatch[0].toUpperCase()
+    }
+  }
+  return null
 }
 
 function normalizeTargetId(value: any): number | null {
@@ -386,15 +561,20 @@ const alertColumns = computed(() => [
   { title: '事件时间', dataIndex: 'eventTime', key: 'eventTime', width: 180, customRender: ({ text }: any) => formatDate(text) }
 ])
 
-const riskColumns = computed(() => [
-  snapshotColumn,
-  { title: '风控动作', dataIndex: 'action', key: 'action', width: 100, customRender: ({ record }: any) => record.action || '—' },
-  { title: '优先级', dataIndex: 'classification', key: 'classification', width: 140, customRender: ({ record }: any) => formatClassification(record.classification) },
-  { title: '综合得分', dataIndex: 'score', key: 'score', width: 120, customRender: ({ record }: any) => formatScoreValue(record.score) },
-  { title: '评分详情', key: 'details', width: 520, customRender: ({ record }: any) => renderRiskDetail(record) },
-  { title: '摄像头通道', dataIndex: 'camChannel', key: 'camChannel', width: 140 },
-  { title: '事件时间', dataIndex: 'eventTime', key: 'eventTime', width: 180, customRender: ({ text }: any) => formatDate(text) }
-])
+const riskColumns = computed(() => {
+  const riskSnapshotColumn = { ...snapshotColumn, width: 110 }
+  return [
+    riskSnapshotColumn,
+    { title: '风控动作', dataIndex: 'action', key: 'action', customRender: ({ record }: any) => renderRiskActionCell(record) },
+    { title: '优先级', dataIndex: 'classification', key: 'classification', customRender: ({ record }: any) => formatClassification(record.classification) },
+    { title: '综合得分', dataIndex: 'score', key: 'score', customRender: ({ record }: any) => formatScoreValue(record.score) },
+    { title: '远程警报闸门', dataIndex: 'remoteAlarmGateTriggered', key: 'remoteAlarmGateTriggered', customRender: ({ record }: any) => renderFlag(record.remoteAlarmGateTriggered) },
+    { title: '声光报警', dataIndex: 'soundLightTriggered', key: 'soundLightTriggered', customRender: ({ record }: any) => renderFlag(record.soundLightTriggered, '已触发', '未触发') },
+    { title: '评分详情', key: 'details', customRender: ({ record }: any) => renderRiskDetail(record) },
+    { title: '摄像头通道', dataIndex: 'camChannel', key: 'camChannel' },
+    { title: '事件时间', dataIndex: 'eventTime', key: 'eventTime', customRender: ({ record }: any) => renderRiskEventTime(record) }
+  ]
+})
 
 const radarColumns = computed(() => [
   snapshotColumn,
@@ -420,7 +600,8 @@ function onTabChange(key: string) {
 }
 
 const pagination = { pageSize: 20, showSizeChanger: false }
-const tableScroll = { x: 'max-content' as const }
+const tableScroll = { x: '100%' as const }
+const riskTableScroll = undefined
 
 function translateEventType(value: any): string | null {
   if (value == null) return null
@@ -440,6 +621,187 @@ function translateEventType(value: any): string | null {
   return text
 }
 
+function normalizeAction(action: string | null | undefined): string | null {
+  if (!action) return null
+  const match = action.toUpperCase().match(/A[1-3]/)
+  return match ? match[0] : null
+}
+
+function safeDecodeUrlSegment(value: string): string {
+  try {
+    return decodeURIComponent(value.replace(/\+/g, '%20'))
+  } catch {
+    return value
+  }
+}
+
+function normalizeSnapshotKey(url: string | null | undefined): string | null {
+  if (!url) return null
+  let trimmed = url.trim()
+  if (!trimmed) return null
+  let cut = trimmed.length
+  const queryIdx = trimmed.indexOf('?')
+  const hashIdx = trimmed.indexOf('#')
+  if (queryIdx >= 0) cut = Math.min(cut, queryIdx)
+  if (hashIdx >= 0) cut = Math.min(cut, hashIdx)
+  if (cut !== trimmed.length) {
+    trimmed = trimmed.slice(0, cut)
+  }
+  trimmed = trimmed.replace(/\\/g, '/')
+  const lastSlash = trimmed.lastIndexOf('/')
+  if (lastSlash < 0 || lastSlash === trimmed.length - 1) {
+    return trimmed
+  }
+  const prefix = trimmed.slice(0, lastSlash + 1)
+  const filename = safeDecodeUrlSegment(trimmed.slice(lastSlash + 1))
+  return `${prefix}${filename}`
+}
+
+function dedupeSnapshots(urls: string[]): string[] {
+  const map = new Map<string, string>()
+  for (const url of urls) {
+    const key = normalizeSnapshotKey(url)
+    if (!key) continue
+    if (!map.has(key)) {
+      map.set(key, url)
+    }
+  }
+  return Array.from(map.values())
+}
+
+function actionPriority(action: string | null | undefined): number {
+  if (!action) return -1
+  if (action === 'A3') return 2
+  if (action === 'A2') return 1
+  if (action === 'A1') return 0
+  return -1
+}
+
+function getRecordActions(record: RiskActionRecord): string[] {
+  const raw = record.actions && record.actions.length ? record.actions : (record.action ? [record.action] : [])
+  const normalized = raw.map(item => normalizeAction(item)).filter(Boolean) as string[]
+  return Array.from(new Set(normalized)).sort((a, b) => actionPriority(a) - actionPriority(b))
+}
+
+function pickLatestTime(items: RiskActionRecord[], pick: (item: RiskActionRecord) => string | null | undefined): string | null {
+  let best: string | null = null
+  let bestTs = -1
+  for (const item of items) {
+    const value = pick(item)
+    const ts = getTimestamp(value)
+    if (ts > bestTs) {
+      bestTs = ts
+      best = value ?? null
+    }
+  }
+  return best
+}
+
+function pickEarliestTime(items: RiskActionRecord[], pick: (item: RiskActionRecord) => string | null | undefined): string | null {
+  let best: string | null = null
+  let bestTs = Number.POSITIVE_INFINITY
+  for (const item of items) {
+    const value = pick(item)
+    const ts = getTimestamp(value)
+    if (ts > 0 && ts < bestTs) {
+      bestTs = ts
+      best = value ?? null
+    }
+  }
+  return best
+}
+
+function pickPrimaryRiskAction(items: RiskActionRecord[]): RiskActionRecord {
+  return items.reduce((best, current) => {
+    const bestRank = actionPriority(best.action)
+    const currentRank = actionPriority(current.action)
+    if (currentRank > bestRank) {
+      return current
+    }
+    if (currentRank < bestRank) {
+      return best
+    }
+    const bestTs = getTimestamp(best.eventTime ?? best.decidedAt ?? best.createdAt)
+    const currentTs = getTimestamp(current.eventTime ?? current.decidedAt ?? current.createdAt)
+    return currentTs > bestTs ? current : best
+  }, items[0])
+}
+
+function mergeRiskActions(items: RiskActionRecord[]): RiskActionRecord[] {
+  const COOLDOWN_WINDOW_MS = 10 * 60 * 1000
+  const result: RiskActionRecord[] = []
+  const gateGroups: RiskActionRecord[][] = []
+  let currentGroup: RiskActionRecord[] | null = null
+  let currentGroupLastTime = 0
+
+  const sorted = [...items].sort((a, b) => getTimestamp(a.eventTime ?? a.decidedAt ?? a.createdAt) - getTimestamp(b.eventTime ?? b.decidedAt ?? b.createdAt))
+  for (const item of sorted) {
+    const actions = getRecordActions(item)
+    item.actions = actions
+    item.action = actions[0] ?? null
+    const action = actions.length === 1 ? actions[0] : null
+    const timeMs = getTimestamp(item.eventTime ?? item.decidedAt ?? item.createdAt)
+    const canMerge = action != null && (action === 'A2' || action === 'A3') && timeMs > 0
+    if (!canMerge) {
+      result.push(item)
+      continue
+    }
+
+    const startNewByTrigger = action === 'A2' && item.soundLightTriggered === true
+    const startNewByGap = currentGroup && timeMs - currentGroupLastTime > COOLDOWN_WINDOW_MS
+    if (!currentGroup || startNewByTrigger || startNewByGap) {
+      currentGroup = [item]
+      gateGroups.push(currentGroup)
+    } else {
+      currentGroup.push(item)
+    }
+    currentGroupLastTime = timeMs
+  }
+
+  for (const group of gateGroups) {
+    const groupItems = group
+    if (groupItems.length === 1) {
+      result.push(groupItems[0])
+      continue
+    }
+    const actions = Array.from(new Set(groupItems.flatMap(getRecordActions)))
+    actions.sort((a, b) => actionPriority(a) - actionPriority(b))
+    const snapshotMap = new Map<string, string>()
+    for (const item of groupItems) {
+      const list = item.snapshots && item.snapshots.length ? item.snapshots : (item.snapshotUrl ? [item.snapshotUrl] : [])
+      list.filter(Boolean).forEach(url => {
+        const key = normalizeSnapshotKey(url)
+        if (!key) return
+        if (!snapshotMap.has(key)) {
+          snapshotMap.set(key, url)
+        }
+      })
+    }
+    const snapshots = Array.from(snapshotMap.values())
+    const primary = pickPrimaryRiskAction(groupItems)
+    const earliest = pickEarliestTime(groupItems, (item) => item.eventTime ?? item.decidedAt ?? item.createdAt)
+    const latest = pickLatestTime(groupItems, (item) => item.eventTime ?? item.decidedAt ?? item.createdAt)
+    const merged: RiskActionRecord = {
+      ...primary,
+      action: actions.join('/'),
+      actions,
+      snapshots,
+      snapshotUrl: snapshots[0] ?? primary.snapshotUrl ?? null,
+      eventTime: latest ?? primary.eventTime,
+      eventTimeRange: {
+        start: earliest ?? primary.eventTime ?? null,
+        end: latest ?? primary.eventTime ?? null
+      },
+      createdAt: pickLatestTime(groupItems, (item) => item.createdAt) ?? primary.createdAt,
+      remoteAlarmGateTriggered: groupItems.some(item => item.remoteAlarmGateTriggered === true),
+      soundLightTriggered: groupItems.some(item => item.soundLightTriggered === true)
+    }
+    result.push(merged)
+  }
+
+  return result.sort((a, b) => getTimestamp(b.eventTime ?? b.createdAt) - getTimestamp(a.eventTime ?? a.createdAt))
+}
+
 function parseRiskAction(item: any): string | null {
   const direct = item?.action ?? item?.actionId ?? item?.action_id
   if (typeof direct === 'string' && direct.trim()) {
@@ -456,6 +818,32 @@ function parseRiskAction(item: any): string | null {
     return typeMatch[0].toUpperCase()
   }
   return null
+}
+
+function renderRiskActionCell(record: RiskActionRecord) {
+  const actions = getRecordActions(record)
+  if (!actions.length) return '—'
+  return h('div', { class: 'risk-action-tags' },
+    actions.map(action => h('span', { class: `risk-action-tag ${action.toLowerCase()}` }, action)))
+}
+
+function renderRiskEventTime(record: RiskActionRecord) {
+  const range = record.eventTimeRange
+  if (range && (range.start || range.end)) {
+    const startText = formatDate(range.start ?? null)
+    const endText = formatDate(range.end ?? null)
+    if (startText === endText) {
+      return startText
+    }
+    return `${startText} - ${endText}`
+  }
+  return formatDate(record.eventTime ?? null)
+}
+
+function renderFlag(value: boolean | null | undefined, onLabel = '已触发', offLabel = '未触发') {
+  if (value == null) return '—'
+  const cls = value ? 'risk-flag on' : 'risk-flag off'
+  return h('span', { class: cls }, value ? onLabel : offLabel)
 }
 
 function formatRiskEventType(action: string | null, classification?: string | null) {
@@ -659,12 +1047,14 @@ function renderRiskDetail(record: RiskActionRecord) {
           <a-checkbox v-model:checked="showA1">显示 A1 取证</a-checkbox>
         </div>
         <a-table
+          class="risk-table"
           row-key="id"
           :columns="riskColumns"
           :data-source="filteredRiskActions"
           :loading="loading.risk"
           :pagination="pagination"
-          :scroll="tableScroll"
+          :scroll="riskTableScroll"
+          table-layout="fixed"
         />
       </a-tab-pane>
       <a-tab-pane key="camera" tab="摄像头告警">
@@ -790,6 +1180,16 @@ table {
   line-height: 1.4;
 }
 
+.risk-table :deep(.ant-table) {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.risk-table :deep(.ant-table-cell) {
+  white-space: normal;
+  word-break: break-word;
+}
+
 .table-toolbar {
   display: flex;
   align-items: center;
@@ -799,6 +1199,52 @@ table {
 .risk-detail-head {
   font-weight: 600;
   color: #1f2937;
+}
+
+.risk-action-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.risk-action-tag {
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(15, 23, 42, 0.2);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.risk-action-tag.a1 {
+  background: rgba(148, 163, 184, 0.2);
+  color: #475569;
+  border-color: rgba(148, 163, 184, 0.5);
+}
+
+.risk-action-tag.a2 {
+  background: rgba(59, 130, 246, 0.15);
+  color: #1d4ed8;
+  border-color: rgba(37, 99, 235, 0.35);
+}
+
+.risk-action-tag.a3 {
+  background: rgba(239, 68, 68, 0.15);
+  color: #dc2626;
+  border-color: rgba(220, 38, 38, 0.35);
+}
+
+.risk-flag {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.risk-flag.on {
+  color: #dc2626;
+}
+
+.risk-flag.off {
+  color: #64748b;
 }
 
 .risk-score-grid {

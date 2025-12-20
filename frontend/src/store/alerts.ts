@@ -9,9 +9,28 @@ export type Alarm = {
   time: string
   summary: string
   deviceId?: string
+  occurredAt?: number
+  soundLightTriggered?: boolean
 }
 
 export const alarms: Ref<Alarm[]> = ref([])
+
+type RiskActionPayload = {
+  eventId?: string
+  event_id?: string
+  action?: string
+  actionId?: string
+  action_id?: string
+  classification?: string
+  level?: string
+  camChannel?: string
+  cam_channel?: string
+  eventTime?: string
+  decidedAt?: string
+  createdAt?: string
+  summary?: string
+  score?: number
+}
 
 function deriveCamChannel(channelId?: number, port?: number): string | undefined {
   if (typeof channelId === 'number' && channelId > 0) {
@@ -51,10 +70,12 @@ export function connectAlerts() {
   if (connected) return
   connected = true
   openStreams()
+  void loadRiskActions()
   // Reconnect on config changes
   watch([nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort], () => {
     closeStreams()
     openStreams()
+    void loadRiskActions()
   })
 }
 
@@ -110,6 +131,37 @@ function toNumber(value: any): number | undefined {
   return Number.isFinite(num) ? num : undefined
 }
 
+function normalizeRiskActionId(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null
+  const match = raw.trim().toUpperCase().match(/A[1-3]/)
+  return match ? match[0] : null
+}
+
+function parseTimestamp(value: unknown): number | null {
+  if (value == null) return null
+  if (value instanceof Date) {
+    const ts = value.getTime()
+    return Number.isFinite(ts) ? ts : null
+  }
+  const text = String(value).trim()
+  if (!text) return null
+  const ts = Date.parse(text)
+  return Number.isFinite(ts) ? ts : null
+}
+
+function buildRiskEventId(actionId: string | null, decidedAt: unknown): string | null {
+  const normalized = normalizeRiskActionId(actionId)
+  const ts = parseTimestamp(decidedAt)
+  if (!normalized || ts == null) return null
+  return `risk-${normalized.toLowerCase()}-${ts}`
+}
+
+function formatAlarmTime(value: unknown): string {
+  const ts = parseTimestamp(value)
+  if (ts == null) return new Date().toLocaleTimeString()
+  return new Date(ts).toLocaleTimeString()
+}
+
 export function pushAlarmFromEvent(ev: any) {
   const camChannelRaw = typeof ev?.camChannel === 'string' ? ev.camChannel.trim() : undefined
   const channelRaw = toNumber(ev?.channelID)
@@ -158,9 +210,13 @@ function sanitizeChannels(channels: unknown): string[] {
 }
 
 function pushRiskAlarm(data: any) {
-  const id = typeof data?.id === 'string' && data.id ? data.id : `risk-${Date.now().toString(36)}`
-  const actionIdRaw = typeof data?.actionId === 'string' && data.actionId ? data.actionId : 'A2'
-  const actionId = actionIdRaw.toUpperCase()
+  const actionIdRaw = typeof data?.actionId === 'string' && data.actionId ? data.actionId : (typeof data?.action === 'string' ? data.action : 'A2')
+  const actionId = normalizeRiskActionId(actionIdRaw) || 'A2'
+  const eventId = data?.eventId || data?.event_id
+  const resolvedId = typeof eventId === 'string' && eventId
+    ? eventId
+    : buildRiskEventId(actionId, data?.decidedAt)
+  const id = resolvedId || (typeof data?.id === 'string' && data.id ? data.id : `risk-${Date.now().toString(36)}`)
   const classification = typeof data?.classification === 'string' && data.classification ? data.classification : ''
   const scoreValue = typeof data?.score === 'number' && Number.isFinite(data.score)
     ? data.score
@@ -189,6 +245,7 @@ function pushRiskAlarm(data: any) {
   const decidedAt = typeof data?.decidedAt === 'string' && data.decidedAt
     ? new Date(data.decidedAt)
     : null
+  const occurredAt = decidedAt && !Number.isNaN(decidedAt.getTime()) ? decidedAt.getTime() : Date.now()
   const time = decidedAt && !Number.isNaN(decidedAt.getTime())
     ? decidedAt.toLocaleTimeString()
     : new Date().toLocaleTimeString()
@@ -199,9 +256,59 @@ function pushRiskAlarm(data: any) {
     place,
     time,
     summary: detailParts.join(' ｜ '),
-    deviceId: `risk:${actionId}`
+    deviceId: `risk:${actionId}`,
+    occurredAt,
+    soundLightTriggered: shouldTriggerSoundLight
   }
   pushAlarm(alarm, { triggerSoundLight: shouldTriggerSoundLight })
+}
+
+function mapRiskActionToAlarm(item: RiskActionPayload): Alarm | null {
+  const actionId = normalizeRiskActionId(item.action || item.actionId || item.action_id)
+  if (!actionId || (actionId !== 'A2' && actionId !== 'A3')) {
+    return null
+  }
+  const eventId = item.eventId || item.event_id
+  const decidedAt = item.decidedAt || item.eventTime || item.createdAt
+  const occurredAt = parseTimestamp(decidedAt) ?? Date.now()
+  const id = eventId || buildRiskEventId(actionId, decidedAt) || `risk-${Date.now().toString(36)}`
+  const classification = typeof item.classification === 'string' ? item.classification : ''
+  const summaryText = typeof item.summary === 'string' && item.summary.trim().length > 0
+    ? item.summary.trim()
+    : (actionId === 'A3' ? '风控模型升级至 A3' : '风控模型触发远程警报')
+  const place = item.camChannel || item.cam_channel || '风控模型'
+  const soundLightTriggered = typeof (item as any).soundLightTriggered === 'boolean'
+    ? (item as any).soundLightTriggered
+    : (typeof (item as any).sound_light_triggered === 'boolean' ? (item as any).sound_light_triggered : undefined)
+  return {
+    id,
+    level: normalizeRiskLevel(item.level, classification),
+    source: '风控模型',
+    place,
+    time: formatAlarmTime(decidedAt),
+    summary: summaryText,
+    deviceId: `risk:${actionId}`,
+    occurredAt,
+    soundLightTriggered
+  }
+}
+
+export async function loadRiskActions(limit = 50) {
+  try {
+    const resp = await fetch(`/api/events/risk-actions?limit=${limit}`, { cache: 'no-store' })
+    if (!resp.ok) return
+    const data = await resp.json()
+    if (!Array.isArray(data)) return
+    const items = data.slice().reverse()
+    for (const item of items) {
+      const alarm = mapRiskActionToAlarm(item)
+      if (alarm) {
+        pushAlarm(alarm)
+      }
+    }
+  } catch {
+    // ignore load failures to keep realtime stream functional
+  }
 }
 
 export async function triggerSoundLightAlarm(action: SoundLightAction = 'activate') {

@@ -35,6 +35,12 @@ public class RiskAssessmentEntity {
     @Column(name = "updated_at")
     private Instant updatedAt;
 
+    @Column(name = "remote_alarm_gate_triggered")
+    private Boolean remoteAlarmGateTriggered;
+
+    @Column(name = "sound_light_triggered")
+    private Boolean soundLightTriggered;
+
     public RiskAssessmentEntity() {
     }
 
@@ -96,5 +102,21 @@ public class RiskAssessmentEntity {
 
     public void setUpdatedAt(Instant updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public Boolean getRemoteAlarmGateTriggered() {
+        return remoteAlarmGateTriggered;
+    }
+
+    public void setRemoteAlarmGateTriggered(Boolean remoteAlarmGateTriggered) {
+        this.remoteAlarmGateTriggered = remoteAlarmGateTriggered;
+    }
+
+    public Boolean getSoundLightTriggered() {
+        return soundLightTriggered;
+    }
+
+    public void setSoundLightTriggered(Boolean soundLightTriggered) {
+        this.soundLightTriggered = soundLightTriggered;
     }
 }

@@ -214,7 +214,9 @@ public class DynamicDataSourceManager {
                     "details_json TEXT, " +
                     "window_start TIMESTAMPTZ, " +
                     "window_end TIMESTAMPTZ, " +
-                    "updated_at TIMESTAMPTZ DEFAULT NOW()" +
+                    "updated_at TIMESTAMPTZ DEFAULT NOW(), " +
+                    "remote_alarm_gate_triggered BOOLEAN DEFAULT FALSE, " +
+                    "sound_light_triggered BOOLEAN DEFAULT FALSE" +
                     ")");
             st.execute("CREATE INDEX IF NOT EXISTS idx_risk_assessments_updated_at ON risk_assessments(updated_at DESC)");
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS classification VARCHAR(32)");
@@ -228,9 +230,15 @@ public class DynamicDataSourceManager {
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS window_start TIMESTAMPTZ");
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS window_end TIMESTAMPTZ");
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ");
+            st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS remote_alarm_gate_triggered BOOLEAN");
+            st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS sound_light_triggered BOOLEAN");
             st.execute("UPDATE risk_assessments SET classification = COALESCE(NULLIF(classification, ''), 'P4')");
+            st.execute("UPDATE risk_assessments SET remote_alarm_gate_triggered = COALESCE(remote_alarm_gate_triggered, FALSE)");
+            st.execute("UPDATE risk_assessments SET sound_light_triggered = COALESCE(sound_light_triggered, FALSE)");
             st.execute("ALTER TABLE risk_assessments ALTER COLUMN classification SET NOT NULL");
             st.execute("ALTER TABLE risk_assessments ALTER COLUMN updated_at SET DEFAULT NOW()");
+            st.execute("ALTER TABLE risk_assessments ALTER COLUMN remote_alarm_gate_triggered SET DEFAULT FALSE");
+            st.execute("ALTER TABLE risk_assessments ALTER COLUMN sound_light_triggered SET DEFAULT FALSE");
             st.execute("ALTER TABLE risk_assessments DROP COLUMN IF EXISTS subject_key");
             st.execute("ALTER TABLE risk_assessments DROP COLUMN IF EXISTS subject_type");
             st.execute("ALTER TABLE risk_assessments DROP COLUMN IF EXISTS subject_id");

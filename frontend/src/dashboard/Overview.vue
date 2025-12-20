@@ -46,21 +46,88 @@ const alarmPriority: Record<Alarm['level'], number> = {
   critical: 3
 }
 
-function isRiskAction(a: Alarm) {
+function getAlarmAction(a: Alarm) {
   const deviceId = a.deviceId || ''
-  if (!deviceId.startsWith('risk:')) return false
+  if (!deviceId.startsWith('risk:')) return null
   const actionId = deviceId.split(':')[1]?.toUpperCase()
-  return actionId === 'A2' || actionId === 'A3'
+  if (actionId === 'A2' || actionId === 'A3') return actionId
+  return null
+}
+
+function isRiskAction(a: Alarm) {
+  return getAlarmAction(a) !== null
 }
 
 const riskAlarms = computed(() => alarms.value.filter(isRiskAction))
 
-const topAlarm = computed(() => {
-  if (!riskAlarms.value.length) return null
-  let picked = riskAlarms.value[0]
+function mergeRiskAlarms(items: Alarm[]) {
+  const COOLDOWN_WINDOW_MS = 10 * 60 * 1000
+  const sorted = [...items].sort((a, b) => (a.occurredAt ?? 0) - (b.occurredAt ?? 0))
+  const merged: Alarm[] = []
+  let current: Alarm[] | null = null
+  let currentLastTime = 0
+
+  for (const item of sorted) {
+    const action = getAlarmAction(item)
+    const timeMs = item.occurredAt ?? 0
+    if (!action || timeMs <= 0) {
+      merged.push(item)
+      continue
+    }
+    const startNewByTrigger = action === 'A2' && item.soundLightTriggered === true
+    const startNewByGap = current && timeMs - currentLastTime > COOLDOWN_WINDOW_MS
+    if (!current || startNewByTrigger || startNewByGap) {
+      current = [item]
+      merged.push(item)
+    } else {
+      current.push(item)
+      const primary = pickPrimaryAlarm(current)
+      const existingIdx = merged.length - 1
+      if (existingIdx >= 0) {
+        merged[existingIdx] = primary
+      }
+    }
+    currentLastTime = timeMs
+  }
+
+  return merged.sort((a, b) => (b.occurredAt ?? 0) - (a.occurredAt ?? 0))
+}
+
+function pickPrimaryAlarm(items: Alarm[]) {
+  let picked = items[0]
   let pickedScore = alarmPriority[picked.level]
-  for (let i = 1; i < riskAlarms.value.length; i += 1) {
-    const current = riskAlarms.value[i]
+  let pickedAction = getAlarmAction(picked)
+  let pickedActionScore = pickedAction === 'A3' ? 1 : 0
+  let pickedTime = picked.occurredAt ?? 0
+  for (let i = 1; i < items.length; i += 1) {
+    const current = items[i]
+    const score = alarmPriority[current.level]
+    const currentTime = current.occurredAt ?? 0
+    const action = getAlarmAction(current)
+    const actionScore = action === 'A3' ? 1 : 0
+    if (
+      score > pickedScore
+      || (score === pickedScore && actionScore > pickedActionScore)
+      || (score === pickedScore && actionScore === pickedActionScore && currentTime > pickedTime)
+    ) {
+      picked = current
+      pickedScore = score
+      pickedAction = action
+      pickedActionScore = actionScore
+      pickedTime = currentTime
+    }
+  }
+  return picked
+}
+
+const mergedRiskAlarms = computed(() => mergeRiskAlarms(riskAlarms.value))
+
+const topAlarm = computed(() => {
+  if (!mergedRiskAlarms.value.length) return null
+  let picked = mergedRiskAlarms.value[0]
+  let pickedScore = alarmPriority[picked.level]
+  for (let i = 1; i < mergedRiskAlarms.value.length; i += 1) {
+    const current = mergedRiskAlarms.value[i]
     const score = alarmPriority[current.level]
     if (score > pickedScore) {
       picked = current
@@ -178,7 +245,7 @@ onBeforeUnmount(() => {
           <div class="panel-card queue-card">
             <div class="panel-header">待处理任务列表</div>
             <div class="panel-body queue-body">
-              <AlertPanel :items="riskAlarms" />
+              <AlertPanel :items="mergedRiskAlarms" />
             </div>
           </div>
           <div class="panel-card stats-card">

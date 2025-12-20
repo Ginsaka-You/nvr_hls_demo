@@ -214,6 +214,8 @@ public class RiskAssessmentService {
         PriorityDefinition priority = determinePriority(finalScore, config);
         List<GRuleStatus> gStatuses = evaluateGRules(priority, context, scoreSummary, night, config, now);
         List<ActionStatus> actions = determineActions(scoreSummary, gStatuses, night, now, context, config);
+        boolean remoteAlarmGateTriggered = gStatuses.stream()
+                .anyMatch(rule -> isRemoteAlarmGateId(rule.getId()) && rule.isTriggered());
 
         Optional<ActionStatus> a2Status = actions.stream()
                 .filter(action -> "A2".equalsIgnoreCase(action.getId()))
@@ -222,6 +224,7 @@ public class RiskAssessmentService {
                 .filter(action -> "A3".equalsIgnoreCase(action.getId()))
                 .findFirst();
         boolean upgradeTriggered = a3Status.filter(ActionStatus::isTriggered).isPresent() && !previousA3.isTriggered();
+        boolean soundLightTriggered = false;
 
         planCameraEvidence(now, night, context, fEvaluations, gStatuses, a2Status, a3Status, previousA2, upgradeTriggered);
 
@@ -233,12 +236,13 @@ public class RiskAssessmentService {
             Instant decidedAt = Optional.ofNullable(currentA2.getDecidedAt()).orElse(now);
             recordActionAlertFromContext(decidedAt, priority, scoreSummary, context, currentA2);
             AudioDecision audioDecision = evaluateA2Audio(decidedAt, night, upgradeTriggered);
+            soundLightTriggered = audioDecision.shouldTrigger();
             boolean shouldEmit = !previousA2.isTriggered() || audioDecision.shouldTrigger() || upgradeTriggered;
             if (shouldEmit) {
                 broadcastRiskAction(decidedAt, priority, scoreSummary, context, currentA2, night, audioDecision, upgradeTriggered);
             }
         }
-        persistAssessment(now, windowStart, priority, scoreSummary, details, summary);
+        persistAssessment(now, windowStart, priority, scoreSummary, details, summary, remoteAlarmGateTriggered, soundLightTriggered);
     }
 
     private ZoneId resolveZone(Parameters params) {
@@ -1025,7 +1029,9 @@ public class RiskAssessmentService {
                                    PriorityDefinition priority,
                                    ScoreSummary scores,
                                    Map<String, Object> details,
-                                   String summary) {
+                                   String summary,
+                                   boolean remoteAlarmGateTriggered,
+                                   boolean soundLightTriggered) {
         String classification = priority != null ? priority.getId() : "P4";
         RiskAssessmentEntity entity = new RiskAssessmentEntity();
         entity.setClassification(classification);
@@ -1035,6 +1041,8 @@ public class RiskAssessmentService {
         entity.setWindowEnd(now);
         entity.setUpdatedAt(now);
         entity.setDetailsJson(writeDetails(details));
+        entity.setRemoteAlarmGateTriggered(remoteAlarmGateTriggered);
+        entity.setSoundLightTriggered(soundLightTriggered);
         riskAssessmentRepository.save(entity);
     }
 
