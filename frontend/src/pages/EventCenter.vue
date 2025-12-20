@@ -486,7 +486,8 @@ function getTimestamp(value: string | null | undefined): number {
 }
 
 function renderSnapshotCell(record: { snapshotUrl?: string | null; snapshots?: string[] }) {
-  const images = record.snapshots && record.snapshots.length ? record.snapshots : (record.snapshotUrl ? [record.snapshotUrl] : [])
+  const rawImages = record.snapshots && record.snapshots.length ? record.snapshots : (record.snapshotUrl ? [record.snapshotUrl] : [])
+  const images = dedupeSnapshots(rawImages)
   if (!images.length) {
     return h('span', { class: 'snapshot-placeholder' }, '—')
   }
@@ -531,18 +532,36 @@ function openPreviewGroup(images: string[], index = 0) {
   previewImages.value = images
   previewIndex.value = index
   previewVisible.value = true
+  void logSnapshotView(images[index] || null)
 }
 
 const currentPreviewImage = computed(() => previewImages.value[previewIndex.value] || null)
 
 function nextPreview() {
   if (!previewImages.value.length) return
-  previewIndex.value = (previewIndex.value + 1) % previewImages.value.length
+  const nextIndex = (previewIndex.value + 1) % previewImages.value.length
+  previewIndex.value = nextIndex
+  void logSnapshotView(previewImages.value[nextIndex] || null)
 }
 
 function prevPreview() {
   if (!previewImages.value.length) return
-  previewIndex.value = (previewIndex.value - 1 + previewImages.value.length) % previewImages.value.length
+  const prevIndex = (previewIndex.value - 1 + previewImages.value.length) % previewImages.value.length
+  previewIndex.value = prevIndex
+  void logSnapshotView(previewImages.value[prevIndex] || null)
+}
+
+async function logSnapshotView(path: string | null) {
+  if (!path || activeKey.value !== 'risk') return
+  try {
+    await fetch('/api/events/snapshots/view', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, context: 'risk' })
+    })
+  } catch {
+    // ignore logging errors
+  }
 }
 
 const snapshotColumn = {
@@ -659,8 +678,13 @@ function normalizeSnapshotKey(url: string | null | undefined): string | null {
     .map((part) => safeDecodeUrlSegment(part))
     .filter((part) => part.length > 0)
   if (!decodedParts.length) return null
-  const normalized = decodedParts.join('/')
-  return leadingSlash ? `/${normalized}` : normalized
+  let normalized = decodedParts.join('/')
+  const markerIdx = normalized.indexOf('snapshots/')
+  if (markerIdx >= 0) {
+    normalized = normalized.slice(markerIdx + 'snapshots/'.length)
+  }
+  normalized = normalized.replace(/^\/+/, '')
+  return normalized || null
 }
 
 function dedupeSnapshots(urls: string[]): string[] {

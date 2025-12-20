@@ -11,18 +11,23 @@ import com.example.nvr.persistence.RiskAssessmentRepository;
 import com.example.nvr.risk.CameraEvidenceService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestBody;
 
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.ArrayList;
@@ -35,6 +40,10 @@ import java.util.stream.Collectors;
 @RestController
 @RequestMapping("/api/events")
 public class EventCenterController {
+
+    private static final Logger log = LoggerFactory.getLogger(EventCenterController.class);
+    private static final Duration A1_THROTTLE_WINDOW = Duration.ofSeconds(10);
+    private static final int A1_SCORE_THRESHOLD = 15;
 
     private final AlertEventRepository alertEventRepository;
     private final CameraAlarmRepository cameraAlarmRepository;
@@ -83,10 +92,211 @@ public class EventCenterController {
             actions.addAll(extractRiskActions(assessment));
         }
         actions.sort((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt()));
-        if (actions.size() > size) {
-            return actions.subList(0, size);
+        List<RiskActionView> filtered = filterRiskActions(actions);
+        if (filtered.size() > size) {
+            return filtered.subList(0, size);
         }
-        return actions;
+        return filtered;
+    }
+
+    private List<RiskActionView> filterRiskActions(List<RiskActionView> actions) {
+        if (actions == null || actions.isEmpty()) {
+            return List.of();
+        }
+        List<RiskActionView> filtered = new ArrayList<>(actions.size());
+        Map<String, Instant> lastA1ByKey = new HashMap<>();
+        for (RiskActionView action : actions) {
+            if (action == null) {
+                continue;
+            }
+            if (!"A1".equalsIgnoreCase(action.getAction())) {
+                filtered.add(action);
+                continue;
+            }
+            Integer score = action.getScore();
+            if (score != null && score < A1_SCORE_THRESHOLD) {
+                continue;
+            }
+            Instant actionTime = resolveActionInstant(action);
+            String key = buildA1ThrottleKey(action);
+            if (key == null || key.isBlank()) {
+                key = "a1:unknown";
+            }
+            Instant last = lastA1ByKey.get(key);
+            if (last != null && actionTime != null) {
+                Duration diff = Duration.between(actionTime, last);
+                if (!diff.isNegative() && diff.compareTo(A1_THROTTLE_WINDOW) < 0) {
+                    continue;
+                }
+            }
+            if (actionTime != null) {
+                lastA1ByKey.put(key, actionTime);
+            }
+            filtered.add(action);
+        }
+        return filtered;
+    }
+
+    private Instant resolveActionInstant(RiskActionView action) {
+        if (action == null) {
+            return null;
+        }
+        Instant decidedAt = parseInstant(action.getDecidedAt());
+        if (decidedAt != null) {
+            return decidedAt;
+        }
+        Instant eventTime = parseInstant(action.getEventTime());
+        if (eventTime != null) {
+            return eventTime;
+        }
+        return action.getCreatedAt();
+    }
+
+    private String buildA1ThrottleKey(RiskActionView action) {
+        String channel = action.getCamChannel();
+        if (channel == null || channel.isBlank()) {
+            channel = extractChannelFromDetails(action.getDetails());
+        }
+        if (channel != null && !channel.isBlank()) {
+            String normalized = normalizeChannelKey(channel);
+            if (normalized != null && !normalized.isBlank()) {
+                return "a1:cam:" + normalized;
+            }
+        }
+        if (hasImsiSignals(action.getDetails())) {
+            return "a1:imsi";
+        }
+        if (hasRadarSignals(action.getDetails())) {
+            return "a1:radar";
+        }
+        return "a1:unknown";
+    }
+
+    private boolean hasImsiSignals(Map<String, Object> details) {
+        Map<String, Object> signals = extractSignals(details);
+        if (signals == null) {
+            return false;
+        }
+        Object newImsi = signals.get("newImsi");
+        return newImsi instanceof List && !((List<?>) newImsi).isEmpty();
+    }
+
+    private boolean hasRadarSignals(Map<String, Object> details) {
+        Map<String, Object> signals = extractSignals(details);
+        if (signals == null) {
+            return false;
+        }
+        return isTrue(signals.get("radarPersist"))
+                || isTrue(signals.get("radarNearCore"))
+                || isTrue(signals.get("radarApproach"));
+    }
+
+    private Map<String, Object> extractSignals(Map<String, Object> details) {
+        if (details == null) {
+            return null;
+        }
+        Object signals = details.get("signals");
+        if (signals instanceof Map) {
+            return (Map<String, Object>) signals;
+        }
+        return null;
+    }
+
+    private boolean isTrue(Object value) {
+        if (value instanceof Boolean) {
+            return (Boolean) value;
+        }
+        if (value instanceof String) {
+            return Boolean.parseBoolean(((String) value).trim());
+        }
+        return false;
+    }
+
+    private String extractChannelFromDetails(Map<String, Object> details) {
+        Map<String, Object> metrics = findF3Metrics(details);
+        if (metrics == null) {
+            return null;
+        }
+        String bestRule = stringValue(metrics.get("bestRule"));
+        Double bestScore = doubleValue(metrics.get("bestScore"));
+        Object clustersObj = metrics.get("clusters");
+        if (!(clustersObj instanceof List)) {
+            return null;
+        }
+        Map<String, Object> bestCluster = null;
+        double bestClusterScore = -1.0;
+        for (Object entry : (List<?>) clustersObj) {
+            if (!(entry instanceof Map)) {
+                continue;
+            }
+            Map<?, ?> cluster = (Map<?, ?>) entry;
+            String channel = stringValue(cluster.get("channel"));
+            if (channel == null || channel.isBlank()) {
+                continue;
+            }
+            String rule = stringValue(cluster.get("rule"));
+            if (bestRule != null && bestRule.equalsIgnoreCase(rule)) {
+                return channel;
+            }
+            Double score = doubleValue(cluster.get("score"));
+            if (score != null && score > bestClusterScore) {
+                bestClusterScore = score;
+                bestCluster = (Map<String, Object>) cluster;
+            } else if (bestScore != null && score != null && score.equals(bestScore)) {
+                bestCluster = (Map<String, Object>) cluster;
+            }
+        }
+        if (bestCluster != null) {
+            return stringValue(bestCluster.get("channel"));
+        }
+        return null;
+    }
+
+    private Map<String, Object> findF3Metrics(Map<String, Object> details) {
+        if (details == null) {
+            return null;
+        }
+        Object fRulesObj = details.get("fRules");
+        if (!(fRulesObj instanceof List)) {
+            return null;
+        }
+        for (Object entry : (List<?>) fRulesObj) {
+            if (!(entry instanceof Map)) {
+                continue;
+            }
+            Map<?, ?> fRule = (Map<?, ?>) entry;
+            String id = stringValue(fRule.get("id"));
+            if (!"F3".equalsIgnoreCase(id)) {
+                continue;
+            }
+            Object metrics = fRule.get("metrics");
+            if (metrics instanceof Map) {
+                return (Map<String, Object>) metrics;
+            }
+        }
+        return null;
+    }
+
+    private String stringValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = value.toString().trim();
+        return text.isEmpty() ? null : text;
+    }
+
+    private Double doubleValue(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).doubleValue();
+        }
+        if (value instanceof String) {
+            try {
+                return Double.parseDouble(((String) value).trim());
+            } catch (Exception ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 
     @GetMapping("/camera-alarms")
@@ -97,6 +307,20 @@ public class EventCenterController {
     @GetMapping("/radar-targets")
     public List<RadarTargetEntity> listRadarTargets(@RequestParam(name = "limit", defaultValue = "100") int limit) {
         return radarTargetRepository.findAllByOrderByCapturedAtDesc(page(limit, "capturedAt")).getContent();
+    }
+
+    @PostMapping("/snapshots/view")
+    public ResponseEntity<Void> logSnapshotView(@RequestBody SnapshotViewRequest request) {
+        if (request == null || request.getPath() == null || request.getPath().isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
+        String context = request.getContext();
+        if (context != null && !context.isBlank()) {
+            log.info("Snapshot preview [{}]: {}", context, request.getPath());
+        } else {
+            log.info("Snapshot preview: {}", request.getPath());
+        }
+        return ResponseEntity.ok().build();
     }
 
     private org.springframework.data.domain.Pageable page(int limit, String sortField) {
@@ -403,6 +627,16 @@ public class EventCenterController {
             normalized.append(decoded);
         }
         String normalizedText = normalized.toString();
+        if (normalizedText.isEmpty()) {
+            return null;
+        }
+        int markerIdx = normalizedText.indexOf("/snapshots/");
+        if (markerIdx >= 0) {
+            normalizedText = normalizedText.substring(markerIdx + "/snapshots/".length());
+        }
+        if (normalizedText.startsWith("/")) {
+            normalizedText = normalizedText.substring(1);
+        }
         return normalizedText.isEmpty() ? null : normalizedText;
     }
 
@@ -711,6 +945,30 @@ public class EventCenterController {
         private SnapshotCandidate(String path, long diffMillis) {
             this.path = path;
             this.diffMillis = diffMillis;
+        }
+    }
+
+    public static class SnapshotViewRequest {
+        private String path;
+        private String context;
+
+        public SnapshotViewRequest() {
+        }
+
+        public String getPath() {
+            return path;
+        }
+
+        public void setPath(String path) {
+            this.path = path;
+        }
+
+        public String getContext() {
+            return context;
+        }
+
+        public void setContext(String context) {
+            this.context = context;
         }
     }
 }

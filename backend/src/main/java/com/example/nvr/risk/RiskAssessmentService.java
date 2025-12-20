@@ -71,6 +71,11 @@ public class RiskAssessmentService {
     private static final Duration RADAR_STILL_POSITIVE_WINDOW = Duration.ofSeconds(30);
     private static final Duration DAY_A2_COOLDOWN = Duration.ofSeconds(600);
     private static final Duration NIGHT_A2_COOLDOWN = Duration.ofSeconds(300);
+    private static final Duration A1_THROTTLE_WINDOW = Duration.ofSeconds(10);
+    private static final double A1_SCORE_THRESHOLD = 15.0;
+    private static final Duration HIGH_PRIORITY_HEARTBEAT_WINDOW = Duration.ofSeconds(60);
+    private static final double HIGH_PRIORITY_SCORE_THRESHOLD = 10.0;
+    private static final int SUMMARY_MAX_LENGTH = 100;
 
     private final RiskAssessmentRepository riskAssessmentRepository;
     private final ImsiRecordRepository imsiRecordRepository;
@@ -84,6 +89,10 @@ public class RiskAssessmentService {
     private final AlertEventRepository alertEventRepository;
     private final ApplicationEventPublisher eventPublisher;
     private final Object audioThrottleLock = new Object();
+    private final Object assessmentCacheLock = new Object();
+    private final Object a1ThrottleLock = new Object();
+    private final Map<String, Instant> lastA1ByKey = new HashMap<>();
+    private final Map<String, AssessmentSnapshot> lastAssessmentByKey = new HashMap<>();
     private Instant lastA2AudioAt;
     private boolean lastA2AudioNight;
     private final AtomicBoolean nightModeOverride = new AtomicBoolean(false);
@@ -229,8 +238,7 @@ public class RiskAssessmentService {
         planCameraEvidence(now, night, context, fEvaluations, gStatuses, a2Status, a3Status, previousA2, upgradeTriggered);
 
         String summary = buildSummary(priority, scoreSummary, context, gStatuses, actions);
-        Map<String, Object> details = buildDetails(config, scoreSummary, context, fEvaluations, actions, gStatuses,
-                windowStart, now, imsiWindow, cameraWindow, radarWindow);
+        Map<String, Object> details = buildDetails(config, scoreSummary, context, fEvaluations, actions);
         if (a2Status.filter(ActionStatus::isTriggered).isPresent()) {
             ActionStatus currentA2 = a2Status.get();
             Instant decidedAt = Optional.ofNullable(currentA2.getDecidedAt()).orElse(now);
@@ -242,7 +250,194 @@ public class RiskAssessmentService {
                 broadcastRiskAction(decidedAt, priority, scoreSummary, context, currentA2, night, audioDecision, upgradeTriggered);
             }
         }
-        persistAssessment(now, windowStart, priority, scoreSummary, details, summary, remoteAlarmGateTriggered, soundLightTriggered);
+        String classification = priority != null ? priority.getId() : "P4";
+        PersistDecision decision = evaluatePersistDecision(scoreSummary, actions, context, now, classification);
+        if (decision.shouldPersist()) {
+            persistAssessment(now, windowStart, priority, scoreSummary, details, summary,
+                    remoteAlarmGateTriggered, soundLightTriggered);
+            recordAssessmentSnapshot(decision);
+        } else if (log.isDebugEnabled()) {
+            log.debug("Skipping risk assessment persist (score={}, actions={})",
+                    scoreSummary.getTotalScore(),
+                    actions.stream().map(ActionStatus::getId).collect(Collectors.toList()));
+        }
+    }
+
+    private PersistDecision evaluatePersistDecision(ScoreSummary scores,
+                                                    List<ActionStatus> actions,
+                                                    EvaluationContext context,
+                                                    Instant now,
+                                                    String classification) {
+        if (actions == null || actions.isEmpty()) {
+            return PersistDecision.skip();
+        }
+        String primaryAction = selectPrimaryActionId(actions);
+        if (primaryAction == null) {
+            return PersistDecision.skip();
+        }
+        double score = scores != null ? scores.getTotalScore() : 0.0;
+        String key = resolveAssessmentKey(context);
+        if (key == null || key.isBlank()) {
+            key = "site";
+        }
+        if (isHighPriority(classification)) {
+            if (!shouldLogHighPriority(key, classification, score, now)) {
+                return PersistDecision.skip();
+            }
+        }
+        if ("A2".equalsIgnoreCase(primaryAction) || "A3".equalsIgnoreCase(primaryAction)) {
+            return PersistDecision.persist(key, primaryAction, score, classification, now);
+        }
+        if (!"A1".equalsIgnoreCase(primaryAction)) {
+            return PersistDecision.skip();
+        }
+        if (scores == null || scores.getTotalScore() < A1_SCORE_THRESHOLD) {
+            return PersistDecision.skip();
+        }
+        String throttleKey = resolveA1ThrottleKey(key);
+        if (!allowA1Persist(throttleKey, now)) {
+            return PersistDecision.skip();
+        }
+        return PersistDecision.persist(key, primaryAction, score, classification, now);
+    }
+
+    private String selectPrimaryActionId(List<ActionStatus> actions) {
+        if (actions == null) {
+            return null;
+        }
+        if (isActionTriggered(actions, "A3")) {
+            return "A3";
+        }
+        if (isActionTriggered(actions, "A2")) {
+            return "A2";
+        }
+        if (isActionTriggered(actions, "A1")) {
+            return "A1";
+        }
+        return null;
+    }
+
+    private boolean isActionTriggered(List<ActionStatus> actions, String id) {
+        if (actions == null || id == null) {
+            return false;
+        }
+        return actions.stream()
+                .filter(action -> id.equalsIgnoreCase(action.getId()))
+                .anyMatch(ActionStatus::isTriggered);
+    }
+
+    private String resolveAssessmentKey(EvaluationContext context) {
+        if (context == null) {
+            return "site";
+        }
+        Optional<String> channel = context.getLatestStrongChannel()
+                .or(() -> context.getStrongChannels().stream().findFirst());
+        if (channel.isPresent()) {
+            String normalized = normalizeChannelKey(channel.get());
+            if (normalized != null && !normalized.isBlank()) {
+                return "cam:" + normalized;
+            }
+        }
+        if (context.hasRadarPersist() || context.hasRadarNearCore() || context.hasRadarApproach()) {
+            return "radar";
+        }
+        if (context.getNewImsiCount() > 0) {
+            return "imsi";
+        }
+        return "site";
+    }
+
+    private String resolveA1ThrottleKey(String baseKey) {
+        String key = baseKey == null || baseKey.isBlank() ? "site" : baseKey;
+        return "a1:" + key;
+    }
+
+    private boolean isHighPriority(String classification) {
+        if (classification == null) {
+            return false;
+        }
+        String normalized = normalizeClassification(classification);
+        return "P1".equals(normalized) || "P2".equals(normalized);
+    }
+
+    private String normalizeClassification(String classification) {
+        if (classification == null) {
+            return null;
+        }
+        String trimmed = classification.trim();
+        return trimmed.isEmpty() ? null : trimmed.toUpperCase(Locale.ROOT);
+    }
+
+    private boolean shouldLogHighPriority(String key,
+                                          String classification,
+                                          double score,
+                                          Instant now) {
+        if (now == null || key == null) {
+            return true;
+        }
+        synchronized (assessmentCacheLock) {
+            AssessmentSnapshot last = lastAssessmentByKey.get(key);
+            if (last == null || last.timestamp == null) {
+                return true;
+            }
+            Duration since = Duration.between(last.timestamp, now);
+            if (!since.isNegative() && since.compareTo(HIGH_PRIORITY_HEARTBEAT_WINDOW) > 0) {
+                return true;
+            }
+            String lastLevel = normalizeClassification(last.classification);
+            String currentLevel = normalizeClassification(classification);
+            if (!Objects.equals(lastLevel, currentLevel)) {
+                return true;
+            }
+            return Math.abs(score - last.score) >= HIGH_PRIORITY_SCORE_THRESHOLD;
+        }
+    }
+
+    private void recordAssessmentSnapshot(PersistDecision decision) {
+        if (decision == null || !decision.shouldPersist() || decision.key == null || decision.timestamp == null) {
+            return;
+        }
+        synchronized (assessmentCacheLock) {
+            lastAssessmentByKey.put(decision.key,
+                    new AssessmentSnapshot(decision.actionId, decision.score, decision.classification, decision.timestamp));
+            pruneAssessmentCache(decision.timestamp);
+        }
+    }
+
+    private void pruneAssessmentCache(Instant now) {
+        if (lastAssessmentByKey.isEmpty() || now == null) {
+            return;
+        }
+        Instant cutoff = now.minus(HIGH_PRIORITY_HEARTBEAT_WINDOW.multipliedBy(6));
+        lastAssessmentByKey.entrySet().removeIf(entry -> entry.getValue() != null
+                && entry.getValue().timestamp != null
+                && entry.getValue().timestamp.isBefore(cutoff));
+    }
+
+    private boolean allowA1Persist(String key, Instant now) {
+        if (now == null) {
+            return true;
+        }
+        synchronized (a1ThrottleLock) {
+            Instant last = lastA1ByKey.get(key);
+            if (last != null) {
+                Duration since = Duration.between(last, now);
+                if (!since.isNegative() && since.compareTo(A1_THROTTLE_WINDOW) < 0) {
+                    return false;
+                }
+            }
+            lastA1ByKey.put(key, now);
+            pruneA1Throttle(now);
+            return true;
+        }
+    }
+
+    private void pruneA1Throttle(Instant now) {
+        if (lastA1ByKey.isEmpty()) {
+            return;
+        }
+        Instant cutoff = now.minus(A1_THROTTLE_WINDOW.multipliedBy(6));
+        lastA1ByKey.entrySet().removeIf(entry -> entry.getValue() != null && entry.getValue().isBefore(cutoff));
     }
 
     private ZoneId resolveZone(Parameters params) {
@@ -989,38 +1184,17 @@ public class RiskAssessmentService {
                                              ScoreSummary scores,
                                              EvaluationContext context,
                                              Map<String, FRuleEvaluation> fEvaluations,
-                                             List<ActionStatus> actions,
-                                             List<GRuleStatus> gStatuses,
-                                             Instant windowStart,
-                                             Instant windowEnd,
-                                             List<ImsiRecordEntity> imsiWindow,
-                                             List<CameraAlarmEntity> cameraWindow,
-                                             List<RadarTargetEntity> radarWindow) {
+                                             List<ActionStatus> actions) {
         Map<String, Object> details = new LinkedHashMap<>();
-        details.put("modelVersion", config.getVersion());
-        details.put("config", config.toMetadata());
-        details.put("window", Map.of(
-                "start", windowStart,
-                "end", windowEnd
-        ));
         details.put("scores", scores.toMap());
         details.put("signals", context.toMap());
         details.put("fRules", fEvaluations.values().stream()
-                .map(eval -> eval.toMap(config.findPriority(eval.getEscalatesTo())))
+                .filter(FRuleEvaluation::isTriggered)
+                .map(eval -> eval.toMap(null))
                 .collect(Collectors.toList()));
         details.put("actions", actions.stream()
-                .map(action -> action.toMap(config.findAction(action.getId())))
+                .map(action -> action.toMap(null))
                 .collect(Collectors.toList()));
-        details.put("gRules", gStatuses.stream()
-                .map(status -> status.toMap(config.getGRules().stream()
-                        .filter(def -> def.getId().equalsIgnoreCase(status.getId()))
-                        .findFirst().orElse(null)))
-                .collect(Collectors.toList()));
-        details.put("observations", Map.of(
-                "imsiDevices", imsiWindow.size(),
-                "cameraEvents", cameraWindow.size(),
-                "radarTracks", radarWindow.size()
-        ));
         return details;
     }
 
@@ -1036,7 +1210,7 @@ public class RiskAssessmentService {
         RiskAssessmentEntity entity = new RiskAssessmentEntity();
         entity.setClassification(classification);
         entity.setScore((int) Math.round(scores.getTotalScore()));
-        entity.setSummary(summary);
+        entity.setSummary(trimSummary(summary));
         entity.setWindowStart(windowStart);
         entity.setWindowEnd(now);
         entity.setUpdatedAt(now);
@@ -1044,6 +1218,17 @@ public class RiskAssessmentService {
         entity.setRemoteAlarmGateTriggered(remoteAlarmGateTriggered);
         entity.setSoundLightTriggered(soundLightTriggered);
         riskAssessmentRepository.save(entity);
+    }
+
+    private String trimSummary(String summary) {
+        if (summary == null) {
+            return null;
+        }
+        String trimmed = summary.trim();
+        if (trimmed.length() <= SUMMARY_MAX_LENGTH) {
+            return trimmed;
+        }
+        return trimmed.substring(0, SUMMARY_MAX_LENGTH);
     }
 
     private RecordedAction readRecordedAction(RiskAssessmentEntity entity, String actionId) {
@@ -2175,6 +2360,55 @@ public class RiskAssessmentService {
             map.put("radarPersistMoments", new ArrayList<>(radarPersistMoments));
             map.put("radarApproachMoments", new ArrayList<>(radarApproachMoments));
             return map;
+        }
+    }
+
+    private static final class PersistDecision {
+        private final boolean persist;
+        private final String key;
+        private final String actionId;
+        private final double score;
+        private final String classification;
+        private final Instant timestamp;
+
+        private PersistDecision(boolean persist,
+                                String key,
+                                String actionId,
+                                double score,
+                                String classification,
+                                Instant timestamp) {
+            this.persist = persist;
+            this.key = key;
+            this.actionId = actionId;
+            this.score = score;
+            this.classification = classification;
+            this.timestamp = timestamp;
+        }
+
+        static PersistDecision skip() {
+            return new PersistDecision(false, null, null, 0.0, null, null);
+        }
+
+        static PersistDecision persist(String key, String actionId, double score, String classification, Instant timestamp) {
+            return new PersistDecision(true, key, actionId, score, classification, timestamp);
+        }
+
+        boolean shouldPersist() {
+            return persist;
+        }
+    }
+
+    private static final class AssessmentSnapshot {
+        private final String actionId;
+        private final double score;
+        private final String classification;
+        private final Instant timestamp;
+
+        private AssessmentSnapshot(String actionId, double score, String classification, Instant timestamp) {
+            this.actionId = actionId;
+            this.score = score;
+            this.classification = classification;
+            this.timestamp = timestamp;
         }
     }
 

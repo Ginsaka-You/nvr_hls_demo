@@ -23,6 +23,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.Duration;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -36,11 +37,13 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class EventStorageService {
 
     private static final Logger log = LoggerFactory.getLogger(EventStorageService.class);
+    private static final Duration RADAR_SNAPSHOT_MIN_INTERVAL = Duration.ofSeconds(1);
     private final AlertEventRepository alertEventRepository;
     private final CameraAlarmRepository cameraAlarmRepository;
     private final RadarTargetRepository radarTargetRepository;
@@ -49,6 +52,7 @@ public class EventStorageService {
     private final ApplicationEventPublisher eventPublisher;
     private final CameraEvidenceService cameraEvidenceService;
     private final ZoneId systemZone = ZoneId.systemDefault();
+    private final Map<String, Instant> lastRadarSnapshotByChannel = new ConcurrentHashMap<>();
 
     public EventStorageService(AlertEventRepository alertEventRepository,
                                CameraAlarmRepository cameraAlarmRepository,
@@ -311,6 +315,9 @@ public class EventStorageService {
                 if (!ids.isEmpty()) {
                     for (String channel : radarChannels) {
                         String finalChannel = channel;
+                        if (!shouldCaptureRadarSnapshot(finalChannel, capturedAt)) {
+                            continue;
+                        }
                         scheduleSnapshotCapture("radar-target", "雷达触发抓拍", finalChannel, capturedAt,
                                 path -> {
                                     updateRadarSnapshotPaths(ids, path);
@@ -400,6 +407,29 @@ public class EventStorageService {
                         log.warn("Failed to assign snapshot for {}: {}", trigger, ex.getMessage());
                     }
                 }));
+    }
+
+    private boolean shouldCaptureRadarSnapshot(String channel, Instant anchorTime) {
+        String normalized = normalizeStreamSuffix(channel);
+        if (normalized == null) {
+            return false;
+        }
+        Instant anchor = anchorTime != null ? anchorTime : Instant.now();
+        final boolean[] allowed = { false };
+        lastRadarSnapshotByChannel.compute(normalized, (key, previous) -> {
+            if (previous == null) {
+                allowed[0] = true;
+                return anchor;
+            }
+            Duration since = Duration.between(previous, anchor);
+            if (since.isNegative() || since.compareTo(RADAR_SNAPSHOT_MIN_INTERVAL) < 0) {
+                allowed[0] = false;
+                return previous;
+            }
+            allowed[0] = true;
+            return anchor;
+        });
+        return allowed[0];
     }
 
     private void updateAlertSnapshot(Long id, String path) {
