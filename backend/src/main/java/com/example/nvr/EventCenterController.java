@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -358,31 +359,51 @@ public class EventCenterController {
         if (trimmed.isEmpty()) {
             return null;
         }
-        int cut = trimmed.length();
-        int queryIdx = trimmed.indexOf('?');
-        int hashIdx = trimmed.indexOf('#');
+        String path = trimmed;
+        try {
+            URI uri = URI.create(trimmed);
+            if (uri.getPath() != null && !uri.getPath().isBlank()) {
+                path = uri.getPath();
+            }
+        } catch (Exception ignored) {
+            path = trimmed;
+        }
+        int cut = path.length();
+        int queryIdx = path.indexOf('?');
+        int hashIdx = path.indexOf('#');
         if (queryIdx >= 0) {
             cut = Math.min(cut, queryIdx);
         }
         if (hashIdx >= 0) {
             cut = Math.min(cut, hashIdx);
         }
-        if (cut != trimmed.length()) {
-            trimmed = trimmed.substring(0, cut);
+        if (cut != path.length()) {
+            path = path.substring(0, cut);
         }
-        trimmed = trimmed.replace('\\', '/');
-        int lastSlash = trimmed.lastIndexOf('/');
-        if (lastSlash < 0 || lastSlash == trimmed.length() - 1) {
-            return trimmed;
+        path = path.replace('\\', '/');
+        boolean leadingSlash = path.startsWith("/");
+        String[] parts = path.split("/");
+        StringBuilder normalized = new StringBuilder();
+        if (leadingSlash) {
+            normalized.append('/');
         }
-        String prefix = trimmed.substring(0, lastSlash + 1);
-        String filename = trimmed.substring(lastSlash + 1);
-        try {
-            filename = URLDecoder.decode(filename, StandardCharsets.UTF_8);
-        } catch (Exception ignored) {
-            // keep original filename on decode failure
+        for (String part : parts) {
+            if (part == null || part.isBlank()) {
+                continue;
+            }
+            String decoded = part;
+            try {
+                decoded = URLDecoder.decode(part, StandardCharsets.UTF_8);
+            } catch (Exception ignored) {
+                // keep original segment on decode failure
+            }
+            if (normalized.length() > 0 && normalized.charAt(normalized.length() - 1) != '/') {
+                normalized.append('/');
+            }
+            normalized.append(decoded);
         }
-        return prefix + filename;
+        String normalizedText = normalized.toString();
+        return normalizedText.isEmpty() ? null : normalizedText;
     }
 
     private boolean channelsMatch(String a, String b) {

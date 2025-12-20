@@ -165,6 +165,7 @@ function mapCameraAlarm(item: any): CameraAlarmRecord {
   const eventType = translateEventType(item?.eventType)
   const snapshot = item?.snapshotUrl ?? item?.snapshot_url ?? null
   const snapshots = snapshot ? [snapshot] : []
+  const dedupedSnapshots = dedupeSnapshots(snapshots)
   return {
     id: Number(item?.id ?? 0),
     eventId: String(item?.eventId ?? item?.id ?? '-'),
@@ -175,8 +176,8 @@ function mapCameraAlarm(item: any): CameraAlarmRecord {
     eventTime: item?.eventTime ?? null,
     createdAt: item?.createdAt ?? item?.created_at ?? new Date().toISOString(),
     device: '摄像头',
-    snapshotUrl: snapshot,
-    snapshots
+    snapshotUrl: dedupedSnapshots[0] ?? snapshot,
+    snapshots: dedupedSnapshots
   }
 }
 
@@ -191,6 +192,7 @@ function mapAlert(item: any): AlertRecord {
     : snapshot
       ? [snapshot]
       : []
+  const dedupedSnapshots = dedupeSnapshots(snapshots)
   const device = eventType && eventType.includes('雷达') ? '雷达' : '摄像头'
   const targetId = normalizeTargetId(item?.targetId ?? item?.target_id ?? parseTargetId(eventType))
   return {
@@ -203,8 +205,8 @@ function mapAlert(item: any): AlertRecord {
     eventTime: item?.eventTime ?? null,
     createdAt: item?.createdAt ?? item?.created_at ?? new Date().toISOString(),
     device,
-    snapshotUrl: snapshot,
-    snapshots,
+    snapshotUrl: dedupedSnapshots[0] ?? snapshot,
+    snapshots: dedupedSnapshots,
     targetId
   }
 }
@@ -298,13 +300,12 @@ function buildRiskActionTriggerIndex(items: RiskActionRecord[]): Map<string, boo
 
 function aggregateAlertRecords(items: AlertRecord[], riskIndex?: Map<string, boolean>): AlertRecord[] {
   const RADAR_MERGE_WINDOW_MS = 8000
-  const dedupe = (list: string[]) => Array.from(new Set(list.filter(Boolean)))
   const sorted = [...items].sort((a, b) => getTimestamp(a.createdAt) - getTimestamp(b.createdAt))
   const grouped = new Map<string, { record: AlertRecord; lastTs: number }>()
   const result: AlertRecord[] = []
 
   for (const item of sorted) {
-    const snapshots = dedupe((item.snapshots && item.snapshots.length ? item.snapshots : [item.snapshotUrl]).filter(Boolean))
+    const snapshots = dedupeSnapshots((item.snapshots && item.snapshots.length ? item.snapshots : [item.snapshotUrl]).filter(Boolean))
     item.snapshots = snapshots
     item.snapshotUrl = snapshots[0] || item.snapshotUrl || null
     const targetId = item.targetId ?? parseTargetId(item.eventType)
@@ -316,7 +317,7 @@ function aggregateAlertRecords(items: AlertRecord[], riskIndex?: Map<string, boo
     const ts = getTimestamp(item.createdAt || item.eventTime)
     const existing = grouped.get(radarKey)
     if (existing && ts - existing.lastTs <= RADAR_MERGE_WINDOW_MS) {
-      existing.record.snapshots = dedupe([...(existing.record.snapshots || []), ...snapshots])
+      existing.record.snapshots = dedupeSnapshots([...(existing.record.snapshots || []), ...snapshots])
       existing.record.snapshotUrl = existing.record.snapshots[0] || existing.record.snapshotUrl
       if (ts > getTimestamp(existing.record.createdAt)) {
         existing.record.createdAt = item.createdAt
@@ -639,6 +640,10 @@ function normalizeSnapshotKey(url: string | null | undefined): string | null {
   if (!url) return null
   let trimmed = url.trim()
   if (!trimmed) return null
+  const originMatch = trimmed.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/]+(\/.*)?$/)
+  if (originMatch) {
+    trimmed = originMatch[1] || '/'
+  }
   let cut = trimmed.length
   const queryIdx = trimmed.indexOf('?')
   const hashIdx = trimmed.indexOf('#')
@@ -648,13 +653,14 @@ function normalizeSnapshotKey(url: string | null | undefined): string | null {
     trimmed = trimmed.slice(0, cut)
   }
   trimmed = trimmed.replace(/\\/g, '/')
-  const lastSlash = trimmed.lastIndexOf('/')
-  if (lastSlash < 0 || lastSlash === trimmed.length - 1) {
-    return trimmed
-  }
-  const prefix = trimmed.slice(0, lastSlash + 1)
-  const filename = safeDecodeUrlSegment(trimmed.slice(lastSlash + 1))
-  return `${prefix}${filename}`
+  const leadingSlash = trimmed.startsWith('/')
+  const parts = trimmed.split('/')
+  const decodedParts = parts
+    .map((part) => safeDecodeUrlSegment(part))
+    .filter((part) => part.length > 0)
+  if (!decodedParts.length) return null
+  const normalized = decodedParts.join('/')
+  return leadingSlash ? `/${normalized}` : normalized
 }
 
 function dedupeSnapshots(urls: string[]): string[] {
