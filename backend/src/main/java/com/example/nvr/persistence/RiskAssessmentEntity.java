@@ -30,6 +30,15 @@ public class RiskAssessmentEntity {
     @Column(name = "details_json", columnDefinition = "text")
     private String detailsJson;
 
+    @Column(name = "status", length = 16)
+    private String status;
+
+    @Column(name = "snapshot_path", length = 512)
+    private String snapshotPath;
+
+    @Column(name = "radar_track_summary", columnDefinition = "text")
+    private String radarTrackSummary;
+
     @Column(name = "window_start")
     private Instant windowStart;
 
@@ -90,6 +99,30 @@ public class RiskAssessmentEntity {
 
     public void setDetailsJson(String detailsJson) {
         this.detailsJson = detailsJson;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public void setStatus(String status) {
+        this.status = status;
+    }
+
+    public String getSnapshotPath() {
+        return snapshotPath;
+    }
+
+    public void setSnapshotPath(String snapshotPath) {
+        this.snapshotPath = snapshotPath;
+    }
+
+    public String getRadarTrackSummary() {
+        return radarTrackSummary;
+    }
+
+    public void setRadarTrackSummary(String radarTrackSummary) {
+        this.radarTrackSummary = radarTrackSummary;
     }
 
     public Instant getWindowStart() {

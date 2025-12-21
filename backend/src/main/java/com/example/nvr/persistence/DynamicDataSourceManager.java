@@ -213,6 +213,9 @@ public class DynamicDataSourceManager {
                     "score INT, " +
                     "summary VARCHAR(255), " +
                     "details_json TEXT, " +
+                    "snapshot_path VARCHAR(512), " +
+                    "radar_track_summary TEXT, " +
+                    "status VARCHAR(16), " +
                     "window_start TIMESTAMPTZ, " +
                     "window_end TIMESTAMPTZ, " +
                     "updated_at TIMESTAMPTZ DEFAULT NOW(), " +
@@ -226,6 +229,9 @@ public class DynamicDataSourceManager {
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS score INT");
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS summary VARCHAR(255)");
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS details_json TEXT");
+            st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS snapshot_path VARCHAR(512)");
+            st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS radar_track_summary TEXT");
+            st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS status VARCHAR(16)");
             // prefer TEXT over PostgreSQL large object to avoid auto-commit issues
             executeSilently(st, "ALTER TABLE risk_assessments ALTER COLUMN details_json TYPE TEXT USING convert_from(lo_get(details_json), 'UTF8')");
             executeSilently(st, "ALTER TABLE risk_assessments ALTER COLUMN details_json TYPE TEXT USING details_json::text");
@@ -236,12 +242,18 @@ public class DynamicDataSourceManager {
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS remote_alarm_gate_triggered BOOLEAN");
             st.execute("ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS sound_light_triggered BOOLEAN");
             st.execute("UPDATE risk_assessments SET classification = COALESCE(NULLIF(classification, ''), 'P4')");
+            st.execute("UPDATE risk_assessments SET status = CASE " +
+                    "WHEN action_type = 'A1' THEN '无需处理' " +
+                    "WHEN action_type IN ('A2', 'A3') THEN '未处理' " +
+                    "ELSE COALESCE(status, '未处理') END " +
+                    "WHERE status IS NULL OR status = ''");
             st.execute("UPDATE risk_assessments SET remote_alarm_gate_triggered = COALESCE(remote_alarm_gate_triggered, FALSE)");
             st.execute("UPDATE risk_assessments SET sound_light_triggered = COALESCE(sound_light_triggered, FALSE)");
             st.execute("ALTER TABLE risk_assessments ALTER COLUMN classification SET NOT NULL");
             st.execute("ALTER TABLE risk_assessments ALTER COLUMN updated_at SET DEFAULT NOW()");
             st.execute("ALTER TABLE risk_assessments ALTER COLUMN remote_alarm_gate_triggered SET DEFAULT FALSE");
             st.execute("ALTER TABLE risk_assessments ALTER COLUMN sound_light_triggered SET DEFAULT FALSE");
+            st.execute("ALTER TABLE risk_assessments ALTER COLUMN status SET DEFAULT '未处理'");
             st.execute("ALTER TABLE risk_assessments DROP COLUMN IF EXISTS subject_key");
             st.execute("ALTER TABLE risk_assessments DROP COLUMN IF EXISTS subject_type");
             st.execute("ALTER TABLE risk_assessments DROP COLUMN IF EXISTS subject_id");

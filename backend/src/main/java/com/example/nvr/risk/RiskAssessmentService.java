@@ -76,6 +76,7 @@ public class RiskAssessmentService {
     private static final Duration HIGH_PRIORITY_HEARTBEAT_WINDOW = Duration.ofSeconds(60);
     private static final double HIGH_PRIORITY_SCORE_THRESHOLD = 10.0;
     private static final int SUMMARY_MAX_LENGTH = 100;
+    private static final int RADAR_SUMMARY_SAMPLE_LIMIT = 10;
 
     private final RiskAssessmentRepository riskAssessmentRepository;
     private final ImsiRecordRepository imsiRecordRepository;
@@ -1213,13 +1214,323 @@ public class RiskAssessmentService {
         entity.setActionType(actionType);
         entity.setScore((int) Math.round(scores.getTotalScore()));
         entity.setSummary(trimSummary(summary));
+        entity.setStatus(resolveRiskStatus(actionType));
         entity.setWindowStart(windowStart);
         entity.setWindowEnd(now);
         entity.setUpdatedAt(now);
+        AssessmentEvidence evidence = resolveAssessmentEvidence(windowStart, now, details, actionType);
+        if (evidence != null) {
+            entity.setSnapshotPath(evidence.snapshotPath);
+            entity.setRadarTrackSummary(evidence.radarTrackSummary);
+        }
         entity.setDetailsJson(writeDetails(details));
         entity.setRemoteAlarmGateTriggered(remoteAlarmGateTriggered);
         entity.setSoundLightTriggered(soundLightTriggered);
         riskAssessmentRepository.save(entity);
+    }
+
+    private boolean isA1Action(String actionType) {
+        if (actionType == null) {
+            return false;
+        }
+        return "A1".equalsIgnoreCase(actionType.trim());
+    }
+
+    private String resolveRiskStatus(String actionType) {
+        if (actionType == null) {
+            return "未处理";
+        }
+        String normalized = actionType.trim().toUpperCase(Locale.ROOT);
+        if ("A1".equals(normalized)) {
+            return "无需处理";
+        }
+        return "未处理";
+    }
+
+    private AssessmentEvidence resolveAssessmentEvidence(Instant windowStart,
+                                                         Instant windowEnd,
+                                                         Map<String, Object> details,
+                                                         String actionType) {
+        Instant end = windowEnd != null ? windowEnd : Instant.now();
+        Instant start = windowStart != null ? windowStart : end.minus(Duration.ofMinutes(5));
+        if (end.isBefore(start)) {
+            Instant tmp = start;
+            start = end;
+            end = tmp;
+        }
+        String preferredChannel = extractChannelFromDetails(details);
+        String snapshotPath = resolveSnapshotPath(start, end, preferredChannel);
+        String radarSummary = isA1Action(actionType) ? buildRadarTrackSummary(start, end) : null;
+        if (snapshotPath == null && radarSummary == null) {
+            return null;
+        }
+        return new AssessmentEvidence(snapshotPath, radarSummary);
+    }
+
+    private String resolveSnapshotPath(Instant start, Instant end, String preferredChannel) {
+        if (start == null || end == null) {
+            return null;
+        }
+        Instant anchor = end;
+        long bestDiff = Long.MAX_VALUE;
+        String bestPath = null;
+
+        List<CameraAlarmEntity> cameraEvents = preferredChannel != null
+                ? cameraAlarmRepository.findByCamChannelAndCreatedAtBetweenOrderByCreatedAtAsc(preferredChannel, start, end)
+                : cameraAlarmRepository.findByCreatedAtBetweenOrderByCreatedAtAsc(start, end);
+        if (cameraEvents.isEmpty() && preferredChannel != null) {
+            cameraEvents = cameraAlarmRepository.findByCreatedAtBetweenOrderByCreatedAtAsc(start, end);
+        }
+        for (CameraAlarmEntity alarm : cameraEvents) {
+            if (alarm == null || !hasSnapshot(alarm.getSnapshotPath()) || alarm.getCreatedAt() == null) {
+                continue;
+            }
+            if (preferredChannel != null && !channelsMatch(preferredChannel, alarm.getCamChannel())) {
+                continue;
+            }
+            long diff = Math.abs(Duration.between(alarm.getCreatedAt(), anchor).toMillis());
+            if (diff < bestDiff) {
+                bestDiff = diff;
+                bestPath = alarm.getSnapshotPath();
+            }
+        }
+
+        List<RadarTargetEntity> radarTargets = radarTargetRepository.findByCapturedAtBetweenOrderByCapturedAtAsc(start, end);
+        for (RadarTargetEntity target : radarTargets) {
+            if (target == null || !hasSnapshot(target.getSnapshotPath()) || target.getCapturedAt() == null) {
+                continue;
+            }
+            if (preferredChannel != null && !channelsMatch(preferredChannel, target.getCamChannel())) {
+                continue;
+            }
+            long diff = Math.abs(Duration.between(target.getCapturedAt(), anchor).toMillis());
+            if (diff < bestDiff) {
+                bestDiff = diff;
+                bestPath = target.getSnapshotPath();
+            }
+        }
+
+        if (bestPath == null && cameraEvidenceService != null && preferredChannel != null) {
+            return cameraEvidenceService.findSnapshotPath(preferredChannel, anchor).orElse(null);
+        }
+        return bestPath;
+    }
+
+    private String buildRadarTrackSummary(Instant start, Instant end) {
+        if (start == null || end == null) {
+            return null;
+        }
+        List<RadarTargetEntity> radarTargets = radarTargetRepository.findByCapturedAtBetweenOrderByCapturedAtAsc(start, end);
+        if (radarTargets == null || radarTargets.isEmpty()) {
+            return null;
+        }
+        int count = 0;
+        Instant first = null;
+        Instant last = null;
+        Double minRange = null;
+        Double maxRange = null;
+        Double minSpeed = null;
+        Double maxSpeed = null;
+        Set<String> hosts = new LinkedHashSet<>();
+        Set<String> channels = new LinkedHashSet<>();
+        Set<Integer> targetIds = new LinkedHashSet<>();
+        for (RadarTargetEntity target : radarTargets) {
+            if (target == null) {
+                continue;
+            }
+            count++;
+            Instant capturedAt = target.getCapturedAt();
+            if (capturedAt != null) {
+                if (first == null || capturedAt.isBefore(first)) {
+                    first = capturedAt;
+                }
+                if (last == null || capturedAt.isAfter(last)) {
+                    last = capturedAt;
+                }
+            }
+            String host = stringValue(target.getRadarHost());
+            if (host != null) {
+                hosts.add(host);
+            }
+            String channel = stringValue(target.getCamChannel());
+            if (channel != null) {
+                channels.add(channel);
+            }
+            Integer targetId = target.getTargetId();
+            if (targetId != null && targetIds.size() < RADAR_SUMMARY_SAMPLE_LIMIT) {
+                targetIds.add(targetId);
+            }
+            Double range = target.getRange();
+            if (range != null) {
+                minRange = minRange == null ? range : Math.min(minRange, range);
+                maxRange = maxRange == null ? range : Math.max(maxRange, range);
+            }
+            Double speed = target.getSpeed();
+            if (speed != null) {
+                minSpeed = minSpeed == null ? speed : Math.min(minSpeed, speed);
+                maxSpeed = maxSpeed == null ? speed : Math.max(maxSpeed, speed);
+            }
+        }
+        if (count == 0) {
+            return null;
+        }
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("count", count);
+        if (!hosts.isEmpty()) {
+            summary.put("hosts", new ArrayList<>(hosts));
+        }
+        if (!channels.isEmpty()) {
+            summary.put("channels", new ArrayList<>(channels));
+        }
+        if (!targetIds.isEmpty()) {
+            summary.put("targetIds", new ArrayList<>(targetIds));
+        }
+        if (first != null) {
+            summary.put("firstCapturedAt", first.toString());
+        }
+        if (last != null) {
+            summary.put("lastCapturedAt", last.toString());
+        }
+        if (minRange != null) {
+            summary.put("minRange", minRange);
+        }
+        if (maxRange != null) {
+            summary.put("maxRange", maxRange);
+        }
+        if (minSpeed != null) {
+            summary.put("minSpeed", minSpeed);
+        }
+        if (maxSpeed != null) {
+            summary.put("maxSpeed", maxSpeed);
+        }
+        return writeRadarTrackSummary(summary);
+    }
+
+    private String writeRadarTrackSummary(Map<String, Object> summary) {
+        if (summary == null || summary.isEmpty() || objectMapper == null) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(summary);
+        } catch (JsonProcessingException ex) {
+            log.warn("Failed to serialize radar track summary", ex);
+            return null;
+        }
+    }
+
+    private String extractChannelFromDetails(Map<String, Object> details) {
+        Map<String, Object> metrics = findF3Metrics(details);
+        if (metrics == null) {
+            return null;
+        }
+        String bestRule = stringValue(metrics.get("bestRule"));
+        Double bestScore = doubleValue(metrics.get("bestScore"));
+        Object clustersObj = metrics.get("clusters");
+        if (!(clustersObj instanceof List)) {
+            return null;
+        }
+        Map<String, Object> bestCluster = null;
+        double bestClusterScore = -1.0;
+        for (Object entry : (List<?>) clustersObj) {
+            if (!(entry instanceof Map)) {
+                continue;
+            }
+            Map<?, ?> cluster = (Map<?, ?>) entry;
+            String channel = stringValue(cluster.get("channel"));
+            if (channel == null || channel.isBlank()) {
+                continue;
+            }
+            String rule = stringValue(cluster.get("rule"));
+            if (bestRule != null && bestRule.equalsIgnoreCase(rule)) {
+                return channel;
+            }
+            Double score = doubleValue(cluster.get("score"));
+            if (score != null && score > bestClusterScore) {
+                bestClusterScore = score;
+                bestCluster = (Map<String, Object>) cluster;
+            } else if (bestScore != null && score != null && score.equals(bestScore)) {
+                bestCluster = (Map<String, Object>) cluster;
+            }
+        }
+        if (bestCluster != null) {
+            return stringValue(bestCluster.get("channel"));
+        }
+        return null;
+    }
+
+    private Map<String, Object> findF3Metrics(Map<String, Object> details) {
+        if (details == null) {
+            return null;
+        }
+        Object fRulesObj = details.get("fRules");
+        if (!(fRulesObj instanceof List)) {
+            return null;
+        }
+        for (Object entry : (List<?>) fRulesObj) {
+            if (!(entry instanceof Map)) {
+                continue;
+            }
+            Map<?, ?> fRule = (Map<?, ?>) entry;
+            String id = stringValue(fRule.get("id"));
+            if (!"F3".equalsIgnoreCase(id)) {
+                continue;
+            }
+            Object metrics = fRule.get("metrics");
+            if (metrics instanceof Map) {
+                return (Map<String, Object>) metrics;
+            }
+        }
+        return null;
+    }
+
+    private String stringValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = value.toString().trim();
+        return text.isEmpty() ? null : text;
+    }
+
+    private Double doubleValue(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).doubleValue();
+        }
+        if (value instanceof String) {
+            try {
+                return Double.parseDouble(((String) value).trim());
+            } catch (Exception ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private boolean hasSnapshot(String path) {
+        return path != null && !path.isBlank();
+    }
+
+    private boolean channelsMatch(String a, String b) {
+        String left = normalizeChannelMatchKey(a);
+        String right = normalizeChannelMatchKey(b);
+        if (left == null || right == null) {
+            return false;
+        }
+        return left.equals(right);
+    }
+
+    private String normalizeChannelMatchKey(String channel) {
+        if (channel == null) {
+            return null;
+        }
+        String trimmed = channel.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        String digits = trimmed.replaceAll("\\D+", "");
+        if (!digits.isEmpty()) {
+            return digits;
+        }
+        return trimmed.toLowerCase(Locale.ROOT);
     }
 
     private String trimSummary(String summary) {
@@ -2411,6 +2722,16 @@ public class RiskAssessmentService {
             this.score = score;
             this.classification = classification;
             this.timestamp = timestamp;
+        }
+    }
+
+    private static final class AssessmentEvidence {
+        private final String snapshotPath;
+        private final String radarTrackSummary;
+
+        private AssessmentEvidence(String snapshotPath, String radarTrackSummary) {
+            this.snapshotPath = snapshotPath;
+            this.radarTrackSummary = radarTrackSummary;
         }
     }
 

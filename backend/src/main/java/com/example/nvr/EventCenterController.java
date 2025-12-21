@@ -397,7 +397,9 @@ public class EventCenterController {
         String level = classificationToLevel(assessment.getClassification());
         AlertEventEntity alertEvent = findAlertEvent(resolvedEventId);
         String camChannel = alertEvent != null ? alertEvent.getCamChannel() : null;
-        String status = alertEvent != null && alertEvent.getStatus() != null ? alertEvent.getStatus() : "未处理";
+        String status = alertEvent != null && alertEvent.getStatus() != null
+                ? alertEvent.getStatus()
+                : resolveRiskStatus(assessment);
         String eventType = "风控动作 " + actionId;
         String eventTime = decidedAt != null ? decidedAt.toString()
                 : (alertEvent != null ? alertEvent.getEventTime() : null);
@@ -423,6 +425,7 @@ public class EventCenterController {
                 assessment.getScore(),
                 assessment.getRemoteAlarmGateTriggered(),
                 assessment.getSoundLightTriggered(),
+                assessment.getRadarTrackSummary(),
                 details,
                 assessment.getWindowStart(),
                 assessment.getWindowEnd(),
@@ -434,11 +437,22 @@ public class EventCenterController {
         if (eventId == null || eventId.isBlank()) {
             return null;
         }
-        AlertEventEntity alertEvent = alertEventRepository.findByEventId(eventId).orElse(null);
-        if (alertEvent != null) {
-            attachRiskSnapshotIfMissing(alertEvent);
+        return alertEventRepository.findByEventId(eventId).orElse(null);
+    }
+
+    private String resolveRiskStatus(RiskAssessmentEntity assessment) {
+        if (assessment == null) {
+            return "未处理";
         }
-        return alertEvent;
+        String status = assessment.getStatus();
+        if (status != null && !status.isBlank()) {
+            return status;
+        }
+        String actionType = assessment.getActionType();
+        if (actionType != null && actionType.trim().equalsIgnoreCase("A1")) {
+            return "无需处理";
+        }
+        return "未处理";
     }
 
     private void attachRiskSnapshotIfMissing(AlertEventEntity alert) {
@@ -533,45 +547,36 @@ public class EventCenterController {
         if (assessment == null) {
             return SnapshotBundle.empty();
         }
-        Instant start = assessment.getWindowStart();
-        Instant end = assessment.getWindowEnd();
-        if (end == null) {
-            end = assessment.getUpdatedAt();
-        }
-        if (end == null) {
-            end = Instant.now();
-        }
-        if (start == null) {
-            start = end.minus(Duration.ofMinutes(5));
-        }
-        if (end.isBefore(start)) {
-            Instant tmp = start;
-            start = end;
-            end = tmp;
-        }
-
         SnapshotBundle bundle = new SnapshotBundle();
-        List<CameraAlarmEntity> cameraEvents = cameraAlarmRepository.findByCreatedAtBetweenOrderByCreatedAtAsc(start, end);
-        for (CameraAlarmEntity alarm : cameraEvents) {
-            if (alarm == null) {
-                continue;
-            }
-            String url = alarm.getSnapshotUrl();
-            if (url != null) {
-                bundle.add(alarm.getCamChannel(), url);
-            }
-        }
-        List<RadarTargetEntity> radarTargets = radarTargetRepository.findByCapturedAtBetweenOrderByCapturedAtAsc(start, end);
-        for (RadarTargetEntity target : radarTargets) {
-            if (target == null) {
-                continue;
-            }
-            String url = target.getSnapshotUrl();
-            if (url != null) {
-                bundle.add(target.getCamChannel(), url);
-            }
+        String url = snapshotPathToUrl(assessment.getSnapshotPath());
+        if (url != null) {
+            bundle.add(null, url);
         }
         return bundle;
+    }
+
+    private String snapshotPathToUrl(String snapshotPath) {
+        if (snapshotPath == null || snapshotPath.isBlank()) {
+            return null;
+        }
+        String trimmed = snapshotPath.trim();
+        if (trimmed.startsWith("/api/") || trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+            return trimmed;
+        }
+        String normalized = trimmed.replace('\\', '/');
+        String[] parts = normalized.split("/");
+        if (parts.length < 3) {
+            return "/api/evidence/snapshots/" + normalized;
+        }
+        String channel = parts[0];
+        String date = parts[1];
+        String filename = parts[parts.length - 1];
+        try {
+            String encodedFilename = java.net.URLEncoder.encode(filename, java.nio.charset.StandardCharsets.UTF_8);
+            return "/api/evidence/snapshots/" + channel + "/" + date + "/" + encodedFilename;
+        } catch (Exception ex) {
+            return "/api/evidence/snapshots/" + channel + "/" + date + "/" + filename;
+        }
     }
 
     private List<String> mergeSnapshots(String primary,
@@ -779,6 +784,7 @@ public class EventCenterController {
         private final Integer score;
         private final Boolean remoteAlarmGateTriggered;
         private final Boolean soundLightTriggered;
+        private final String radarTrackSummary;
         private final Map<String, Object> details;
         private final Instant windowStart;
         private final Instant windowEnd;
@@ -801,6 +807,7 @@ public class EventCenterController {
                               Integer score,
                               Boolean remoteAlarmGateTriggered,
                               Boolean soundLightTriggered,
+                              String radarTrackSummary,
                               Map<String, Object> details,
                               Instant windowStart,
                               Instant windowEnd,
@@ -822,6 +829,7 @@ public class EventCenterController {
             this.score = score;
             this.remoteAlarmGateTriggered = remoteAlarmGateTriggered;
             this.soundLightTriggered = soundLightTriggered;
+            this.radarTrackSummary = radarTrackSummary;
             this.details = details;
             this.windowStart = windowStart;
             this.windowEnd = windowEnd;
@@ -894,6 +902,10 @@ public class EventCenterController {
 
         public Boolean getSoundLightTriggered() {
             return soundLightTriggered;
+        }
+
+        public String getRadarTrackSummary() {
+            return radarTrackSummary;
         }
 
         public Map<String, Object> getDetails() {

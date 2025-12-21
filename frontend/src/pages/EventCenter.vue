@@ -620,6 +620,7 @@ const riskColumns = computed(() => {
     { title: '风控动作', dataIndex: 'action', key: 'action', customRender: ({ record }: any) => renderRiskActionCell(record) },
     { title: '优先级', dataIndex: 'classification', key: 'classification', customRender: ({ record }: any) => formatClassification(record.classification) },
     { title: '综合得分', dataIndex: 'score', key: 'score', customRender: ({ record }: any) => formatScoreValue(record.score) },
+    { title: '状态', dataIndex: 'status', key: 'status', width: 100 },
     { title: '远程警报闸门', dataIndex: 'remoteAlarmGateTriggered', key: 'remoteAlarmGateTriggered', customRender: ({ record }: any) => renderFlag(record.remoteAlarmGateTriggered) },
     { title: '声光报警', dataIndex: 'soundLightTriggered', key: 'soundLightTriggered', customRender: ({ record }: any) => renderFlag(record.soundLightTriggered, '已触发', '未触发') },
     { title: '评分详情', key: 'details', customRender: ({ record }: any) => renderRiskDetail(record) },
