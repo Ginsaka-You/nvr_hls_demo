@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, h, watch } from 'vue'
-import { message } from 'ant-design-vue'
+import { ref, reactive, computed, onMounted, h, watch, defineComponent } from 'vue'
+import type { PropType } from 'vue'
+import { Badge, Button, message, Tag, Tooltip } from 'ant-design-vue'
+import { EyeOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 
 type Classification = 'P1' | 'P2' | 'P3' | 'P4' | 'INFO'
 
@@ -10,6 +12,13 @@ const classificationMeta: Record<Classification, { label: string }> = {
   P3: { label: 'P3 中等优先级' },
   P4: { label: 'P4 低优先级' },
   INFO: { label: '信息留存' }
+}
+const classificationColors: Record<Classification, string> = {
+  P1: '#f5222d',
+  P2: '#fa8c16',
+  P3: '#1890ff',
+  P4: '#52c41a',
+  INFO: '#8c8c8c'
 }
 
 type AlertRecord = {
@@ -104,6 +113,8 @@ const radar = ref<RadarRecord[]>([])
 const previewVisible = ref(false)
 const previewImages = ref<string[]>([])
 const previewIndex = ref(0)
+const detailVisible = ref(false)
+const detailRecord = ref<any | null>(null)
 
 watch(showA1, async (value) => {
   if (!value) {
@@ -116,7 +127,14 @@ function formatDate(value: string | null | undefined) {
   if (!value) return '-'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString()
+  const pad = (num: number) => String(num).padStart(2, '0')
+  const yyyy = date.getFullYear()
+  const mm = pad(date.getMonth() + 1)
+  const dd = pad(date.getDate())
+  const hh = pad(date.getHours())
+  const min = pad(date.getMinutes())
+  const ss = pad(date.getSeconds())
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}:${ss}`
 }
 
 async function fetchData(kind: TabKey) {
@@ -555,6 +573,10 @@ function ensureLoaded(key: TabKey) {
   }
 }
 
+function refreshActive() {
+  void fetchData(activeKey.value)
+}
+
 onMounted(() => {
   ensureLoaded(activeKey.value)
 })
@@ -567,7 +589,31 @@ function openPreviewGroup(images: string[], index = 0) {
   void logSnapshotView(images[index] || null)
 }
 
+function openDetail(record: any) {
+  detailRecord.value = record
+  detailVisible.value = true
+}
+
 const currentPreviewImage = computed(() => previewImages.value[previewIndex.value] || null)
+const detailTitle = computed(() => {
+  if (!detailRecord.value) return '事件详情'
+  const id = detailRecord.value.eventId ?? detailRecord.value.id ?? '-'
+  return `事件详情 #${id}`
+})
+const detailPayload = computed(() => (detailRecord.value ? JSON.stringify(detailRecord.value, null, 2) : ''))
+
+const RiskDetailView = defineComponent({
+  name: 'RiskDetailView',
+  props: {
+    record: {
+      type: Object as PropType<RiskActionRecord>,
+      required: true
+    }
+  },
+  setup(props) {
+    return () => renderRiskDetail(props.record)
+  }
+})
 
 function nextPreview() {
   if (!previewImages.value.length) return
@@ -605,27 +651,29 @@ const snapshotColumn = {
 
 const alertColumns = computed(() => [
   snapshotColumn,
-  { title: '事件类型', dataIndex: 'eventType', key: 'eventType', width: 200 },
+  { title: '事件类型', dataIndex: 'eventType', key: 'eventType', width: 200, ellipsis: true, customRender: ({ text }: any) => renderSummaryCell(text) },
   { title: '设备', dataIndex: 'device', key: 'device', width: 100 },
   { title: '摄像头通道', dataIndex: 'camChannel', key: 'camChannel', width: 140 },
-  { title: '等级', dataIndex: 'level', key: 'level', width: 100 },
+  { title: '等级', dataIndex: 'level', key: 'level', width: 100, customRender: ({ record }: any) => renderLevelTag(record.level) },
   { title: '状态', dataIndex: 'status', key: 'status', width: 100 },
-  { title: '事件时间', dataIndex: 'eventTime', key: 'eventTime', width: 180, customRender: ({ text }: any) => formatDate(text) }
+  { title: '事件时间', dataIndex: 'eventTime', key: 'eventTime', width: 180, customRender: ({ text }: any) => formatDate(text) },
+  { title: '操作', key: 'action', width: 90, fixed: 'right', customRender: ({ record }: any) => renderActionCell(record) }
 ])
 
 const riskColumns = computed(() => {
   const riskSnapshotColumn = { ...snapshotColumn, width: 110 }
   return [
     riskSnapshotColumn,
-    { title: '风控动作', dataIndex: 'action', key: 'action', customRender: ({ record }: any) => renderRiskActionCell(record) },
-    { title: '优先级', dataIndex: 'classification', key: 'classification', customRender: ({ record }: any) => formatClassification(record.classification) },
-    { title: '综合得分', dataIndex: 'score', key: 'score', customRender: ({ record }: any) => formatScoreValue(record.score) },
+    { title: '风控动作', dataIndex: 'action', key: 'action', width: 120, customRender: ({ record }: any) => renderRiskActionCell(record) },
+    { title: '优先级', dataIndex: 'classification', key: 'classification', width: 120, customRender: ({ record }: any) => renderLevelTag(record.classification) },
+    { title: '综合得分', dataIndex: 'score', key: 'score', width: 110, sorter: (a: any, b: any) => (a?.score ?? 0) - (b?.score ?? 0), customRender: ({ record }: any) => renderScoreCell(record.score) },
+    { title: '摘要', dataIndex: 'summary', key: 'summary', width: 260, customRender: ({ record }: any) => renderSummaryWrap(record.summary) },
     { title: '状态', dataIndex: 'status', key: 'status', width: 100 },
-    { title: '远程警报闸门', dataIndex: 'remoteAlarmGateTriggered', key: 'remoteAlarmGateTriggered', customRender: ({ record }: any) => renderFlag(record.remoteAlarmGateTriggered) },
-    { title: '声光报警', dataIndex: 'soundLightTriggered', key: 'soundLightTriggered', customRender: ({ record }: any) => renderFlag(record.soundLightTriggered, '已触发', '未触发') },
-    { title: '评分详情', key: 'details', customRender: ({ record }: any) => renderRiskDetail(record) },
-    { title: '摄像头通道', dataIndex: 'camChannel', key: 'camChannel' },
-    { title: '事件时间', dataIndex: 'eventTime', key: 'eventTime', customRender: ({ record }: any) => renderRiskEventTime(record) }
+    { title: '远程警报闸门', dataIndex: 'remoteAlarmGateTriggered', key: 'remoteAlarmGateTriggered', width: 140, customRender: ({ record }: any) => renderFlag(record.remoteAlarmGateTriggered, '已触发', '未触发', 'error') },
+    { title: '声光报警', dataIndex: 'soundLightTriggered', key: 'soundLightTriggered', width: 120, customRender: ({ record }: any) => renderFlag(record.soundLightTriggered, '已触发', '未触发', 'warning') },
+    { title: '摄像头通道', dataIndex: 'camChannel', key: 'camChannel', width: 120 },
+    { title: '事件时间', dataIndex: 'eventTime', key: 'eventTime', width: 180, customRender: ({ record }: any) => renderRiskEventTime(record) },
+    { title: '操作', key: 'action', width: 90, fixed: 'right', customRender: ({ record }: any) => renderActionCell(record) }
   ]
 })
 
@@ -643,7 +691,8 @@ const radarColumns = computed(() => [
   { title: '速度', dataIndex: 'speed', key: 'speed', width: 100 },
   { title: '距离', dataIndex: 'range', key: 'range', width: 100 },
   { title: '角度', dataIndex: 'angle', key: 'angle', width: 100 },
-  { title: '记录时间', dataIndex: 'capturedAt', key: 'capturedAt', width: 180, customRender: ({ text }: any) => formatDate(text) }
+  { title: '记录时间', dataIndex: 'capturedAt', key: 'capturedAt', width: 180, customRender: ({ text }: any) => formatDate(text) },
+  { title: '操作', key: 'action', width: 90, fixed: 'right', customRender: ({ record }: any) => renderActionCell(record) }
 ])
 
 function onTabChange(key: string) {
@@ -653,8 +702,8 @@ function onTabChange(key: string) {
 }
 
 const pagination = { pageSize: 20, showSizeChanger: false }
-const tableScroll = { x: '100%' as const }
-const riskTableScroll = undefined
+const tableScroll = { x: 1700 }
+const riskTableScroll = { x: 1900 }
 
 function translateEventType(value: any): string | null {
   if (value == null) return null
@@ -883,6 +932,51 @@ function parseRiskAction(item: any): string | null {
   return null
 }
 
+function renderLevelTag(value: string | null | undefined) {
+  if (!value) return '—'
+  const upper = String(value).toUpperCase()
+  const color = (classificationColors as Record<string, string>)[upper] || '#8c8c8c'
+  const label = (classificationMeta as Record<string, { label: string }>)[upper]?.label || String(value)
+  const tagNode = h(Tag, { color, class: 'level-tag' }, () => upper)
+  if (label && label !== upper) {
+    return h(Tooltip, { title: label }, { default: () => tagNode })
+  }
+  return tagNode
+}
+
+function renderScoreCell(value: number | null | undefined) {
+  const num = typeof value === 'number' ? value : (value != null ? Number(value) : null)
+  if (num == null || Number.isNaN(num)) {
+    return h('span', { class: 'muted-text' }, '—')
+  }
+  const formatted = formatScoreValue(num)
+  const emphasized = num >= 100
+  return h('span', { class: ['score-text', emphasized ? 'score-high' : ''] }, formatted)
+}
+
+function renderSummaryCell(value: string | null | undefined) {
+  if (!value) return '—'
+  const text = String(value)
+  return h(Tooltip, { title: text }, { default: () => h('span', { class: 'summary-ellipsis' }, text) })
+}
+
+function renderSummaryWrap(value: string | null | undefined) {
+  if (!value) return '—'
+  return h('span', { class: 'summary-wrap' }, String(value))
+}
+
+function renderActionCell(record: any) {
+  return h(Button, { type: 'link', size: 'small', onClick: () => openDetail(record) }, {
+    icon: () => h(EyeOutlined),
+    default: () => '详情'
+  })
+}
+
+function isRiskDetailRecord(record: any): record is RiskActionRecord {
+  if (!record || typeof record !== 'object') return false
+  return record.summary != null || record.score != null || record.details != null || record.classification != null
+}
+
 function renderRiskActionCell(record: RiskActionRecord) {
   const actions = getRecordActions(record)
   if (!actions.length) return '—'
@@ -903,10 +997,16 @@ function renderRiskEventTime(record: RiskActionRecord) {
   return formatDate(record.eventTime ?? null)
 }
 
-function renderFlag(value: boolean | null | undefined, onLabel = '已触发', offLabel = '未触发') {
+function renderFlag(
+  value: boolean | null | undefined,
+  onLabel = '已触发',
+  offLabel = '未触发',
+  onStatus: 'success' | 'processing' | 'default' | 'error' | 'warning' = 'error'
+) {
   if (value == null) return '—'
-  const cls = value ? 'risk-flag on' : 'risk-flag off'
-  return h('span', { class: cls }, value ? onLabel : offLabel)
+  const status = value ? onStatus : 'default'
+  const text = value ? onLabel : offLabel
+  return h(Badge, { status, text })
 }
 
 function formatRiskEventType(action: string | null, classification?: string | null) {
@@ -1094,53 +1194,66 @@ function renderRiskDetail(record: RiskActionRecord) {
 
 <template>
   <div class="event-center">
-    <a-tabs v-model:activeKey="activeKey" type="card" @change="onTabChange">
-      <a-tab-pane key="risk" tab="风控告警">
-        <div class="table-toolbar">
-          <a-checkbox v-model:checked="showA1">显示 A1 取证</a-checkbox>
-        </div>
-        <a-table
-          class="risk-table"
-          row-key="id"
-          :columns="riskColumns"
-          :data-source="filteredRiskActions"
-          :loading="loading.risk"
-          :pagination="pagination"
-          :scroll="riskTableScroll"
-          table-layout="fixed"
-        />
-      </a-tab-pane>
-      <a-tab-pane key="alerts" tab="所有告警事件">
-        <a-table
-          row-key="id"
-          :columns="alertColumns"
-          :data-source="alerts"
-          :loading="loading.alerts"
-          :pagination="pagination"
-          :scroll="tableScroll"
-        />
-      </a-tab-pane>
-      <a-tab-pane key="camera" tab="摄像头告警">
-        <a-table
-          row-key="id"
-          :columns="alertColumns"
-          :data-source="camera"
-          :loading="loading.camera"
-          :pagination="pagination"
-          :scroll="tableScroll"
-        />
-      </a-tab-pane>
-      <a-tab-pane key="radar" tab="雷达告警">
-        <a-table
-          row-key="id"
-          :columns="radarColumns"
-          :data-source="radar"
-          :loading="loading.radar"
-          :pagination="pagination"
-          :scroll="tableScroll"
-        />
-      </a-tab-pane>
-    </a-tabs>
+    <a-card class="event-center-card" :bordered="false">
+      <template #title>
+        <div class="event-center-title">事件中心</div>
+      </template>
+      <template #extra>
+        <a-button @click="refreshActive" :loading="loading[activeKey]">
+          <template #icon>
+            <ReloadOutlined />
+          </template>
+          刷新数据
+        </a-button>
+      </template>
+      <a-tabs v-model:activeKey="activeKey" type="card" @change="onTabChange">
+        <a-tab-pane key="risk" tab="风控告警">
+          <div class="table-toolbar">
+            <a-checkbox v-model:checked="showA1">显示 A1 取证</a-checkbox>
+          </div>
+          <a-table
+            class="risk-table"
+            row-key="id"
+            :columns="riskColumns"
+            :data-source="filteredRiskActions"
+            :loading="loading.risk"
+            :pagination="pagination"
+            :scroll="riskTableScroll"
+            table-layout="fixed"
+          />
+        </a-tab-pane>
+        <a-tab-pane key="alerts" tab="所有告警事件">
+          <a-table
+            row-key="id"
+            :columns="alertColumns"
+            :data-source="alerts"
+            :loading="loading.alerts"
+            :pagination="pagination"
+            :scroll="tableScroll"
+          />
+        </a-tab-pane>
+        <a-tab-pane key="camera" tab="摄像头告警">
+          <a-table
+            row-key="id"
+            :columns="alertColumns"
+            :data-source="camera"
+            :loading="loading.camera"
+            :pagination="pagination"
+            :scroll="tableScroll"
+          />
+        </a-tab-pane>
+        <a-tab-pane key="radar" tab="雷达告警">
+          <a-table
+            row-key="id"
+            :columns="radarColumns"
+            :data-source="radar"
+            :loading="loading.radar"
+            :pagination="pagination"
+            :scroll="tableScroll"
+          />
+        </a-tab-pane>
+      </a-tabs>
+    </a-card>
     <a-modal v-model:visible="previewVisible" :footer="null" width="60vw" centered destroy-on-close @cancel="previewVisible = false">
       <div class="preview-body" v-if="currentPreviewImage">
         <button class="preview-nav left" type="button" @click="prevPreview" v-if="previewImages.length > 1">‹</button>
@@ -1151,14 +1264,71 @@ function renderRiskDetail(record: RiskActionRecord) {
         </div>
       </div>
     </a-modal>
+    <a-modal v-model:visible="detailVisible" :footer="null" width="720px" centered destroy-on-close @cancel="detailVisible = false" :title="detailTitle">
+      <div v-if="detailRecord" class="detail-body">
+        <template v-if="isRiskDetailRecord(detailRecord)">
+          <RiskDetailView :record="detailRecord" />
+          <details class="detail-raw">
+            <summary>原始数据</summary>
+            <pre class="detail-pre">{{ detailPayload }}</pre>
+          </details>
+        </template>
+        <template v-else>
+          <pre class="detail-pre">{{ detailPayload }}</pre>
+        </template>
+      </div>
+    </a-modal>
   </div>
 </template>
 
 <style scoped>
 .event-center {
-  padding: 16px;
-  background: var(--bg-color, #fff);
+  padding: 24px;
+  background: #f0f2f5;
   min-height: calc(100vh - 64px);
+}
+
+.event-center-card {
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08);
+}
+
+.event-center-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.summary-ellipsis {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summary-wrap {
+  white-space: normal;
+  word-break: break-word;
+}
+
+.level-tag {
+  font-weight: 600;
+  margin-right: 0;
+}
+
+.score-text {
+  font-weight: 600;
+  font-size: 14px;
+  color: #1f2937;
+}
+
+.score-high {
+  color: #f5222d;
+}
+
+.muted-text {
+  color: rgba(0, 0, 0, 0.45);
 }
 
 table {
@@ -1256,7 +1426,7 @@ table {
 .table-toolbar {
   display: flex;
   align-items: center;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
 }
 
 .risk-detail-head {
@@ -1295,19 +1465,6 @@ table {
   background: rgba(239, 68, 68, 0.15);
   color: #dc2626;
   border-color: rgba(220, 38, 38, 0.35);
-}
-
-.risk-flag {
-  font-weight: 600;
-  font-size: 13px;
-}
-
-.risk-flag.on {
-  color: #dc2626;
-}
-
-.risk-flag.off {
-  color: #64748b;
 }
 
 .risk-score-grid {
@@ -1368,5 +1525,25 @@ table {
 
 .contrib-row + .contrib-row {
   margin-top: 2px;
+}
+
+.detail-pre {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 12px;
+  border-radius: 6px;
+  max-height: 60vh;
+  overflow: auto;
+  font-size: 12px;
+}
+
+.detail-raw {
+  margin-top: 12px;
+}
+
+.detail-raw summary {
+  cursor: pointer;
+  color: #2563eb;
+  font-size: 13px;
 }
 </style>

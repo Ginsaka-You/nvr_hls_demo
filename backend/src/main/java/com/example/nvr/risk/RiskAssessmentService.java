@@ -1834,10 +1834,6 @@ public class RiskAssessmentService {
         }
     }
 
-    private boolean hasSnapshot(String path) {
-        return path != null && !path.isBlank();
-    }
-
     private void runAfterCommit(String description, Runnable action) {
         if (action == null) {
             return;
