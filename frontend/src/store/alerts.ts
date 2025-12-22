@@ -11,6 +11,7 @@ export type Alarm = {
   deviceId?: string
   occurredAt?: number
   soundLightTriggered?: boolean
+  status?: string
 }
 
 export const alarms: Ref<Alarm[]> = ref([])
@@ -23,6 +24,7 @@ type RiskActionPayload = {
   action_id?: string
   classification?: string
   level?: string
+  status?: string
   camChannel?: string
   cam_channel?: string
   eventTime?: string
@@ -258,7 +260,8 @@ function pushRiskAlarm(data: any) {
     summary: detailParts.join(' ｜ '),
     deviceId: `risk:${actionId}`,
     occurredAt,
-    soundLightTriggered: shouldTriggerSoundLight
+    soundLightTriggered: shouldTriggerSoundLight,
+    status: typeof data?.status === 'string' && data.status ? data.status : '未处理'
   }
   pushAlarm(alarm, { triggerSoundLight: shouldTriggerSoundLight })
 }
@@ -289,7 +292,8 @@ function mapRiskActionToAlarm(item: RiskActionPayload): Alarm | null {
     summary: summaryText,
     deviceId: `risk:${actionId}`,
     occurredAt,
-    soundLightTriggered
+    soundLightTriggered,
+    status: typeof item.status === 'string' && item.status ? item.status : '未处理'
   }
 }
 
