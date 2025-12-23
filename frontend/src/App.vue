@@ -9,7 +9,6 @@ import ImsiTrend from './pages/ImsiTrend.vue'
 import RadarPlot from './pages/RadarPlot.vue'
 import EventCenter from './pages/EventCenter.vue'
 import RiskModel from './pages/RiskModel.vue'
-import ExternalFramePage from './components/ExternalFramePage.vue'
 import PlaceholderPage from './components/PlaceholderPage.vue'
 import { ensureSettingsLoaded } from './store/config'
 import { connectAlerts } from './store/alerts'
@@ -17,8 +16,8 @@ import { connectRadar } from './store/radar'
 import { connectDeviceMonitoring } from './store/devices'
 import { connectImsiUpdates } from './store/imsiUpdates'
 
-type Tab = 'main'|'multicam'|'events'|'risk'|'imsi'|'radar'|'seismic'|'drone'|'big8'|'big61'|'big67'|'axure'|'settings'
-type TabGroup = 'primary'|'more'|'hidden'
+type Tab = 'main'|'multicam'|'events'|'risk'|'imsi'|'radar'|'seismic'|'drone'|'settings'
+type TabGroup = 'primary'|'hidden'
 
 interface TabDefinition {
   key: Tab
@@ -40,10 +39,6 @@ const tabDefinitions: TabDefinition[] = [
   { key: 'radar', label: '相控阵雷达', component: RadarPlot, group: 'primary' },
   { key: 'seismic', label: '震动波形', component: PlaceholderPage, props: { message: '震动波形图表占位' }, group: 'primary' },
   { key: 'drone', label: '无人机遥测', component: PlaceholderPage, props: { message: '无人机遥测面板占位' }, group: 'primary' },
-  { key: 'big8', label: '兰州智慧消防大数据平台', component: ExternalFramePage, props: { envVar: 'VITE_BIGDATA8_URL', fallbackUrl: '/bigdata/008/index.html', theme: 'light' }, group: 'more' },
-  { key: 'big61', label: '智慧小区大数据分析', component: ExternalFramePage, props: { envVar: 'VITE_BIGDATA61_URL', fallbackUrl: '/bigdata/061/index.html' }, group: 'more' },
-  { key: 'big67', label: '智慧旅游综合服务平台', component: ExternalFramePage, props: { envVar: 'VITE_BIGDATA67_URL', fallbackUrl: '/bigdata/067/index.html' }, group: 'more' },
-  { key: 'axure', label: 'Axure 原型', component: ExternalFramePage, props: { envVar: 'VITE_AXURE_URL', fallbackUrl: 'https://9rpk49.axshare.com' }, group: 'more' },
   { key: 'settings', label: '设置', component: Settings, group: 'hidden' }
 ]
 
@@ -57,9 +52,6 @@ const navItems = computed(() => primaryTabs.value.map(def => ({ key: def.key, la
 const splitIdx = computed(() => Math.ceil(navItems.value.length / 2))
 const navLeft = computed(() => navItems.value.slice(0, splitIdx.value))
 const navRight = computed(() => navItems.value.slice(splitIdx.value))
-const moreItems = computed(() => tabDefinitions
-  .filter(def => def.group === 'more')
-  .map(def => ({ key: def.key, label: def.label })))
 
 const isCompact = ref(false)
 function handleResize() {
@@ -108,14 +100,17 @@ const activeProps = computed(() => activeDefinition.value?.props ?? {})
     <a-layout-header class="top-header">
       <div class="top-bar">
         <div class="nav-section nav-left">
-          <a-menu class="top-menu" mode="horizontal" theme="light" :selectedKeys="[tab]" @click="onMenuClick">
+          <a-menu class="top-menu" mode="horizontal" theme="dark" :selectedKeys="[tab]" @click="onMenuClick">
             <a-menu-item v-for="it in navLeft" :key="it.key">{{ it.label }}</a-menu-item>
           </a-menu>
         </div>
-        <div class="brand" @click="gotoHome">天玺金盾</div>
+        <div class="brand" @click="gotoHome">
+          天玺金盾
+          <span class="brand-underline"></span>
+        </div>
         <div class="nav-section nav-right">
           <template v-if="!isCompact">
-            <a-menu class="top-menu top-menu-right" mode="horizontal" theme="light" :selectedKeys="[tab]" @click="onMenuClick">
+            <a-menu class="top-menu top-menu-right" mode="horizontal" theme="dark" :selectedKeys="[tab]" @click="onMenuClick">
               <a-menu-item v-for="it in navRight" :key="it.key">{{ it.label }}</a-menu-item>
             </a-menu>
           </template>
@@ -123,7 +118,7 @@ const activeProps = computed(() => activeDefinition.value?.props ?? {})
             <a-dropdown class="compact-trigger">
               <a-button type="text">…</a-button>
               <template #overlay>
-                <a-menu :selectedKeys="[tab]" @click="onMenuClick">
+                <a-menu :selectedKeys="[tab]" theme="dark" @click="onMenuClick">
                   <a-menu-item v-for="it in navRight" :key="'compact-'+it.key">{{ it.label }}</a-menu-item>
                 </a-menu>
               </template>
@@ -136,14 +131,6 @@ const activeProps = computed(() => activeDefinition.value?.props ?? {})
               </a-button>
             </a-tooltip>
             <a-avatar :size="32" class="user-avatar">U</a-avatar>
-            <a-dropdown placement="bottomRight">
-              <a-button>更多大屏</a-button>
-              <template #overlay>
-                <a-menu :selectedKeys="[]" @click="onMenuClick">
-                  <a-menu-item v-for="it in moreItems" :key="it.key">{{ it.label }}</a-menu-item>
-                </a-menu>
-              </template>
-            </a-dropdown>
           </div>
         </div>
       </div>
@@ -168,11 +155,34 @@ const activeProps = computed(() => activeDefinition.value?.props ?? {})
 .top-header {
   position: sticky;
   top: 0;
-  z-index: 10;
-  background: var(--bg-color);
-  border-bottom: 1px solid rgba(27, 146, 253, 0.35);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-  padding: 0 12px;
+  z-index: 20;
+  background: linear-gradient(90deg, rgba(4, 9, 18, 0.95), rgba(10, 28, 48, 0.85), rgba(4, 9, 18, 0.95));
+  border-bottom: 1px solid rgba(0, 229, 255, 0.35);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  padding: 0 16px;
+  overflow: hidden;
+}
+
+.top-header::before,
+.top-header::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  width: 140px;
+  height: 12px;
+  border-top: 2px solid rgba(0, 229, 255, 0.7);
+  border-left: 2px solid rgba(0, 229, 255, 0.7);
+  border-right: 2px solid rgba(0, 229, 255, 0.7);
+}
+
+.top-header::before {
+  left: 18px;
+  transform: skewX(-20deg);
+}
+
+.top-header::after {
+  right: 18px;
+  transform: skewX(20deg);
 }
 
 
@@ -183,6 +193,7 @@ const activeProps = computed(() => activeDefinition.value?.props ?? {})
   justify-content: space-between;
   gap: 12px;
   min-height: 64px;
+  position: relative;
   flex-wrap: nowrap;
 }
 
@@ -202,23 +213,46 @@ const activeProps = computed(() => activeDefinition.value?.props ?? {})
   justify-content: flex-end;
 }
 
-.top-menu { border-bottom: 0; }
+.top-menu { border-bottom: 0; background: transparent; }
 .compact-trigger { display: none; }
 .top-menu :deep(.ant-menu-item) {
   padding-inline: 12px;
   white-space: nowrap;
+  color: #94a3b8;
+}
+
+.top-menu :deep(.ant-menu-item-selected) {
+  color: #00e5ff;
+  background: transparent !important;
+}
+
+.top-menu :deep(.ant-menu-item:hover) {
+  color: #7cf6ff;
 }
 
 .brand {
-  flex: 0 0 auto;
-  font-weight: 600;
-  color: var(--text-color);
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  font-weight: 700;
+  font-size: 32px;
+  color: #00e5ff;
   cursor: pointer;
   line-height: 32px;
   white-space: nowrap;
-  max-width: 35%;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  letter-spacing: 8px;
+  text-shadow: 0 0 12px rgba(0, 229, 255, 0.65);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.brand-underline {
+  margin-top: 6px;
+  width: 200px;
+  height: 2px;
+  background: linear-gradient(90deg, rgba(0, 229, 255, 0), rgba(0, 229, 255, 0.9), rgba(0, 229, 255, 0));
+  box-shadow: 0 0 10px rgba(0, 229, 255, 0.8);
 }
 
 .header-actions {
@@ -254,8 +288,11 @@ const activeProps = computed(() => activeDefinition.value?.props ?? {})
   }
 
   .brand {
-    font-size: 15px;
-    max-width: 50%;
+    font-size: 22px;
+  }
+
+  .brand-underline {
+    width: 140px;
   }
 
   .compact-trigger { display: inline-flex; }

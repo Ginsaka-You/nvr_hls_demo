@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, watch, defineProps, defineEmits, nextTick } from 'vue'
+import { onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
 // @ts-ignore
 import Hls from 'hls.js'
 import { StreamSource, isHlsSource, isWebRtcSource } from '@/types/stream'
