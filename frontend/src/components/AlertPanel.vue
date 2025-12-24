@@ -9,6 +9,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: 'preview', images: string[], index: number): void
+  (event: 'action', alarm: Alarm): void
 }>()
 
 const alertItems = computed(() => props.items ?? alarms.value)
@@ -53,7 +54,7 @@ function onPreview(alarm: Alarm, index = 0) {
         </div>
         <div class="task-summary">{{ a.summary }}</div>
       </div>
-      <a-button size="small" class="task-action">处置</a-button>
+      <a-button size="small" class="task-action" @click="emit('action', a)">处置</a-button>
     </div>
     <div v-if="alertItems.length===0" class="muted empty">暂无告警</div>
   </div>

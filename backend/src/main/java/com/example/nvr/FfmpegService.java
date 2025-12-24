@@ -37,6 +37,29 @@ public class FfmpegService {
     private final Map<String, String> lastOutDir = new ConcurrentHashMap<>();
     private final Map<String, String> lastCmd = new ConcurrentHashMap<>();
 
+    private File resolveOutputDir(String id) throws IOException {
+        List<File> roots = Arrays.asList(
+                new File(hlsRoot),
+                new File("./streams"),
+                new File("./backend/streams")
+        );
+        List<String> attempts = new ArrayList<>();
+        for (File root : roots) {
+            File outDir = new File(root, id);
+            attempts.add(outDir.getAbsolutePath());
+            if (!outDir.exists()) {
+                if (!outDir.mkdirs()) {
+                    continue;
+                }
+            }
+            if (!outDir.canWrite()) {
+                continue;
+            }
+            return outDir;
+        }
+        throw new IOException("Failed to create HLS directory (attempted: " + String.join(", ", attempts) + ")");
+    }
+
     public synchronized String start(String id, String rtspUrl, boolean copy) throws IOException {
         Process existing = processes.get(id);
         if (existing != null) {
@@ -46,16 +69,9 @@ public class FfmpegService {
                 processes.remove(id);
             }
         }
-        File outDir = new File(hlsRoot, id);
         System.out.println("[ffmpeg " + id + "] hlsRoot=" + new File(hlsRoot).getAbsolutePath());
-        if (!outDir.exists()) {
-            if (!outDir.mkdirs()) {
-                throw new IOException("Failed to create HLS directory: " + outDir.getAbsolutePath());
-            }
-        }
-        if (!outDir.canWrite()) {
-            throw new IOException("HLS directory not writable: " + outDir.getAbsolutePath());
-        }
+        File outDir = resolveOutputDir(id);
+        System.out.println("[ffmpeg " + id + "] outDir=" + outDir.getAbsolutePath());
         lastOutDir.put(id, outDir.getAbsolutePath());
         // Clean old playlist/segments to avoid stale indices
         File[] old = outDir.listFiles((dir, name) -> name.endsWith(".m3u8") || name.endsWith(".ts"));

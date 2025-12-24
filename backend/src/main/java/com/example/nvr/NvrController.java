@@ -151,4 +151,205 @@ public class NvrController {
             return new ResponseEntity<>(err.getBytes(StandardCharsets.UTF_8), headers, HttpStatus.BAD_GATEWAY);
         }
     }
+
+    @GetMapping("/input-proxy-status")
+    public ResponseEntity<Map<String, Object>> inputProxyStatus(
+            @RequestParam String host,
+            @RequestParam String user,
+            @RequestParam String pass,
+            @RequestParam(defaultValue = "http") String scheme,
+            @RequestParam(name = "httpPort", required = false) Integer httpPort
+    ) {
+        Map<String, Object> out = new HashMap<>();
+        String base = scheme + "://" + host + (httpPort != null ? (":" + httpPort) : "");
+        String url = base + "/ISAPI/ContentMgmt/InputProxy/channels/status";
+        HttpClient client = HttpClient.newBuilder().build();
+        HttpResponse<byte[]> resp = null;
+        try {
+            String basic = Base64.getEncoder().encodeToString((user + ":" + pass).getBytes(StandardCharsets.UTF_8));
+            HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                    .header("Authorization", "Basic " + basic)
+                    .header("Accept", "application/xml")
+                    .GET()
+                    .build();
+            resp = client.send(req, HttpResponse.BodyHandlers.ofByteArray());
+            if (resp.statusCode() == 401) {
+                String wa = resp.headers().firstValue("WWW-Authenticate").orElse(null);
+                if (wa == null || !wa.toLowerCase(Locale.ROOT).startsWith("digest")) {
+                    HttpRequest probe = HttpRequest.newBuilder(URI.create(url))
+                            .header("Accept", "application/xml")
+                            .GET()
+                            .build();
+                    HttpResponse<byte[]> probeResp = client.send(probe, HttpResponse.BodyHandlers.ofByteArray());
+                    wa = probeResp.headers().firstValue("WWW-Authenticate").orElse(wa);
+                }
+                if (wa != null && wa.toLowerCase(Locale.ROOT).startsWith("digest")) {
+                    String path = buildDigestPath(url);
+                    String auth = buildDigestAuthHeader(wa, user, pass, "GET", path, null);
+                    HttpRequest digestReq = HttpRequest.newBuilder(URI.create(url))
+                            .header("Authorization", auth)
+                            .header("Accept", "application/xml")
+                            .GET()
+                            .build();
+                    resp = client.send(digestReq, HttpResponse.BodyHandlers.ofByteArray());
+                }
+            }
+        } catch (Exception e) {
+            out.put("ok", false);
+            out.put("error", e.getMessage());
+            return ResponseEntity.ok(out);
+        }
+
+        if (resp == null || resp.body() == null || resp.body().length == 0) {
+            out.put("ok", false);
+            out.put("error", "No response body");
+            return ResponseEntity.ok(out);
+        }
+        if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
+            out.put("ok", false);
+            out.put("status", resp.statusCode());
+            out.put("error", "HTTP " + resp.statusCode());
+            return ResponseEntity.ok(out);
+        }
+
+        String body = new String(resp.body(), StandardCharsets.UTF_8);
+        List<Map<String, Object>> statuses = new ArrayList<>();
+        int onlineCount = 0;
+        Pattern blockPattern = Pattern.compile("<InputProxyChannelStatus\\b[^>]*>(.*?)</InputProxyChannelStatus>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+        Matcher blockMatcher = blockPattern.matcher(body);
+        while (blockMatcher.find()) {
+            String chunk = blockMatcher.group(1);
+            String id = extractTag(chunk, "id");
+            String onlineText = extractTag(chunk, "online");
+            boolean online = "true".equalsIgnoreCase(onlineText);
+            if (online) onlineCount++;
+            List<String> streamIds = extractMultiTag(chunk, "streamingProxyChannelId");
+            Map<String, Object> item = new HashMap<>();
+            item.put("id", id);
+            item.put("online", online);
+            item.put("streamingProxyChannelIds", streamIds);
+            statuses.add(item);
+        }
+        int totalCount = statuses.size();
+        if (totalCount == 0) {
+            Matcher onlineMatcher = Pattern.compile("<online>\\s*(true|false)\\s*</online>", Pattern.CASE_INSENSITIVE)
+                    .matcher(body);
+            while (onlineMatcher.find()) {
+                totalCount++;
+                if ("true".equalsIgnoreCase(onlineMatcher.group(1))) {
+                    onlineCount++;
+                }
+            }
+        }
+
+        out.put("ok", true);
+        out.put("onlineCount", onlineCount);
+        out.put("totalCount", totalCount);
+        out.put("items", statuses);
+        return ResponseEntity.ok(out);
+    }
+
+    private String buildDigestPath(String url) {
+        URI uri = URI.create(url);
+        String path = uri.getRawPath();
+        if (uri.getRawQuery() != null && !uri.getRawQuery().isBlank()) {
+            path += "?" + uri.getRawQuery();
+        }
+        return path;
+    }
+
+    private String extractTag(String xml, String tag) {
+        Matcher matcher = Pattern.compile("<" + tag + ">\\s*([^<]+)\\s*</" + tag + ">", Pattern.CASE_INSENSITIVE)
+                .matcher(xml);
+        return matcher.find() ? matcher.group(1).trim() : "";
+    }
+
+    private List<String> extractMultiTag(String xml, String tag) {
+        List<String> items = new ArrayList<>();
+        Matcher matcher = Pattern.compile("<" + tag + ">\\s*([^<]+)\\s*</" + tag + ">", Pattern.CASE_INSENSITIVE)
+                .matcher(xml);
+        while (matcher.find()) {
+            String value = matcher.group(1).trim();
+            if (!value.isEmpty()) items.add(value);
+        }
+        return items;
+    }
+
+    private String buildDigestAuthHeader(String wwwAuth, String user, String pass, String method, String uri, String body) throws Exception {
+        Map<String, String> params = new HashMap<>();
+        String s = wwwAuth.substring(wwwAuth.indexOf(' ') + 1);
+        for (String part : s.split(",")) {
+            String[] kv = part.trim().split("=", 2);
+            if (kv.length == 2) {
+                String key = kv[0].trim();
+                String val = kv[1].trim();
+                if (val.startsWith("\"") && val.endsWith("\"")) val = val.substring(1, val.length() - 1);
+                params.put(key.toLowerCase(Locale.ROOT), val);
+            }
+        }
+        String realm = params.getOrDefault("realm", "");
+        String nonce = params.getOrDefault("nonce", "");
+        String qopStr = params.getOrDefault("qop", "auth");
+        String qop = qopStr;
+        if (qopStr.contains("auth")) qop = "auth";
+        else if (qopStr.contains("auth-int")) qop = "auth-int";
+        String algorithm = params.getOrDefault("algorithm", "MD5");
+        String opaque = params.get("opaque");
+
+        String cnonce = UUID.randomUUID().toString().replaceAll("-", "");
+        String nc = "00000001";
+
+        String ha1;
+        String ha2;
+        String algoBase = algorithm.toUpperCase(Locale.ROOT);
+        boolean sess = algoBase.endsWith("-SESS");
+        String algoName = algoBase.replace("-SESS", "");
+        if ("MD5".equals(algoName)) {
+            String base = md("MD5", user + ":" + realm + ":" + pass);
+            ha1 = sess ? md("MD5", base + ":" + nonce + ":" + cnonce) : base;
+        } else if ("SHA-256".equals(algoName) || "SHA256".equals(algoName)) {
+            String base = md("SHA-256", user + ":" + realm + ":" + pass);
+            ha1 = sess ? md("SHA-256", base + ":" + nonce + ":" + cnonce) : base;
+        } else {
+            String base = md("MD5", user + ":" + realm + ":" + pass);
+            ha1 = sess ? md("MD5", base + ":" + nonce + ":" + cnonce) : base;
+        }
+
+        if ("auth-int".equalsIgnoreCase(qop)) {
+            String bodyHash = md(algoName.startsWith("SHA") ? "SHA-256" : "MD5", body == null ? "" : body);
+            ha2 = md(algoName.startsWith("SHA") ? "SHA-256" : "MD5", method + ":" + uri + ":" + bodyHash);
+        } else {
+            ha2 = md(algoName.startsWith("SHA") ? "SHA-256" : "MD5", method + ":" + uri);
+        }
+
+        String response;
+        if (qop != null && !qop.isEmpty()) {
+            response = md(algoName.startsWith("SHA") ? "SHA-256" : "MD5", ha1 + ":" + nonce + ":" + nc + ":" + cnonce + ":" + qop + ":" + ha2);
+        } else {
+            response = md(algoName.startsWith("SHA") ? "SHA-256" : "MD5", ha1 + ":" + nonce + ":" + ha2);
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Digest ");
+        sb.append("username=\"").append(user).append("\",");
+        sb.append("realm=\"").append(realm).append("\",");
+        sb.append("nonce=\"").append(nonce).append("\",");
+        sb.append("uri=\"").append(uri).append("\",");
+        sb.append("response=\"").append(response).append("\",");
+        if (qop != null && !qop.isEmpty()) sb.append("qop=").append(qop).append(",");
+        sb.append("nc=").append(nc).append(",");
+        sb.append("cnonce=\"").append(cnonce).append("\"");
+        if (opaque != null && !opaque.isEmpty()) sb.append(",opaque=\"").append(opaque).append("\"");
+        return sb.toString();
+    }
+
+    private String md(String algorithm, String s) throws Exception {
+        String alg = algorithm;
+        if (alg == null || alg.isEmpty()) alg = "MD5";
+        if (!alg.equalsIgnoreCase("MD5") && !alg.equalsIgnoreCase("SHA-256")) alg = "MD5";
+        java.security.MessageDigest md = java.security.MessageDigest.getInstance(alg.toUpperCase(Locale.ROOT));
+        byte[] dig = md.digest(s.getBytes(StandardCharsets.ISO_8859_1));
+        StringBuilder sb = new StringBuilder();
+        for (byte b : dig) sb.append(String.format("%02x", b));
+        return sb.toString();
+    }
 }

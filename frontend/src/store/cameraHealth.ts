@@ -35,6 +35,14 @@ export function setCameraHealth(okCount: number, totalCount: number) {
   }
 }
 
+export function setCameraHealthError(text = '连接失败', totalCount = 0) {
+  status.value = 'error'
+  message.value = text
+  available.value = 0
+  total.value = totalCount
+  lastUpdated.value = Date.now()
+}
+
 export const cameraHealth = {
   status,
   message,
@@ -42,4 +50,3 @@ export const cameraHealth = {
   total,
   lastUpdated
 }
-

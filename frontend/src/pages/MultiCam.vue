@@ -7,7 +7,6 @@ import VideoPlayer from '@/components/VideoPlayer.vue'
 // 基础连接参数（与单摄像头页一致）
 import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, detectMain, detectSub, streamMode, hlsOrigin, webrtcServer, webrtcOptions, webrtcPreferCodec, channelOverrides } from '@/store/config'
 import type { StreamSource } from '@/types/stream'
-import { resetCameraHealth, setCameraHealth } from '@/store/cameraHealth'
 
 // 直播源缓存（按具体 id，如 cam401）
 const urls = ref<Record<string, StreamSource>>({})
@@ -36,7 +35,6 @@ let snapshotObjectUrl: string | null = null
 let failureTimer: ReturnType<typeof setInterval> | null = null
 const failureTimestamps = new Map<string, number>()
 let lastRestartHandled = 0
-let detectionInProgress = false
 const FAILURE_SUPPRESS_MS = 60_000
 
 function cleanupSnapshotUrl() {
@@ -67,24 +65,6 @@ onBeforeUnmount(() => {
   stopFailureMonitor()
 })
 
-function updateCameraHealthFromCams() {
-  if (detectionInProgress) {
-    resetCameraHealth('正在检测...')
-    return
-  }
-  const list = cams.value
-  const total = list.length
-  const ok = list.filter(item => item.status === 'ok').length
-  const detecting = list.some(item => item.stream && item.status === 'detecting')
-
-  if (ok > 0) {
-    setCameraHealth(ok, total)
-  } else if (detecting) {
-    resetCameraHealth('正在检测...')
-  } else {
-    setCameraHealth(0, total)
-  }
-}
 
 function isSuppressed(id: string) {
   const ts = failureTimestamps.get(id)
@@ -268,9 +248,7 @@ watch(() => useWebRtc.value, async val => {
 
 // 自动检测并启动：优先子码流，必要时可尝试主码流
 async function detect() {
-  resetCameraHealth()
   loading.value = true
-  detectionInProgress = true
   try {
     const overrides = overridePairs.value
     if (overrides.length) {
@@ -327,7 +305,6 @@ async function detect() {
           cams.value[idx] = { ...c }
         }
       }
-      updateCameraHealthFromCams()
       return
     }
 
@@ -382,10 +359,7 @@ async function detect() {
         cams.value[idx] = { ...c }
       }
     }
-    updateCameraHealthFromCams()
   } finally {
-    detectionInProgress = false
-    updateCameraHealthFromCams()
     loading.value = false
   }
 }
@@ -436,7 +410,6 @@ async function reloadAll(options: { preserveFailures?: boolean } = {}) {
   if (loading.value) return
   loading.value = true
   try {
-    resetCameraHealth()
     if (!preserveFailures) {
       failureTimestamps.clear()
     }
@@ -471,7 +444,6 @@ async function reloadAll(options: { preserveFailures?: boolean } = {}) {
 
 async function disconnectAll() {
   if (loading.value) return
-  resetCameraHealth('已断开，待检测…')
   failureTimestamps.clear()
   const ids = new Set<string>()
   for (const cam of cams.value) {
@@ -491,14 +463,12 @@ async function disconnectAll() {
     fallbackTried: false
   }))
   urls.value = {}
-  updateCameraHealthFromCams()
 }
 
 function commitCamUpdate(c: CamEntry) {
   const idx = cams.value.findIndex(item => item.port === c.port)
   if (idx !== -1) {
     cams.value[idx] = { ...c }
-    updateCameraHealthFromCams()
   }
 }
 

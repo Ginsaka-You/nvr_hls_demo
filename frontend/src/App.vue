@@ -137,7 +137,7 @@ const activeProps = computed(() => activeDefinition.value?.props ?? {})
     </a-layout-header>
     <a-layout>
       <a-layout-content>
-        <MultiCam class="tab-view" v-show="tab==='multicam'" />
+        <MultiCam v-if="tab==='multicam'" class="tab-view" />
         <component
           v-if="activeComponent"
           :key="tab"

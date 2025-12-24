@@ -1,12 +1,23 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import { Liquid, Area } from '@antv/g2plot'
-import { CameraOutlined, RadarChartOutlined, MobileOutlined } from '@ant-design/icons-vue'
+import {
+  CameraOutlined,
+  RadarChartOutlined,
+  MobileOutlined,
+  DeleteOutlined,
+  SoundOutlined,
+  CheckCircleOutlined,
+  WarningOutlined
+} from '@ant-design/icons-vue'
 import AlertPanel from '@/components/AlertPanel.vue'
+import VideoPlayer from '@/components/VideoPlayer.vue'
 import { loadAmap } from '@/lib/loadAmap'
 import { radarDeviceState, cameraDeviceState, imsiDeviceState } from '@/store/devices'
 import { cameraHealth } from '@/store/cameraHealth'
 import { alarms } from '@/store/alerts'
+import { nvrHost, nvrUser, nvrPass, streamMode, hlsOrigin, webrtcServer, webrtcOptions, webrtcPreferCodec, detectSub, detectMain } from '@/store/config'
+import type { StreamSource } from '@/types/stream'
 
 type Cam = { id: string, name: string, lat?: number, lng?: number }
 type Alarm = {
@@ -46,6 +57,19 @@ const previewVisible = ref(false)
 const previewImages = ref<string[]>([])
 const previewIndex = ref(0)
 const prefetchedImages = new Set<string>()
+const videoVisible = ref(false)
+const videoSource = ref<StreamSource | null>(null)
+const videoStreamId = ref<string | null>(null)
+const videoTitle = ref('实时视频')
+const videoStatus = ref<'idle' | 'loading' | 'ready' | 'failed'>('idle')
+const videoError = ref('')
+const videoRemark = ref('')
+const videoHudLabel = ref('')
+const videoPrimaryChannel = ref<string | null>(null)
+const videoFallbackChannel = ref<string | null>(null)
+const videoTriedFallback = ref(false)
+let videoTimeout: ReturnType<typeof setTimeout> | null = null
+let videoSession = 0
 
 const rankingData = [
   { name: '北门入口-主摄', count: 158, percent: 90 },
@@ -486,6 +510,265 @@ function formatPreviewNumber(value: number) {
   return String(value).padStart(2, '0')
 }
 
+function resolveAlarmChannel(alarm: Alarm | null): string | null {
+  if (!alarm) return null
+  const raw = `${alarm.place || ''} ${alarm.source || ''}`
+  const match = raw.match(/\d+/)
+  return match ? match[0] : null
+}
+
+function buildChannelPair(rawChannel: string) {
+  const digits = rawChannel.replace(/\D+/g, '')
+  if (!digits) return null
+  if (digits.length <= 2) {
+    const prefix = digits
+    return {
+      main: `${prefix}01`,
+      sub: `${prefix}02`
+    }
+  }
+  const prefix = digits.slice(0, -2)
+  if (!prefix) return null
+  return {
+    main: `${prefix}01`,
+    sub: `${prefix}02`
+  }
+}
+
+function resolvePreferredChannel(rawChannel: string) {
+  const pair = buildChannelPair(rawChannel)
+  if (!pair) return { primary: rawChannel, fallback: null }
+  const preferSub = !!detectSub.value
+  const allowMain = detectMain.value !== false
+  if (preferSub) {
+    return { primary: pair.sub, fallback: allowMain ? pair.main : null }
+  }
+  return { primary: pair.main, fallback: null }
+}
+
+function buildStreamId(channel: string) {
+  if (!channel) return `cam${Date.now().toString(36)}`
+  return channel.startsWith('cam') ? channel : `cam${channel}`
+}
+
+function buildRtspUrl(channel: string) {
+  const user = (nvrUser.value || '').trim()
+  const pass = encodeURIComponent(nvrPass.value || '')
+  const host = (nvrHost.value || '').trim() || '127.0.0.1'
+  const auth = user ? `${user}:${pass}@` : ''
+  return `rtsp://${auth}${host}:554/Streaming/Channels/${channel}`
+}
+
+function clearVideoTimeout() {
+  if (videoTimeout) {
+    clearTimeout(videoTimeout)
+    videoTimeout = null
+  }
+}
+
+function scheduleVideoTimeout(session: number, ms = 8000) {
+  clearVideoTimeout()
+  videoTimeout = setTimeout(() => {
+    if (videoSession !== session) return
+    if (videoStatus.value !== 'loading') return
+    if (streamMode.value === 'webrtc' && videoFallbackChannel.value && !videoTriedFallback.value) {
+      videoTriedFallback.value = true
+      const fallback = videoFallbackChannel.value
+      videoTitle.value = `${fallback} 实时视频`
+      startWebRtcStream(fallback, session)
+      return
+    }
+    videoStatus.value = 'failed'
+    videoError.value = '视频连接超时'
+  }, ms)
+}
+
+async function waitUntilReady(id: string, timeoutMs = 10000, pollMs = 800) {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const resp = await fetch(`/api/streams/${id}/status`)
+      if (resp.ok) {
+        const s = await resp.json()
+        const probe = s?.probe
+        if (probe && probe.m3u8Exists) return true
+      }
+    } catch (_) {}
+    await new Promise(r => setTimeout(r, pollMs))
+  }
+  return false
+}
+
+function buildWebRtcSource(rtsp: string): StreamSource | null {
+  const server = (webrtcServer.value || '').trim()
+  if (!server) return null
+  const normalizedServer = server.replace(/\/$/, '')
+  let webrtcUrl = rtsp
+  const opts = (webrtcOptions.value || '').trim()
+  if (opts) {
+    const tokens = opts.split('&')
+    const transportOpt = tokens.find(p => p.startsWith('transportmode='))
+    if (transportOpt && !webrtcUrl.includes('transportmode=')) {
+      const [, value] = transportOpt.split('=')
+      if (value) {
+        webrtcUrl += (webrtcUrl.includes('?') ? '&' : '?') + `transportmode=${value}`
+      }
+    }
+    const profileOpt = tokens.find(p => p.startsWith('profile='))
+    if (profileOpt && !webrtcUrl.includes('profile=')) {
+      const [, value] = profileOpt.split('=')
+      if (value) {
+        webrtcUrl += (webrtcUrl.includes('?') ? '&' : '?') + `profile=${value}`
+      }
+    }
+    const codecOpt = tokens.find(p => p.startsWith('forceh264='))
+    if (codecOpt && !webrtcUrl.includes('forceh264=')) {
+      const [, value] = codecOpt.split('=')
+      if (value) {
+        webrtcUrl += (webrtcUrl.includes('?') ? '&' : '?') + `forceh264=${value}`
+      }
+    }
+    const videoCodecOpt = tokens.find(p => p.startsWith('videoCodecType='))
+    if (videoCodecOpt && !webrtcUrl.includes('videoCodecType=')) {
+      const [, value] = videoCodecOpt.split('=')
+      if (value) {
+        webrtcUrl += (webrtcUrl.includes('?') ? '&' : '?') + `videoCodecType=${value}`
+      }
+    }
+  }
+  return {
+    kind: 'webrtc',
+    server: normalizedServer,
+    url: webrtcUrl,
+    audioUrl: webrtcUrl,
+    options: opts || undefined,
+    preferCodec: (webrtcPreferCodec.value || '').trim() || undefined
+  }
+}
+
+function startWebRtcStream(channel: string, session: number) {
+  if (videoSession !== session) return
+  const rtsp = buildRtspUrl(channel)
+  const source = buildWebRtcSource(rtsp)
+  if (!source) {
+    videoStatus.value = 'failed'
+    videoError.value = '请在设置中填写 WebRTC-Streamer 地址'
+    return
+  }
+  videoStreamId.value = null
+  videoSource.value = source
+  videoHudLabel.value = `${channel}-风控模型`
+  scheduleVideoTimeout(session, 8000)
+  console.debug('[Overview] WebRTC stream', { channel, rtsp, server: source.server })
+}
+
+function handleVideoFailed(reason?: string) {
+  if (streamMode.value === 'webrtc' && videoFallbackChannel.value && !videoTriedFallback.value) {
+    videoTriedFallback.value = true
+    const fallback = videoFallbackChannel.value
+    videoTitle.value = `${fallback} 实时视频`
+    startWebRtcStream(fallback, videoSession)
+    return
+  }
+  videoStatus.value = 'failed'
+  videoError.value = reason || '连接失败'
+  clearVideoTimeout()
+}
+
+async function startHlsStream(channel: string, session: number) {
+  if (videoSession !== session) return
+  videoStatus.value = 'loading'
+  videoError.value = ''
+  videoSource.value = null
+  videoHudLabel.value = `${channel}-风控模型`
+  const streamId = buildStreamId(channel)
+  videoStreamId.value = streamId
+  const rtsp = buildRtspUrl(channel)
+  try {
+    const resp = await fetch(`/api/streams/${streamId}/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `rtspUrl=${encodeURIComponent(rtsp)}`
+    })
+    if (!resp.ok) {
+      throw new Error(`API ${resp.status}`)
+    }
+    let data: any = {}
+    try { data = await resp.json() } catch (_) {}
+    const path = (data && data.hls) ? data.hls : `/streams/${streamId}/index.m3u8`
+    const normalized = path.startsWith('/') ? path : `/${path}`
+    const playback = (hlsOrigin.value || '').trim()
+      ? new URL(normalized, hlsOrigin.value).toString()
+      : normalized
+    const ready = await waitUntilReady(streamId, 10000, 600)
+    if (!ready) {
+      videoStatus.value = 'failed'
+      videoError.value = 'HLS 清单未就绪'
+      return
+    }
+    if (videoSession !== session) return
+    videoSource.value = { kind: 'hls', url: playback }
+    scheduleVideoTimeout(session, 8000)
+  } catch (err) {
+    videoStatus.value = 'failed'
+    videoError.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
+async function openAlarmStream(alarm: Alarm) {
+  const channel = resolveAlarmChannel(alarm)
+  if (!channel) {
+    videoError.value = '无法识别设备编号'
+    videoStatus.value = 'failed'
+    videoVisible.value = true
+    return
+  }
+  videoSession += 1
+  const session = videoSession
+  const preferred = resolvePreferredChannel(channel)
+  videoPrimaryChannel.value = preferred.primary
+  videoFallbackChannel.value = preferred.fallback
+  videoTriedFallback.value = false
+  videoTitle.value = `${preferred.primary} 实时视频`
+  videoStatus.value = 'loading'
+  videoError.value = ''
+  videoVisible.value = true
+  videoSource.value = null
+  if (streamMode.value !== 'webrtc' && videoStreamId.value) {
+    const id = videoStreamId.value
+    videoStreamId.value = null
+    try { await fetch(`/api/streams/${id}`, { method: 'DELETE' }) } catch (_) {}
+  }
+  if (streamMode.value === 'webrtc') {
+    const primaryChannel = videoPrimaryChannel.value || channel
+    videoTitle.value = `${primaryChannel} 实时视频`
+    startWebRtcStream(primaryChannel, session)
+    return
+  }
+  await startHlsStream(channel, session)
+}
+
+async function closeAlarmStream() {
+  videoVisible.value = false
+  videoSource.value = null
+  videoStatus.value = 'idle'
+  videoError.value = ''
+  videoRemark.value = ''
+  videoPrimaryChannel.value = null
+  videoFallbackChannel.value = null
+  videoTriedFallback.value = false
+  clearVideoTimeout()
+  if (streamMode.value !== 'webrtc' && videoStreamId.value) {
+    const id = videoStreamId.value
+    videoStreamId.value = null
+    try { await fetch(`/api/streams/${id}`, { method: 'DELETE' }) } catch (_) {}
+  }
+}
+
+function handleVideoAction(action: string) {
+  console.debug('[Overview] video action', { action, remark: videoRemark.value })
+}
+
 function prefetchImage(url: string) {
   if (!url || prefetchedImages.has(url)) return
   prefetchedImages.add(url)
@@ -527,11 +810,12 @@ watch(previewIndex, (value) => {
 })
 
 const topAlarm = computed(() => {
-  if (!mergedRiskAlarms.value.length) return null
-  let picked = mergedRiskAlarms.value[0]
+  const pool = mergedRiskAlarms.value.length ? mergedRiskAlarms.value : pendingMergedRiskAlarms.value
+  if (!pool.length) return null
+  let picked = pool[0]
   let pickedScore = alarmPriority[picked.level]
-  for (let i = 1; i < mergedRiskAlarms.value.length; i += 1) {
-    const current = mergedRiskAlarms.value[i]
+  for (let i = 1; i < pool.length; i += 1) {
+    const current = pool[i]
     const score = alarmPriority[current.level]
     if (score > pickedScore) {
       picked = current
@@ -896,7 +1180,7 @@ onBeforeUnmount(() => {
                   </div>
                   <div class="alert-hero-actions">
                     <a-button size="small" class="hero-action ghost" @click="onPickAlarm(topAlarm)">查看详情</a-button>
-                    <a-button size="small" class="hero-action danger" @click="onPickAlarm(topAlarm)">立即处置</a-button>
+                    <a-button size="small" class="hero-action danger" @click="openAlarmStream(topAlarm)">立即处置</a-button>
                   </div>
                 </div>
               </div>
@@ -906,7 +1190,7 @@ onBeforeUnmount(() => {
           <div class="panel-card queue-card">
             <div class="panel-header">待处理任务列表</div>
             <div class="panel-body queue-body">
-              <AlertPanel :items="pendingMergedRiskAlarms" @preview="openPreviewGroup" />
+              <AlertPanel :items="pendingMergedRiskAlarms" @preview="openPreviewGroup" @action="openAlarmStream" />
             </div>
           </div>
           <div class="panel-card stats-card">
@@ -959,6 +1243,72 @@ onBeforeUnmount(() => {
   <teleport to="body">
     <button v-if="previewVisible" class="preview-close" type="button" @click="previewVisible = false">✕</button>
   </teleport>
+
+  <a-modal
+    v-model:visible="videoVisible"
+    :footer="null"
+    width="70vw"
+    centered
+    destroy-on-close
+    wrapClassName="video-preview-modal"
+    class="video-preview-modal-inner"
+    :closable="false"
+    :style="{ background: 'transparent', boxShadow: 'none' }"
+    :maskStyle="{ backgroundColor: 'rgba(0, 15, 25, 0.9)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)' }"
+    :bodyStyle="{ background: 'transparent', padding: '0' }"
+    @cancel="closeAlarmStream"
+  >
+    <div class="video-preview-body">
+      <button class="video-close" type="button" @click="closeAlarmStream">✕</button>
+      <div class="video-preview-header">
+        <span class="video-title">{{ videoTitle }}</span>
+        <span v-if="videoStatus === 'loading'" class="video-status">连接中…</span>
+        <span v-else-if="videoStatus === 'failed'" class="video-status error">连接失败</span>
+      </div>
+      <div class="video-preview-frame video-hud">
+        <div class="video-hud-live">
+          <span class="live-dot"></span>
+          LIVE
+        </div>
+        <div class="video-hud-meta">{{ videoHudLabel }} | 码流: 4096kbps</div>
+        <VideoPlayer
+          v-if="videoSource"
+          :source="videoSource"
+          @loading="() => { videoStatus = 'loading' }"
+          @connected="() => { videoStatus = 'ready'; videoError = ''; clearVideoTimeout() }"
+          @failed="handleVideoFailed"
+        />
+        <div v-else class="video-placeholder">准备视频中…</div>
+      </div>
+      <div class="video-remark">
+        <a-textarea
+          v-model:value="videoRemark"
+          :rows="3"
+          placeholder="备注"
+          class="input-remark"
+        />
+      </div>
+      <div class="action-bar">
+        <a-button size="large" class="btn-tactical btn-ignore" @click="handleVideoAction('误报')">
+          <template #icon><DeleteOutlined /></template>
+          误报
+        </a-button>
+        <a-button size="large" class="btn-tactical btn-warn" @click="handleVideoAction('启动声光报警')">
+          <template #icon><SoundOutlined /></template>
+          启动声光报警
+        </a-button>
+        <a-button size="large" class="btn-tactical btn-success" @click="handleVideoAction('已驱离')">
+          <template #icon><CheckCircleOutlined /></template>
+          已驱离
+        </a-button>
+        <a-button size="large" class="btn-tactical btn-danger" @click="handleVideoAction('需转现场升级A3')">
+          <template #icon><WarningOutlined /></template>
+          需转现场升级A3
+        </a-button>
+      </div>
+      <div v-if="videoError" class="video-error">{{ videoError }}</div>
+    </div>
+  </a-modal>
 </template>
 
 <style scoped>
@@ -1490,6 +1840,181 @@ onBeforeUnmount(() => {
   color: #ff4d4f;
   transform: rotate(12deg);
 }
+.video-preview-body {
+  position: relative;
+  padding: 24px 0 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.video-preview-header {
+  width: min(960px, 90%);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #e2f6ff;
+  font-size: 14px;
+}
+.video-title {
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+.video-status {
+  color: #94a3b8;
+}
+.video-status.error {
+  color: #ff4d4f;
+}
+.video-preview-frame {
+  width: min(960px, 90%);
+  background: rgba(3, 10, 18, 0.7);
+  border: 1px solid rgba(0, 229, 255, 0.35);
+  box-shadow: 0 0 20px rgba(0, 229, 255, 0.15);
+  border-radius: 10px;
+  padding: 10px;
+  position: relative;
+  overflow: hidden;
+}
+.video-preview-frame::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border: 2px solid transparent;
+  border-top-color: rgba(0, 229, 255, 0.9);
+  border-bottom-color: rgba(0, 229, 255, 0.9);
+  pointer-events: none;
+  opacity: 0.6;
+}
+.video-hud-live {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 12px;
+  background: rgba(8, 12, 18, 0.7);
+  color: #ff4d4f;
+  font-size: 12px;
+  letter-spacing: 1px;
+  z-index: 2;
+}
+.video-hud-live .live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ff4d4f;
+  box-shadow: 0 0 8px rgba(255, 77, 79, 0.9);
+  animation: live-pulse 1.2s infinite;
+}
+.video-hud-meta {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 6px 12px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #e2f6ff;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  z-index: 2;
+}
+.video-preview-frame :deep(video) {
+  width: 100% !important;
+  height: auto !important;
+  max-height: 60vh;
+  border-radius: 6px;
+  display: block;
+}
+.video-remark {
+  width: min(960px, 90%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.video-remark :deep(.ant-input) {
+  background: rgba(255, 255, 255, 0.05);
+  border: none;
+  border-bottom: 1px solid rgba(0, 229, 255, 0.35);
+  color: #e2f6ff;
+  border-radius: 0;
+}
+.video-remark :deep(.ant-input::placeholder) {
+  color: rgba(148, 163, 184, 0.8);
+}
+.action-bar {
+  width: min(960px, 90%);
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1.2fr;
+  gap: 12px;
+}
+.btn-tactical {
+  height: 56px;
+  border: none;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  color: #fff;
+  font-size: 14px;
+  gap: 8px;
+}
+.btn-ignore {
+  background: rgba(255, 255, 255, 0.08);
+  color: #cbd5f5;
+}
+.btn-warn {
+  background: linear-gradient(90deg, rgba(212, 136, 6, 0.9), rgba(250, 173, 20, 0.95));
+}
+.btn-success {
+  background: linear-gradient(90deg, rgba(0, 109, 117, 0.95), rgba(0, 229, 255, 0.95));
+  box-shadow: 0 0 12px rgba(0, 229, 255, 0.4);
+}
+.btn-danger {
+  background: rgba(4, 9, 18, 0.6);
+  border: 1px solid rgba(255, 77, 79, 0.9);
+  color: #ff4d4f;
+}
+.btn-tactical:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.25);
+}
+.video-placeholder {
+  color: #94a3b8;
+  font-size: 13px;
+  padding: 24px 0;
+  text-align: center;
+}
+.video-error {
+  color: #ff4d4f;
+  font-size: 12px;
+}
+.video-close {
+  position: absolute;
+  top: 8px;
+  right: 4px;
+  border: none;
+  background: transparent;
+  color: rgba(0, 229, 255, 0.8);
+  font-size: 20px;
+  cursor: pointer;
+  text-shadow: 0 0 10px rgba(0, 229, 255, 0.6);
+  transition: color 0.2s ease, transform 0.2s ease;
+}
+.video-close:hover {
+  color: #00e5ff;
+  transform: rotate(10deg);
+}
+@keyframes live-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(255, 77, 79, 0.8); }
+  70% { box-shadow: 0 0 0 6px rgba(255, 77, 79, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(255, 77, 79, 0); }
+}
 :global(.image-preview-modal .ant-modal-content) {
   background: transparent !important;
   box-shadow: none !important;
@@ -1518,6 +2043,27 @@ onBeforeUnmount(() => {
 :global(.image-preview-modal .ant-modal-header),
 :global(.image-preview-modal .ant-modal-footer) {
   background: transparent !important;
+  border: none !important;
+}
+:global(.video-preview-modal .ant-modal-content) {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+:global(.video-preview-modal .ant-modal-body) {
+  padding: 0 !important;
+  background: transparent !important;
+}
+:global(.video-preview-modal .ant-modal),
+:global(.video-preview-modal),
+:global(.video-preview-modal .ant-modal-wrap) {
+  background: transparent !important;
+}
+:global(.video-preview-modal-inner .ant-modal-content),
+:global(.video-preview-modal-inner .ant-modal-body),
+:global(.video-preview-modal-inner .ant-modal-header),
+:global(.video-preview-modal-inner .ant-modal-footer) {
+  background: transparent !important;
+  box-shadow: none !important;
   border: none !important;
 }
 </style>

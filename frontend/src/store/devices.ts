@@ -1,6 +1,6 @@
 import { readonly, ref, watch, WatchStopHandle } from 'vue'
 import { radarHost, radarCtrlPort, radarDataPort, radarUseTcp, nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort, portCount, streamMode, webrtcServer, imsiFtpHost, imsiFtpPort, imsiFtpUser, imsiFtpPass } from './config'
-import { cameraHealth, resetCameraHealth } from './cameraHealth'
+import { cameraHealth, resetCameraHealth, setCameraHealth, setCameraHealthError } from './cameraHealth'
 
 export type DeviceState = {
   status: 'unknown' | 'ok' | 'error'
@@ -109,9 +109,45 @@ async function runImsiCheck() {
   }
 }
 
+async function runCameraCheck() {
+  const host = (nvrHost.value || '').trim()
+  const user = (nvrUser.value || '').trim()
+  const pass = (nvrPass.value || '').trim()
+  if (!host || !user || !pass) {
+    setCameraHealthError('未配置')
+    return
+  }
+  try {
+    const params = new URLSearchParams({
+      host,
+      user,
+      pass,
+      scheme: (nvrScheme.value || '').trim() || 'http'
+    })
+    if (nvrHttpPort.value) params.set('httpPort', String(nvrHttpPort.value))
+    const resp = await fetch(`/api/nvr/input-proxy-status?${params.toString()}`)
+    if (!resp.ok) {
+      setCameraHealthError(`HTTP ${resp.status}`)
+      return
+    }
+    const data: any = await resp.json().catch(() => ({}))
+    if (!data?.ok) {
+      setCameraHealthError(data?.error || '连接失败', Number(data?.totalCount || 0))
+      return
+    }
+    const online = Number(data?.onlineCount ?? data?.online ?? 0)
+    const total = Number(data?.totalCount ?? data?.total ?? 0)
+    setCameraHealth(online, total)
+  } catch (e: any) {
+    setCameraHealthError(normalizeError(e?.message))
+  }
+}
+
 function startTimers() {
   if (radarTimer) window.clearInterval(radarTimer)
   radarTimer = window.setInterval(() => { void runRadarCheck() }, DETECT_INTERVAL_MS)
+  if (cameraTimer) window.clearInterval(cameraTimer)
+  cameraTimer = window.setInterval(() => { void runCameraCheck() }, DETECT_INTERVAL_MS)
   if (imsiTimer) window.clearInterval(imsiTimer)
   imsiTimer = window.setInterval(() => { void runImsiCheck() }, DETECT_INTERVAL_MS)
 }
@@ -142,6 +178,7 @@ export function connectDeviceMonitoring() {
   connected = true
   void runRadarCheck()
   void runImsiCheck()
+  void runCameraCheck()
   cameraState.value = { status: 'unknown', message: '正在检测...', failureCount: 0 }
   resetCameraHealth()
   startTimers()
@@ -163,6 +200,7 @@ export function connectDeviceMonitoring() {
     cameraConfigDebounce = window.setTimeout(() => {
       resetCameraHealth()
       cameraState.value = { status: 'unknown', message: '正在检测...', failureCount: 0 }
+      void runCameraCheck()
     }, 300)
   })
 }
@@ -171,6 +209,8 @@ export function disconnectDeviceMonitoring() {
   connected = false
   if (radarTimer) window.clearInterval(radarTimer)
   radarTimer = null
+  if (cameraTimer) window.clearInterval(cameraTimer)
+  cameraTimer = null
   if (imsiTimer) window.clearInterval(imsiTimer)
   imsiTimer = null
   if (radarWatchStop) radarWatchStop()
