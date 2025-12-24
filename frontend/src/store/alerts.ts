@@ -259,10 +259,11 @@ function pushRiskAlarm(data: any) {
   const actionIdRaw = typeof data?.actionId === 'string' && data.actionId ? data.actionId : (typeof data?.action === 'string' ? data.action : 'A2')
   const actionId = normalizeRiskActionId(actionIdRaw) || 'A2'
   const eventId = data?.eventId || data?.event_id
+  const resolvedEventId = typeof eventId === 'string' && eventId ? eventId : buildRiskEventId(actionId, data?.decidedAt)
   const rawId = data?.id
   const resolvedId = rawId != null
     ? String(rawId)
-    : (typeof eventId === 'string' && eventId ? eventId : buildRiskEventId(actionId, data?.decidedAt))
+    : (resolvedEventId || buildRiskEventId(actionId, data?.decidedAt))
   const id = resolvedId || `risk-${Date.now().toString(36)}`
   const classification = typeof data?.classification === 'string' && data.classification ? data.classification : ''
   const scoreValue = typeof data?.score === 'number' && Number.isFinite(data.score)
@@ -300,7 +301,7 @@ function pushRiskAlarm(data: any) {
   const snapshotUrl = snapshots[0] || resolveSnapshotUrl(data)
   const alarm: Alarm = {
     id,
-    eventId: typeof eventId === 'string' && eventId ? eventId : undefined,
+    eventId: typeof resolvedEventId === 'string' && resolvedEventId ? resolvedEventId : undefined,
     level: normalizeRiskLevel(data?.level, classification),
     source: '风控模型',
     place,

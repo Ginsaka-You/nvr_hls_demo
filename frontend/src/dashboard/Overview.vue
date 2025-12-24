@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import { Liquid, Area } from '@antv/g2plot'
 import { CameraOutlined, RadarChartOutlined, MobileOutlined } from '@ant-design/icons-vue'
 import AlertPanel from '@/components/AlertPanel.vue'
@@ -45,6 +45,7 @@ const areaPlot = ref<any | null>(null)
 const previewVisible = ref(false)
 const previewImages = ref<string[]>([])
 const previewIndex = ref(0)
+const prefetchedImages = new Set<string>()
 
 const rankingData = [
   { name: '北门入口-主摄', count: 158, percent: 90 },
@@ -447,6 +448,7 @@ function openPreviewGroup(images: string[], index = 0) {
   previewImages.value = images
   previewIndex.value = index
   previewVisible.value = true
+  prefetchPreviewImages(images, index)
 }
 
 function nextPreview() {
@@ -461,10 +463,49 @@ function prevPreview() {
   previewIndex.value = prevIndex
 }
 
+function formatPreviewNumber(value: number) {
+  return String(value).padStart(2, '0')
+}
+
+function prefetchImage(url: string) {
+  if (!url || prefetchedImages.has(url)) return
+  prefetchedImages.add(url)
+  const img = new Image()
+  img.decoding = 'async'
+  img.src = url
+}
+
+function prefetchPreviewImages(images: string[], index: number) {
+  if (!images.length) return
+  const total = images.length
+  if (total <= 12) {
+    images.forEach(prefetchImage)
+    return
+  }
+  const current = images[index] || images[0]
+  const next = images[(index + 1) % total]
+  const prev = images[(index - 1 + total) % total]
+  if (current) prefetchImage(current)
+  if (next) prefetchImage(next)
+  if (prev) prefetchImage(prev)
+}
+
 const mergedRiskAlarms = computed(() => mergeRiskAlarms(riskAlarms.value))
 const pendingMergedRiskAlarms = computed(() =>
   mergeRiskAlarms(pendingRiskDb.value).filter((a) => !a.status || a.status === '未处理')
 )
+
+watch([previewVisible, previewImages], ([visible, images]) => {
+  if (visible) {
+    prefetchPreviewImages(images, previewIndex.value)
+  }
+})
+
+watch(previewIndex, (value) => {
+  if (previewVisible.value) {
+    prefetchPreviewImages(previewImages.value, value)
+  }
+})
 
 const topAlarm = computed(() => {
   if (!mergedRiskAlarms.value.length) return null
@@ -872,23 +913,33 @@ onBeforeUnmount(() => {
     centered
     destroy-on-close
     wrapClassName="image-preview-modal"
+    class="image-preview-modal-inner"
     :closable="false"
-    :maskStyle="{ backgroundColor: 'rgba(0, 10, 20, 0.85)', backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)' }"
+    :style="{ background: 'transparent', boxShadow: 'none' }"
+    :maskStyle="{ backgroundColor: 'rgba(0, 15, 25, 0.9)', backdropFilter: 'blur(15px)', WebkitBackdropFilter: 'blur(15px)' }"
     :bodyStyle="{ background: 'transparent', padding: '0' }"
     @cancel="previewVisible = false"
   >
     <div class="preview-body" v-if="currentPreviewImage">
-      <button class="preview-close" type="button" @click="previewVisible = false">✕</button>
       <button class="preview-nav left" type="button" @click="prevPreview" v-if="previewImages.length > 1">‹</button>
       <div class="preview-frame">
-        <img :src="currentPreviewImage" alt="snapshot preview" />
+        <img
+          :src="currentPreviewImage"
+          alt="snapshot preview"
+          loading="eager"
+          decoding="async"
+          fetchpriority="high"
+        />
       </div>
       <button class="preview-nav right" type="button" @click="nextPreview" v-if="previewImages.length > 1">›</button>
       <div class="preview-counter" v-if="previewImages.length > 1">
-        {{ previewIndex + 1 }} / {{ previewImages.length }}
+        {{ formatPreviewNumber(previewIndex + 1) }} / {{ formatPreviewNumber(previewImages.length) }}
       </div>
     </div>
   </a-modal>
+  <teleport to="body">
+    <button v-if="previewVisible" class="preview-close" type="button" @click="previewVisible = false">✕</button>
+  </teleport>
 </template>
 
 <style scoped>
@@ -1354,14 +1405,16 @@ onBeforeUnmount(() => {
   position: relative;
   width: 100%;
   text-align: center;
-  padding: 16px 0 6px;
+  padding: 24px 0 40px;
 }
 .preview-frame {
   display: inline-block;
   padding: 4px;
-  border: 1px solid rgba(255, 77, 79, 0.6);
+  border: 2px solid #ff3333;
   border-radius: 8px;
-  box-shadow: 0 0 12px rgba(255, 77, 79, 0.2);
+  box-shadow:
+    0 0 25px rgba(255, 50, 50, 0.6),
+    0 0 45px rgba(255, 50, 50, 0.25);
 }
 .preview-body img {
   max-width: 100%;
@@ -1374,43 +1427,78 @@ onBeforeUnmount(() => {
   transform: translateY(-50%);
   border: none;
   background: transparent;
-  color: rgba(226, 246, 255, 0.8);
-  width: 40px;
-  height: 60px;
-  font-size: 36px;
+  color: #00e5ff;
+  width: 52px;
+  height: 80px;
+  font-size: 32px;
   cursor: pointer;
-  transition: color 0.2s ease;
+  transition: all 0.3s ease;
+  text-shadow: 0 0 10px #00e5ff;
+  opacity: 0.7;
 }
-.preview-nav:hover { color: #7ee7ff; }
+.preview-nav:hover {
+  opacity: 1;
+  text-shadow: 0 0 20px #00e5ff;
+  transform: translateY(-50%) scale(1.1);
+}
 .preview-nav.left { left: 8px; }
 .preview-nav.right { right: 8px; }
 .preview-counter {
-  margin-top: 10px;
-  display: inline-block;
-  padding: 2px 10px;
-  border-radius: 999px;
-  color: #7ee7ff;
-  border: 1px solid rgba(0, 229, 255, 0.35);
-  background: rgba(0, 229, 255, 0.08);
+  position: absolute;
+  bottom: -30px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #ffffff;
+  font-family: "Roboto Mono", monospace;
   font-size: 12px;
+  letter-spacing: 1px;
+  text-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
 }
 .preview-close {
-  position: absolute;
-  top: 6px;
-  right: 12px;
+  position: fixed;
+  top: 24px;
+  right: 28px;
   border: none;
   background: transparent;
-  color: rgba(226, 246, 255, 0.8);
-  font-size: 20px;
+  color: rgba(255, 77, 79, 0.8);
+  font-size: 22px;
   cursor: pointer;
-  transition: color 0.2s ease;
+  transition: color 0.2s ease, transform 0.2s ease;
+  text-shadow: 0 0 12px rgba(255, 77, 79, 0.6);
+  z-index: 2000;
 }
-.preview-close:hover { color: #ff4d4f; }
-:deep(.image-preview-modal .ant-modal-content) {
-  background: transparent;
-  box-shadow: none;
+.preview-close:hover {
+  color: #ff4d4f;
+  transform: rotate(12deg);
 }
-:deep(.image-preview-modal .ant-modal-body) {
-  padding: 0;
+:global(.image-preview-modal .ant-modal-content) {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+:global(.image-preview-modal .ant-modal-body) {
+  padding: 0 !important;
+  background: transparent !important;
+}
+:global(.image-preview-modal .ant-modal) {
+  background: transparent !important;
+}
+:global(.image-preview-modal) {
+  background: transparent !important;
+}
+:global(.image-preview-modal .ant-modal-wrap) {
+  background: transparent !important;
+}
+:global(.image-preview-modal-inner .ant-modal-content),
+:global(.image-preview-modal-inner .ant-modal-body),
+:global(.image-preview-modal-inner .ant-modal-header),
+:global(.image-preview-modal-inner .ant-modal-footer) {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+:global(.image-preview-modal .ant-modal-header),
+:global(.image-preview-modal .ant-modal-footer) {
+  background: transparent !important;
+  border: none !important;
 }
 </style>
