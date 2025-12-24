@@ -3,6 +3,7 @@ import { nvrHost, nvrUser, nvrPass, nvrScheme, nvrHttpPort } from './config'
 
 export type Alarm = {
   id: string
+  eventId?: string
   level: 'info'|'minor'|'major'|'critical'
   source: string
   place: string
@@ -12,6 +13,8 @@ export type Alarm = {
   occurredAt?: number
   soundLightTriggered?: boolean
   status?: string
+  snapshotUrl?: string
+  snapshots?: string[]
 }
 
 export const alarms: Ref<Alarm[]> = ref([])
@@ -25,6 +28,9 @@ type RiskActionPayload = {
   classification?: string
   level?: string
   status?: string
+  snapshotUrl?: string
+  snapshot_url?: string
+  snapshots?: string[]
   camChannel?: string
   cam_channel?: string
   eventTime?: string
@@ -164,6 +170,40 @@ function formatAlarmTime(value: unknown): string {
   return new Date(ts).toLocaleTimeString()
 }
 
+function resolveSnapshotUrl(payload: any): string | undefined {
+  if (!payload) return undefined
+  const direct = [payload.snapshotUrl, payload.snapshot_url]
+  for (const item of direct) {
+    if (typeof item === 'string' && item.trim().length > 0) {
+      return item.trim()
+    }
+  }
+  if (Array.isArray(payload.snapshots)) {
+    const first = payload.snapshots.find((value: unknown) => typeof value === 'string' && value.trim().length > 0)
+    if (first) return first.trim()
+  }
+  return undefined
+}
+
+function resolveSnapshots(payload: any): string[] {
+  if (!payload) return []
+  const list: string[] = []
+  if (Array.isArray(payload.snapshots)) {
+    payload.snapshots.forEach((value: unknown) => {
+      if (typeof value === 'string' && value.trim().length > 0) {
+        list.push(value.trim())
+      }
+    })
+  }
+  const direct = [payload.snapshotUrl, payload.snapshot_url]
+  for (const item of direct) {
+    if (typeof item === 'string' && item.trim().length > 0) {
+      list.push(item.trim())
+    }
+  }
+  return Array.from(new Set(list))
+}
+
 export function pushAlarmFromEvent(ev: any) {
   const camChannelRaw = typeof ev?.camChannel === 'string' ? ev.camChannel.trim() : undefined
   const channelRaw = toNumber(ev?.channelID)
@@ -176,6 +216,8 @@ export function pushAlarmFromEvent(ev: any) {
   const camId = camChannel ? `cam${camChannel}` : undefined
   const et: string = (ev?.eventType || '').toString()
   const summary = et ? mapEventType(et) : '事件告警'
+  const snapshots = resolveSnapshots(ev)
+  const snapshotUrl = snapshots[0] || resolveSnapshotUrl(ev)
   const a: Alarm = {
     id: ev?.id || Math.random().toString(36).slice(2),
     level: (ev?.level || 'major') as any,
@@ -183,7 +225,9 @@ export function pushAlarmFromEvent(ev: any) {
     place: camChannel ? camChannel : '摄像头',
     time: new Date().toLocaleTimeString(),
     summary,
-    deviceId: camId
+    deviceId: camId,
+    snapshotUrl,
+    snapshots
   }
   pushAlarm(a)
 }
@@ -215,10 +259,11 @@ function pushRiskAlarm(data: any) {
   const actionIdRaw = typeof data?.actionId === 'string' && data.actionId ? data.actionId : (typeof data?.action === 'string' ? data.action : 'A2')
   const actionId = normalizeRiskActionId(actionIdRaw) || 'A2'
   const eventId = data?.eventId || data?.event_id
-  const resolvedId = typeof eventId === 'string' && eventId
-    ? eventId
-    : buildRiskEventId(actionId, data?.decidedAt)
-  const id = resolvedId || (typeof data?.id === 'string' && data.id ? data.id : `risk-${Date.now().toString(36)}`)
+  const rawId = data?.id
+  const resolvedId = rawId != null
+    ? String(rawId)
+    : (typeof eventId === 'string' && eventId ? eventId : buildRiskEventId(actionId, data?.decidedAt))
+  const id = resolvedId || `risk-${Date.now().toString(36)}`
   const classification = typeof data?.classification === 'string' && data.classification ? data.classification : ''
   const scoreValue = typeof data?.score === 'number' && Number.isFinite(data.score)
     ? data.score
@@ -251,8 +296,11 @@ function pushRiskAlarm(data: any) {
   const time = decidedAt && !Number.isNaN(decidedAt.getTime())
     ? decidedAt.toLocaleTimeString()
     : new Date().toLocaleTimeString()
+  const snapshots = resolveSnapshots(data)
+  const snapshotUrl = snapshots[0] || resolveSnapshotUrl(data)
   const alarm: Alarm = {
     id,
+    eventId: typeof eventId === 'string' && eventId ? eventId : undefined,
     level: normalizeRiskLevel(data?.level, classification),
     source: '风控模型',
     place,
@@ -261,7 +309,9 @@ function pushRiskAlarm(data: any) {
     deviceId: `risk:${actionId}`,
     occurredAt,
     soundLightTriggered: shouldTriggerSoundLight,
-    status: typeof data?.status === 'string' && data.status ? data.status : '未处理'
+    status: typeof data?.status === 'string' && data.status ? data.status : '未处理',
+    snapshotUrl,
+    snapshots
   }
   pushAlarm(alarm, { triggerSoundLight: shouldTriggerSoundLight })
 }
@@ -274,7 +324,10 @@ function mapRiskActionToAlarm(item: RiskActionPayload): Alarm | null {
   const eventId = item.eventId || item.event_id
   const decidedAt = item.decidedAt || item.eventTime || item.createdAt
   const occurredAt = parseTimestamp(decidedAt) ?? Date.now()
-  const id = eventId || buildRiskEventId(actionId, decidedAt) || `risk-${Date.now().toString(36)}`
+  const rawId = (item as any).id
+  const id = rawId != null
+    ? String(rawId)
+    : (eventId || buildRiskEventId(actionId, decidedAt) || `risk-${Date.now().toString(36)}`)
   const classification = typeof item.classification === 'string' ? item.classification : ''
   const summaryText = typeof item.summary === 'string' && item.summary.trim().length > 0
     ? item.summary.trim()
@@ -283,8 +336,11 @@ function mapRiskActionToAlarm(item: RiskActionPayload): Alarm | null {
   const soundLightTriggered = typeof (item as any).soundLightTriggered === 'boolean'
     ? (item as any).soundLightTriggered
     : (typeof (item as any).sound_light_triggered === 'boolean' ? (item as any).sound_light_triggered : undefined)
+  const snapshots = resolveSnapshots(item)
+  const snapshotUrl = snapshots[0] || resolveSnapshotUrl(item)
   return {
     id,
+    eventId: typeof eventId === 'string' && eventId ? eventId : undefined,
     level: normalizeRiskLevel(item.level, classification),
     source: '风控模型',
     place,
@@ -293,7 +349,9 @@ function mapRiskActionToAlarm(item: RiskActionPayload): Alarm | null {
     deviceId: `risk:${actionId}`,
     occurredAt,
     soundLightTriggered,
-    status: typeof item.status === 'string' && item.status ? item.status : '未处理'
+    status: typeof item.status === 'string' && item.status ? item.status : '未处理',
+    snapshotUrl,
+    snapshots
   }
 }
 
