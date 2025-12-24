@@ -255,6 +255,12 @@ function sanitizeChannels(channels: unknown): string[] {
     .filter((text) => text.length > 0)
 }
 
+function resolveRiskPlace(channels: string[], fallback?: unknown): string {
+  if (channels.length) return channels.join(',')
+  if (typeof fallback === 'string' && fallback.trim().length > 0) return fallback.trim()
+  return '未知'
+}
+
 function pushRiskAlarm(data: any) {
   const actionIdRaw = typeof data?.actionId === 'string' && data.actionId ? data.actionId : (typeof data?.action === 'string' ? data.action : 'A2')
   const actionId = normalizeRiskActionId(actionIdRaw) || 'A2'
@@ -289,7 +295,7 @@ function pushRiskAlarm(data: any) {
   const detailParts = [summaryText, rationale, scoreText, classification ? `优先级 ${classification}` : '', upgradeText, nightLabel, cooldownText]
     .filter(Boolean)
   const channels = sanitizeChannels(data?.channels)
-  const place = channels.length ? `摄像头 ${channels.join(',')}` : '风控模型'
+  const place = resolveRiskPlace(channels, data?.camChannel ?? data?.cam_channel)
   const decidedAt = typeof data?.decidedAt === 'string' && data.decidedAt
     ? new Date(data.decidedAt)
     : null
@@ -303,7 +309,7 @@ function pushRiskAlarm(data: any) {
     id,
     eventId: typeof resolvedEventId === 'string' && resolvedEventId ? resolvedEventId : undefined,
     level: normalizeRiskLevel(data?.level, classification),
-    source: '风控模型',
+    source: place,
     place,
     time,
     summary: detailParts.join(' ｜ '),
@@ -333,7 +339,8 @@ function mapRiskActionToAlarm(item: RiskActionPayload): Alarm | null {
   const summaryText = typeof item.summary === 'string' && item.summary.trim().length > 0
     ? item.summary.trim()
     : (actionId === 'A3' ? '风控模型升级至 A3' : '风控模型触发远程警报')
-  const place = item.camChannel || item.cam_channel || '风控模型'
+  const channels = sanitizeChannels((item as any).channels ?? (item as any).details?.channels)
+  const place = resolveRiskPlace(channels, item.camChannel || item.cam_channel)
   const soundLightTriggered = typeof (item as any).soundLightTriggered === 'boolean'
     ? (item as any).soundLightTriggered
     : (typeof (item as any).sound_light_triggered === 'boolean' ? (item as any).sound_light_triggered : undefined)
@@ -343,7 +350,7 @@ function mapRiskActionToAlarm(item: RiskActionPayload): Alarm | null {
     id,
     eventId: typeof eventId === 'string' && eventId ? eventId : undefined,
     level: normalizeRiskLevel(item.level, classification),
-    source: '风控模型',
+    source: place,
     place,
     time: formatAlarmTime(decidedAt),
     summary: summaryText,

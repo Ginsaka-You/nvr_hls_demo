@@ -354,6 +354,24 @@ function resolveSnapshots(payload: any): string[] {
   return dedupeSnapshots(list)
 }
 
+function resolveRiskPlace(payload: any): string {
+  if (payload?.camChannel && String(payload.camChannel).trim().length > 0) return String(payload.camChannel).trim()
+  if (payload?.cam_channel && String(payload.cam_channel).trim().length > 0) return String(payload.cam_channel).trim()
+  if (Array.isArray(payload?.channels) && payload.channels.length) {
+    const channels = payload.channels
+      .map((value: unknown) => (typeof value === 'string' ? value.trim() : ''))
+      .filter((value: string) => value.length > 0)
+    if (channels.length) return channels.join(',')
+  }
+  if (Array.isArray(payload?.details?.channels) && payload.details.channels.length) {
+    const channels = payload.details.channels
+      .map((value: unknown) => (typeof value === 'string' ? value.trim() : ''))
+      .filter((value: string) => value.length > 0)
+    if (channels.length) return channels.join(',')
+  }
+  return '未知'
+}
+
 function mapRiskActionItemToAlarm(item: any): Alarm | null {
   const actionId = normalizeRiskActionId(item?.action || item?.actionId || item?.action_id)
   if (!actionId || (actionId !== 'A2' && actionId !== 'A3')) {
@@ -374,12 +392,13 @@ function mapRiskActionItemToAlarm(item: any): Alarm | null {
   const eventId = typeof item?.eventId === 'string' && item.eventId
     ? item.eventId
     : (typeof item?.event_id === 'string' && item.event_id ? item.event_id : undefined)
+  const place = resolveRiskPlace(item)
   return {
     id: String(item?.id ?? eventId ?? `risk-${Date.now().toString(36)}`),
     eventId,
     level: normalizeRiskLevel(item?.level, classification),
-    source: '风控模型',
-    place: item?.camChannel ?? item?.cam_channel ?? '风控模型',
+    source: place,
+    place,
     time: formatAlarmTime(decidedAt),
     summary: detailParts.join(' ｜ '),
     deviceId: `risk:${actionId}`,
