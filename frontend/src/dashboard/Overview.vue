@@ -381,19 +381,26 @@ function resolveSnapshots(payload: any): string[] {
 function resolveRiskPlace(payload: any): string {
   if (payload?.camChannel && String(payload.camChannel).trim().length > 0) return String(payload.camChannel).trim()
   if (payload?.cam_channel && String(payload.cam_channel).trim().length > 0) return String(payload.cam_channel).trim()
-  if (Array.isArray(payload?.channels) && payload.channels.length) {
-    const channels = payload.channels
-      .map((value: unknown) => (typeof value === 'string' ? value.trim() : ''))
-      .filter((value: string) => value.length > 0)
-    if (channels.length) return channels.join(',')
-  }
-  if (Array.isArray(payload?.details?.channels) && payload.details.channels.length) {
-    const channels = payload.details.channels
-      .map((value: unknown) => (typeof value === 'string' ? value.trim() : ''))
-      .filter((value: string) => value.length > 0)
-    if (channels.length) return channels.join(',')
+  const channelGroups = [
+    payload?.channels,
+    payload?.details?.channels,
+    payload?.details?.signals?.channels
+  ]
+  for (const group of channelGroups) {
+    if (Array.isArray(group) && group.length) {
+      const channels = group
+        .map((value: unknown) => (typeof value === 'string' ? value.trim() : ''))
+        .filter((value: string) => value.length > 0)
+      if (channels.length) return channels.join(',')
+    }
   }
   return '未知'
+}
+
+function resolveRiskDisplayAction(actionId: string, payload: any, summaryText: string): string {
+  if (payload?.upgrade === true) return 'A3'
+  if (summaryText.includes('A3')) return 'A3'
+  return actionId
 }
 
 function mapRiskActionItemToAlarm(item: any): Alarm | null {
@@ -409,6 +416,7 @@ function mapRiskActionItemToAlarm(item: any): Alarm | null {
   const summaryText = typeof item?.summary === 'string' && item.summary.trim().length > 0
     ? item.summary.trim()
     : (actionId === 'A3' ? '风控模型升级至 A3' : '风控模型触发远程警报')
+  const displayActionId = resolveRiskDisplayAction(actionId, item, summaryText)
   const detailParts = [summaryText, scoreText, classification ? `优先级 ${classification}` : ''].filter(Boolean)
   const decidedAt = item?.decidedAt ?? item?.eventTime ?? item?.createdAt
   const occurredAt = parseTimestamp(decidedAt) ?? Date.now()
@@ -425,7 +433,7 @@ function mapRiskActionItemToAlarm(item: any): Alarm | null {
     place,
     time: formatAlarmTime(decidedAt),
     summary: detailParts.join(' ｜ '),
-    deviceId: `risk:${actionId}`,
+    deviceId: `risk:${displayActionId}`,
     occurredAt,
     soundLightTriggered: typeof item?.soundLightTriggered === 'boolean'
       ? item.soundLightTriggered
@@ -863,8 +871,7 @@ function alarmLevelTitle(level: Alarm['level']) {
 
 function alarmActionLabel(alarm: Alarm) {
   const action = getAlarmAction(alarm)
-  if (action === 'A2') return 'A2需远程查看'
-  if (action === 'A3') return 'A3需人员到现场查看'
+  if (action === 'A2' || action === 'A3') return 'A3需人员到现场查看'
   return alarmLevelTitle(alarm.level)
 }
 

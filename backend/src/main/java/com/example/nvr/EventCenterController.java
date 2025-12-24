@@ -407,6 +407,19 @@ public class EventCenterController {
         String snapshotUrl = alertEvent != null ? alertEvent.getSnapshotUrl() : null;
         List<String> snapshotList = mergeSnapshots(snapshotUrl, snapshots, camChannel);
         String primarySnapshot = snapshotUrl != null ? snapshotUrl : (snapshotList.isEmpty() ? null : snapshotList.get(0));
+        if ((camChannel == null || camChannel.isBlank()) && !snapshotList.isEmpty()) {
+            String inferred = inferChannelFromSnapshots(snapshotList);
+            if (inferred != null && !inferred.isBlank()) {
+                camChannel = inferred;
+                if (alertEvent != null) {
+                    try {
+                        alertEvent.setCamChannel(inferred);
+                        alertEventRepository.save(alertEvent);
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+        }
         return Optional.of(new RiskActionView(
                 resolvedEventId != null ? resolvedEventId : assessment.getId() + "-" + actionId,
                 resolvedEventId,
@@ -431,6 +444,42 @@ public class EventCenterController {
                 assessment.getWindowEnd(),
                 decidedAt != null ? decidedAt.toString() : null
         ));
+    }
+
+    private String inferChannelFromSnapshots(List<String> snapshots) {
+        if (snapshots == null || snapshots.isEmpty()) {
+            return null;
+        }
+        for (String url : snapshots) {
+            String channel = extractChannelFromSnapshotUrl(url);
+            if (channel != null) {
+                return channel;
+            }
+        }
+        return null;
+    }
+
+    private String extractChannelFromSnapshotUrl(String url) {
+        if (url == null || url.isBlank()) {
+            return null;
+        }
+        String path = url.trim();
+        try {
+            URI uri = URI.create(path);
+            if (uri.getPath() != null && !uri.getPath().isBlank()) {
+                path = uri.getPath();
+            }
+        } catch (Exception ignored) {
+        }
+        int idx = path.indexOf("/snapshots/");
+        if (idx >= 0) {
+            String rest = path.substring(idx + "/snapshots/".length());
+            String[] parts = rest.split("/");
+            if (parts.length > 0 && !parts[0].isBlank()) {
+                return parts[0].trim();
+            }
+        }
+        return null;
     }
 
     private AlertEventEntity findAlertEvent(String eventId) {

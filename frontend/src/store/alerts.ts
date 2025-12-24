@@ -261,6 +261,22 @@ function resolveRiskPlace(channels: string[], fallback?: unknown): string {
   return '未知'
 }
 
+function resolveRiskChannels(payload: any): string[] {
+  const direct = sanitizeChannels(payload?.channels)
+  if (direct.length) return direct
+  const detailsChannels = sanitizeChannels(payload?.details?.channels)
+  if (detailsChannels.length) return detailsChannels
+  const signalsChannels = sanitizeChannels(payload?.details?.signals?.channels)
+  if (signalsChannels.length) return signalsChannels
+  return []
+}
+
+function resolveRiskDisplayAction(actionId: string, payload: any, summaryText: string): string {
+  if (payload?.upgrade === true) return 'A3'
+  if (summaryText.includes('A3')) return 'A3'
+  return actionId
+}
+
 function pushRiskAlarm(data: any) {
   const actionIdRaw = typeof data?.actionId === 'string' && data.actionId ? data.actionId : (typeof data?.action === 'string' ? data.action : 'A2')
   const actionId = normalizeRiskActionId(actionIdRaw) || 'A2'
@@ -284,6 +300,7 @@ function pushRiskAlarm(data: any) {
   const summaryText = typeof data?.summary === 'string' && data.summary.trim().length > 0
     ? data.summary.trim()
     : '风控模型触发远程警报'
+  const displayActionId = resolveRiskDisplayAction(actionId, data, summaryText)
   const rationale = typeof data?.rationale === 'string' && data.rationale.trim().length > 0
     ? data.rationale.trim()
     : ''
@@ -294,7 +311,7 @@ function pushRiskAlarm(data: any) {
   const nightLabel = nightMode ? '夜间模式' : ''
   const detailParts = [summaryText, rationale, scoreText, classification ? `优先级 ${classification}` : '', upgradeText, nightLabel, cooldownText]
     .filter(Boolean)
-  const channels = sanitizeChannels(data?.channels)
+  const channels = resolveRiskChannels(data)
   const place = resolveRiskPlace(channels, data?.camChannel ?? data?.cam_channel)
   const decidedAt = typeof data?.decidedAt === 'string' && data.decidedAt
     ? new Date(data.decidedAt)
@@ -313,7 +330,7 @@ function pushRiskAlarm(data: any) {
     place,
     time,
     summary: detailParts.join(' ｜ '),
-    deviceId: `risk:${actionId}`,
+    deviceId: `risk:${displayActionId}`,
     occurredAt,
     soundLightTriggered: shouldTriggerSoundLight,
     status: typeof data?.status === 'string' && data.status ? data.status : '未处理',
@@ -339,7 +356,8 @@ function mapRiskActionToAlarm(item: RiskActionPayload): Alarm | null {
   const summaryText = typeof item.summary === 'string' && item.summary.trim().length > 0
     ? item.summary.trim()
     : (actionId === 'A3' ? '风控模型升级至 A3' : '风控模型触发远程警报')
-  const channels = sanitizeChannels((item as any).channels ?? (item as any).details?.channels)
+  const displayActionId = resolveRiskDisplayAction(actionId, item, summaryText)
+  const channels = resolveRiskChannels(item)
   const place = resolveRiskPlace(channels, item.camChannel || item.cam_channel)
   const soundLightTriggered = typeof (item as any).soundLightTriggered === 'boolean'
     ? (item as any).soundLightTriggered
@@ -354,7 +372,7 @@ function mapRiskActionToAlarm(item: RiskActionPayload): Alarm | null {
     place,
     time: formatAlarmTime(decidedAt),
     summary: summaryText,
-    deviceId: `risk:${actionId}`,
+    deviceId: `risk:${displayActionId}`,
     occurredAt,
     soundLightTriggered,
     status: typeof item.status === 'string' && item.status ? item.status : '未处理',

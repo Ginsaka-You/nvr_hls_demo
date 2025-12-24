@@ -32,6 +32,14 @@ function onPreview(alarm: Alarm, index = 0) {
   if (!images.length) return
   emit('preview', images, index)
 }
+
+function getRiskActionLabel(alarm: Alarm): string | null {
+  const deviceId = alarm.deviceId || ''
+  if (!deviceId.startsWith('risk:')) return null
+  const action = deviceId.split(':')[1]?.toUpperCase()
+  if (action === 'A2' || action === 'A3') return action
+  return null
+}
 </script>
 
 <template>
@@ -49,6 +57,7 @@ function onPreview(alarm: Alarm, index = 0) {
       <div class="task-body">
         <div class="task-head">
           <span class="task-time">{{ a.time }}</span>
+          <span v-if="getRiskActionLabel(a)" class="task-risk-tag">{{ getRiskActionLabel(a) }}</span>
           <span class="task-type">{{ a.source }}</span>
           <span class="task-place">{{ a.place }}</span>
         </div>
@@ -129,6 +138,14 @@ function onPreview(alarm: Alarm, index = 0) {
 .task-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:4px; }
 .task-head { display:flex; gap:6px; align-items:center; font-size:12px; color:#94a3b8; }
 .task-time { font-family: "Roboto Mono", monospace; }
+.task-risk-tag {
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  border: 1px solid rgba(255, 77, 79, 0.5);
+  color: #ff4d4f;
+  background: rgba(255, 77, 79, 0.12);
+}
 .task-type { color: #e2f6ff; font-weight: 600; }
 .task-place { color: #94a3b8; }
 .task-summary {

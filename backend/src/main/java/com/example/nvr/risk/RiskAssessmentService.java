@@ -2668,6 +2668,9 @@ public class RiskAssessmentService {
             map.put("cameraLeaves", new ArrayList<>(cameraLeaves));
             map.put("radarPersistMoments", new ArrayList<>(radarPersistMoments));
             map.put("radarApproachMoments", new ArrayList<>(radarApproachMoments));
+            if (!strongChannelsCurrentWindow.isEmpty()) {
+                map.put("channels", new ArrayList<>(strongChannelsCurrentWindow));
+            }
             return map;
         }
     }
